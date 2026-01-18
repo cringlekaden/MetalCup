@@ -1,0 +1,21 @@
+//
+//  Preferences.swift
+//  MetalCup
+//
+//  Created by Kaden Cringle on 1/17/26.
+//
+
+import MetalKit
+
+public enum ClearColor {
+    static let White: MTLClearColor = MTLClearColor(red: 1, green: 1, blue: 1, alpha: 1)
+    static let Blue: MTLClearColor = MTLClearColor(red: 0.54, green: 0.78, blue: 1, alpha: 1)
+    static let Grey: MTLClearColor = MTLClearColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 1)
+    static let Black: MTLClearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+}
+
+class Preferences {
+    public static var clearColor: MTLClearColor = ClearColor.Grey
+    public static var defaultPixelFormat: MTLPixelFormat = .bgra8Unorm
+    public static var isWireframeEnabled: Bool = false
+}
