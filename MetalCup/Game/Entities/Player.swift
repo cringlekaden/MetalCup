@@ -10,6 +10,11 @@ import MetalKit
 class Player: Entity {
     
     init() {
-        super.init(meshType: .QuadCustom)
+        super.init(meshType: .TriangleCustom)
+    }
+    
+    override func update(delta: Float) {
+        self.rotation.z = -atan2f(Mouse.GetMouseViewportPosition().x - position.x, Mouse.GetMouseViewportPosition().y - position.y)
+        super.update(delta: delta)
     }
 }

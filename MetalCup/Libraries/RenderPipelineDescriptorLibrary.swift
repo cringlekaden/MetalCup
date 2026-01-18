@@ -26,17 +26,17 @@ class RenderPipelineDescriptorLibrary {
 
 protocol RenderPipelineDescriptor {
     var name: String { get }
-    var pipelineDescriptor: MTLRenderPipelineDescriptor { get }
+    var pipelineDescriptor: MTLRenderPipelineDescriptor! { get }
 }
 
 public struct BasicRenderPipelineDescriptor: RenderPipelineDescriptor {
     public var name: String = "BasicPipelineDescriptor"
-    public var pipelineDescriptor: MTLRenderPipelineDescriptor {
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+    public var pipelineDescriptor: MTLRenderPipelineDescriptor!
+    init() {
+        pipelineDescriptor = MTLRenderPipelineDescriptor()
         pipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultPixelFormat
         pipelineDescriptor.vertexFunction = ShaderLibrary.Vertex(.Basic)
         pipelineDescriptor.fragmentFunction = ShaderLibrary.Fragment(.Basic)
         pipelineDescriptor.vertexDescriptor = VertexDescriptorLibrary.Descriptor(.Basic)
-        return pipelineDescriptor
     }
 }

@@ -40,25 +40,25 @@ public class ShaderLibrary {
 protocol Shader {
     var name: String { get }
     var functionName: String { get }
-    var function: MTLFunction { get }
+    var function: MTLFunction! { get }
 }
 
 public struct BasicVertexShader: Shader {
     public var name: String = "BasicVertexShader"
     public var functionName: String = "vertex_main"
-    public var function: MTLFunction {
-        let function = ShaderLibrary.defaultLibrary.makeFunction(name: functionName)
+    public var function: MTLFunction!
+    init() {
+        function = ShaderLibrary.defaultLibrary.makeFunction(name: functionName)
         function?.label = name
-        return function!
     }
 }
 
 public struct BasicFragmentShader: Shader {
     public var name: String = "BasicFragmentShader"
     public var functionName: String = "fragment_main"
-    public var function: MTLFunction {
-        let function = ShaderLibrary.defaultLibrary.makeFunction(name: functionName)
+    public var function: MTLFunction!
+    init() {
+        function = ShaderLibrary.defaultLibrary.makeFunction(name: functionName)
         function?.label = name
-        return function!
     }
 }

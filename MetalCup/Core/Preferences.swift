@@ -18,4 +18,5 @@ class Preferences {
     public static var clearColor: MTLClearColor = ClearColor.Grey
     public static var defaultPixelFormat: MTLPixelFormat = .bgra8Unorm
     public static var isWireframeEnabled: Bool = false
+    public static var initialSceneType: SceneType = .Sandbox
 }
