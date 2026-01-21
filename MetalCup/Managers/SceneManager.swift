@@ -13,7 +13,7 @@ enum SceneType {
 
 class SceneManager {
     
-    private static var currentScene: Scene!
+    private static var _currentScene: Scene!
     
     public static func initialize(_ sceneType: SceneType) {
         SetScene(sceneType)
@@ -22,13 +22,14 @@ class SceneManager {
     public static func SetScene(_ sceneType: SceneType) {
         switch sceneType {
         case .Sandbox:
-            currentScene = Sandbox()
+            _currentScene = Sandbox()
         }
     }
     
-    public static func TickScene(renderCommandEncoder: MTLRenderCommandEncoder, delta: Float) {
-        currentScene.updateCameras(delta: delta)
-        currentScene.update(delta: delta)
-        currentScene.render(renderCommandEncoder: renderCommandEncoder)
+    public static func TickScene(renderCommandEncoder: MTLRenderCommandEncoder, deltaTime: Float) {
+        GameTime.UpdateTime(deltaTime)
+        _currentScene.updateCameras()
+        _currentScene.update()
+        _currentScene.render(renderCommandEncoder: renderCommandEncoder)
     }
 }

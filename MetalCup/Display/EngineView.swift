@@ -16,7 +16,7 @@ class EngineView: MTKView {
         self.device = MTLCreateSystemDefaultDevice()
         Engine.initialize(device: device!)
         self.clearColor = Preferences.clearColor
-        self.colorPixelFormat = Preferences.defaultPixelFormat
+        self.colorPixelFormat = Preferences.defaultColorPixelFormat
         self.depthStencilPixelFormat = Preferences.defaultDepthPixelFormat
         renderer = Renderer(self)
         self.delegate = renderer
@@ -24,7 +24,10 @@ class EngineView: MTKView {
 }
 
 extension EngineView {
-    override var acceptsFirstResponder: Bool { return true }
+    
+    override var acceptsFirstResponder: Bool {
+        return true
+    }
     
     override func keyDown(with event: NSEvent) {
         Keyboard.SetKeyPressed(event.keyCode, isOn: true)
@@ -36,6 +39,7 @@ extension EngineView {
 }
 
 extension EngineView {
+    
     override func mouseDown(with event: NSEvent) {
          Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: true)
     }
@@ -62,6 +66,7 @@ extension EngineView {
 }
 
 extension EngineView {
+    
     override func mouseMoved(with event: NSEvent) {
          setMousePositionChanged(event: event)
     }
