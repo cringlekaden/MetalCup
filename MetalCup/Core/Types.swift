@@ -40,3 +40,13 @@ struct Vertex: sizeable {
 struct ModelConstants: sizeable {
     var modelMatrix = matrix_identity_float4x4
 }
+
+struct SceneConstants: sizeable {
+    var viewMatrix = matrix_identity_float4x4
+    var projectionMatrix = matrix_identity_float4x4
+}
+
+struct Material: sizeable {
+    var color = SIMD4<Float>(0.8,0.8,0.8,1.0)
+    var useMaterialColor: Bool = false
+}

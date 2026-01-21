@@ -17,6 +17,7 @@ class EngineView: MTKView {
         Engine.initialize(device: device!)
         self.clearColor = Preferences.clearColor
         self.colorPixelFormat = Preferences.defaultPixelFormat
+        self.depthStencilPixelFormat = Preferences.defaultDepthPixelFormat
         renderer = Renderer(self)
         self.delegate = renderer
     }

@@ -9,9 +9,34 @@ import MetalKit
 
 class Scene: Node {
     
+    var sceneConstants = SceneConstants()
+    var cameraManager = CameraManager()
+    
     override init() {
         super.init()
         buildScene()
+    }
+    
+    override func update(delta: Float) {
+        sceneConstants.viewMatrix = cameraManager.currentCamera.viewMatrix
+        sceneConstants.projectionMatrix = cameraManager.currentCamera.projectionMatrix
+        super.update(delta: delta)
+    }
+    
+    override func render(renderCommandEncoder: MTLRenderCommandEncoder) {
+        renderCommandEncoder.setVertexBytes(&sceneConstants, length: SceneConstants.stride, index: 1)
+        super.render(renderCommandEncoder: renderCommandEncoder)
+    }
+    
+    func updateCameras(delta: Float) {
+        cameraManager.update(delta: delta)
+    }
+    
+    func addCamera(_ camera: Camera, _ setCurrent: Bool = true) {
+        cameraManager.registerCamera(camera: camera)
+        if(setCurrent) {
+            cameraManager.setCamera(camera.cameraType)
+        }
     }
     
     func buildScene() {}

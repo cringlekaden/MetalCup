@@ -70,6 +70,6 @@ class Mouse {
     public static func GetMouseViewportPosition()->SIMD2<Float>{
         let x = (overallMousePosition.x - Renderer.ScreenSize.x * 0.5) / (Renderer.ScreenSize.x * 0.5)
         let y = (overallMousePosition.y - Renderer.ScreenSize.y * 0.5) / (Renderer.ScreenSize.y * 0.5)
-        return float2(x, y)
+        return SIMD2<Float>(x, y)
     }
 }

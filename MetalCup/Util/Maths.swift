@@ -18,6 +18,16 @@ public var yAxis:  SIMD3<Float> {
 public var zAxis:  SIMD3<Float> {
     .init(0, 0, 1)
 }
+
+extension Float {
+    var toRadians: Float {
+        return (self / 180.0) * Float.pi
+    }
+    var toDegrees: Float {
+        return self * (180.0 / Float.pi)
+    }
+}
+
 extension matrix_float4x4 {
     mutating func translate(direction: SIMD3<Float>) {
         var result = matrix_identity_float4x4
@@ -29,7 +39,6 @@ extension matrix_float4x4 {
         )
         self = matrix_multiply(self, result)
     }
-    
     mutating func scale(axis: SIMD3<Float>) {
         var result = matrix_identity_float4x4
         result.columns = (
@@ -40,7 +49,6 @@ extension matrix_float4x4 {
         )
         self = matrix_multiply(self, result)
     }
-    
     mutating func rotate(angle: Float, axis: SIMD3<Float>) {
         var result = matrix_identity_float4x4
         let x = axis.x
@@ -72,5 +80,21 @@ extension matrix_float4x4 {
                 SIMD4<Float>(r1c4,r2c4,r3c4,r4c4)
         )
         self = matrix_multiply(self, result)
+    }
+    static func perspective(fovDegrees: Float, aspectRatio: Float, near: Float, far: Float)->matrix_float4x4 {
+        let fov = fovDegrees.toRadians
+        let t: Float = tan(fov / 2)
+        let x: Float = 1 / (aspectRatio * t)
+        let y: Float = 1 / t
+        let z: Float = -((far + near) / (far - near))
+        let w: Float = -((2 * far * near) / (far - near))
+        var result = matrix_identity_float4x4
+        result.columns = (
+            .init(x,0,0,0),
+            .init(0,y,0,0),
+            .init(0,0,z,-1),
+            .init(0,0,w,0)
+        )
+        return result
     }
 }
