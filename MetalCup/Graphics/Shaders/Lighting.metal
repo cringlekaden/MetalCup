@@ -22,15 +22,18 @@ public:
             LightData lightData = lightDatas[i];
             float3 unitToLight = normalize(lightData.position - worldPosition);
             float3 unitReflection = normalize(reflect(-unitToLight, unitNormal));
-            float nDotL = max(dot(unitNormal, unitToLight), 0.0);
+            float nDotL = dot(unitNormal, unitToLight);
+            float correctedNDotL = max(nDotL, 0.3);
             float rDotV = max(dot(unitReflection, unitToCamera), 0.0);
             //Ambient
             float3 ambientIntensity = material.ambient * lightData.ambientIntensity;
             float3 ambientColor = clamp(ambientIntensity * lightData.color * lightData.brightness, 0.0, 1.0);
-            totalAmbient += ambientColor;
+            if(nDotL <= 0) {
+                totalAmbient += ambientColor;
+            }
             //Diffuse
             float3 diffuseIntensity = material.diffuse * lightData.diffuseIntensity;
-            float3 diffuseColor = clamp(diffuseIntensity * nDotL * lightData.color * lightData.brightness, 0.0, 1.0);
+            float3 diffuseColor = clamp(diffuseIntensity * correctedNDotL * lightData.color * lightData.brightness, 0.0, 1.0);
             totalDiffuse += diffuseColor;
             //Specular
             float3 specularIntensity = material.specular * lightData.specularIntensity;

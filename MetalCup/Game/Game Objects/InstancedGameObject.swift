@@ -18,10 +18,16 @@ class InstancedGameObject: Node {
     
     init(meshType: MeshType, instanceCount: Int) {
         super.init(name: "Instanced GameObject")
-        _mesh = Entities.Meshes[meshType]
+        _mesh = Assets.Meshes[meshType]
         _mesh.setInstanceCount(instanceCount)
         generateInstances(instanceCount)
         createBuffer(instanceCount)
+    }
+    
+    func updateNodes(_ updateNodeFunction: (Node, Int) -> ()) {
+        for (index, node) in _nodes.enumerated() {
+            updateNodeFunction(node, index)
+        }
     }
     
     func generateInstances(_ instanceCount: Int) {
@@ -57,6 +63,9 @@ extension InstancedGameObject: Renderable {
 extension InstancedGameObject {
     public func setColor(_ color: SIMD4<Float>) {
         self._material.color = color
-        self._material.useMaterialColor = true
+    }
+    
+    public func setColor(_ r: Float,_ g: Float,_ b: Float,_ a: Float) {
+        setColor(SIMD4<Float>(r,g,b,a))
     }
 }

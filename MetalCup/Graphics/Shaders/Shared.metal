@@ -16,6 +16,8 @@ struct Vertex {
     float4 color [[ attribute(1) ]];
     float2 texCoord [[ attribute(2) ]];
     float3 normal [[ attribute(3) ]];
+    float3 tangent [[ attribute(4) ]];
+    float3 bitangent [[ attribute(5) ]];
 };
 
 struct RasterizerData {
@@ -25,6 +27,8 @@ struct RasterizerData {
     float totalGameTime;
     float3 worldPosition;
     float3 surfaceNormal;
+    float3 surfaceTangent;
+    float3 surfaceBitangent;
     float3 toCamera;
 };
 
@@ -41,8 +45,6 @@ struct SceneConstants {
 
 struct Material {
     float4 color;
-    bool useMaterialColor;
-    bool useTexture;
     bool isLit;
     float3 ambient;
     float3 diffuse;

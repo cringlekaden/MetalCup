@@ -13,7 +13,7 @@ class CubeCollection: InstancedGameObject {
     var cubesBack: Int = 0
     
     init(cubesWide: Int, cubesHigh: Int, cubesBack: Int) {
-        super.init(meshType: .CubeCustom, instanceCount: cubesWide * cubesHigh * cubesBack)
+        super.init(meshType: .Cube, instanceCount: cubesWide * cubesHigh * cubesBack)
         self.cubesWide = cubesWide
         self.cubesHigh = cubesHigh
         self.cubesBack = cubesBack

@@ -8,8 +8,7 @@
 class PointLight: LightObject {
     
     init() {
-        super.init(name: "Point Light", meshType: .Sphere)
-        self.setMaterialColor(1,1,1,1)
+        super.init(name: "Point Light")
         self.setScale(0.2)
     }
 }

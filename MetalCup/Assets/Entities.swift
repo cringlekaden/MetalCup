@@ -1,11 +1,11 @@
 //
-//  Entities.swift
+//  Assets.swift
 //  MetalCup
 //
 //  Created by Kaden Cringle on 1/21/26.
 //
 
-class Entities {
+class Assets {
     
     private static var _meshLibrary: MeshLibrary!
     private static var _textureLibrary: TextureLibrary!

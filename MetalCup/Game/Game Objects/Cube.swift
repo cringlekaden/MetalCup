@@ -8,7 +8,7 @@
 class Cube: GameObject {
     
     init() {
-        super.init(name: "Cube", meshType: .CubeCustom)
+        super.init(name: "Cube", meshType: .Cube)
     }
     
     override func doUpdate() {

@@ -28,6 +28,7 @@ extension sizeable {
     }
 }
 
+extension UInt32: sizeable {}
 extension Int32: sizeable {}
 extension Float: sizeable {}
 extension SIMD2<Float>: sizeable {}
@@ -39,6 +40,8 @@ struct Vertex: sizeable {
     var color: SIMD4<Float>
     var texCoord: SIMD2<Float>
     var normal: SIMD3<Float>
+    var tangent: SIMD3<Float>
+    var bitangent: SIMD3<Float>
 }
 
 struct ModelConstants: sizeable {
@@ -53,9 +56,7 @@ struct SceneConstants: sizeable {
 }
 
 struct Material: sizeable {
-    var color = SIMD4<Float>(0.8, 0.8, 0.8, 1.0)
-    var useMaterialColor: Bool = false
-    var useTexture: Bool = false
+    var color = SIMD4<Float>(0.3, 0.3, 0.3, 1.0)
     var isLit: Bool = true
     var ambient: SIMD3<Float> = SIMD3<Float>(0.1,0.1,0.1)
     var diffuse: SIMD3<Float> = .one

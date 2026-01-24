@@ -12,7 +12,7 @@ class Pointer: GameObject {
     private var _camera: Camera!
     
     init(camera: Camera) {
-        super.init(name: "Pointer", meshType: .TriangleCustom)
+        super.init(name: "Pointer", meshType: .Triangle)
         self._camera = camera
     }
     

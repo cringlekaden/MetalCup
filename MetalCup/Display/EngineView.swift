@@ -15,10 +15,10 @@ class EngineView: MTKView {
         super.init(coder: coder)
         self.device = MTLCreateSystemDefaultDevice()
         Engine.initialize(device: device!)
+        renderer = Renderer(self)
         self.clearColor = Preferences.clearColor
         self.colorPixelFormat = Preferences.defaultColorPixelFormat
         self.depthStencilPixelFormat = Preferences.defaultDepthPixelFormat
-        renderer = Renderer(self)
         self.delegate = renderer
     }
 }

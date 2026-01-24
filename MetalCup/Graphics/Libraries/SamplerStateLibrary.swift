@@ -40,7 +40,6 @@ class LinearSamplerState: SamplerState {
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
         samplerDescriptor.mipFilter = .linear
-        samplerDescriptor.lodMinClamp = 0.0
         samplerDescriptor.label = name
         samplerDescriptor.maxAnisotropy = 16
         samplerDescriptor.sAddressMode = .repeat
@@ -57,7 +56,6 @@ class NearestSamplerState: SamplerState {
         samplerDescriptor.minFilter = .nearest
         samplerDescriptor.magFilter = .nearest
         samplerDescriptor.mipFilter = .nearest
-        samplerDescriptor.lodMinClamp = 0.0
         samplerDescriptor.label = name
         samplerDescriptor.maxAnisotropy = 16
         samplerDescriptor.sAddressMode = .repeat

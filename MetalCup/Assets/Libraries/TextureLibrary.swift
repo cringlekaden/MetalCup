@@ -11,6 +11,8 @@ enum TextureType {
     case None
     case PartyPirateParrot
     case Cruiser
+    case MetalPlateDiffuse
+    case MetalPlateNormal
 }
 
 class TextureLibrary: Library<TextureType, MTLTexture> {
@@ -20,6 +22,8 @@ class TextureLibrary: Library<TextureType, MTLTexture> {
     override func fillLibrary() {
         _library[.PartyPirateParrot] = Texture("PartyPirateParrot", origin: .topLeft)
         _library[.Cruiser] = Texture("cruiser", ext: "bmp", origin: .bottomLeft)
+        _library[.MetalPlateDiffuse] = Texture("metal_plate_diff")
+        _library[.MetalPlateNormal] = Texture("metal_plate_nor")
     }
     
     override subscript(_ type: TextureType) -> MTLTexture? {
@@ -74,7 +78,7 @@ class TextureLoader {
         var result: MTLTexture?
         if let url = Bundle.main.url(forResource: _textureName, withExtension: _textureExtension) {
             let textureLoader = MTKTextureLoader(device: Engine.Device)
-            let options: [MTKTextureLoader.Option: Any] = [.origin : _origin!, .generateMipmaps: true, .SRGB: true]
+            let options: [MTKTextureLoader.Option: Any] = [.origin : _origin as Any, .generateMipmaps: true, .SRGB: true]
             do {
                 result = try textureLoader.newTexture(URL: url, options: options)
                 result?.label = _textureName

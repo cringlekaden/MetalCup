@@ -7,9 +7,9 @@
 
 import simd
 
-class Quad: GameObject {
+class Well: GameObject {
     
     init() {
-        super.init(name: "Quad", meshType: .Quad)
+        super.init(name: "Well", meshType: .Well)
     }
 }
