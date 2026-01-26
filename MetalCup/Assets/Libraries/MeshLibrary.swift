@@ -7,6 +7,7 @@ enum MeshType {
     case Cube
     case Cruiser
     case Sphere
+    case Skysphere
     case Chest
     case Well
     case Terrain
@@ -30,6 +31,7 @@ class MeshLibrary: Library<MeshType, Mesh> {
         _library[.Cube] = CubeMesh()
         _library[.Cruiser] = Mesh(modelName: "cruiser")
         _library[.Sphere] = Mesh(modelName: "sphere")
+        _library[.Skysphere] = Mesh(modelName: "skysphere")
         _library[.Chest] = Mesh(modelName: "chest")
         _library[.Well] = Mesh(modelName: "well")
         _library[.Terrain] = Mesh(modelName: "ground_grass")

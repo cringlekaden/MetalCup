@@ -16,10 +16,6 @@ class SceneManager {
     
     private static var _currentScene: Scene!
     
-    public static func initialize(_ sceneType: SceneType) {
-        SetScene(sceneType)
-    }
-    
     public static func SetScene(_ sceneType: SceneType) {
         switch sceneType {
         case .Sandbox:
@@ -29,10 +25,13 @@ class SceneManager {
         }
     }
     
-    public static func TickScene(renderCommandEncoder: MTLRenderCommandEncoder, deltaTime: Float) {
+    public static func Update(deltaTime: Float) {
         GameTime.UpdateTime(deltaTime)
         _currentScene.updateCameras()
         _currentScene.update()
+    }
+    
+    public static func Render(renderCommandEncoder: MTLRenderCommandEncoder) {
         _currentScene.render(renderCommandEncoder: renderCommandEncoder)
     }
 }

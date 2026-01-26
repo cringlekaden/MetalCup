@@ -42,5 +42,8 @@ class Forest: Scene{
         // Flowers
         let flowers = Flowers(flowerRedCount: 15000, flowerPurpleCount: 15000, flowerYellowCount: 15000)
         addChild(flowers)
+        //Sky Sphere
+        let skySphere = Skysphere(skySphereTextureType: .CloudsSkysphere)
+        addChild(skySphere)
     }
 }

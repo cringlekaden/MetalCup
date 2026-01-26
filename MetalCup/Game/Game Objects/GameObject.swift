@@ -15,6 +15,8 @@ class GameObject: Node {
     private var _modelConstants = ModelConstants()
     private var _mesh: Mesh!
     
+    var renderPipelineState: RenderPipelineStateType { return .Basic }
+    
     init(name: String, meshType: MeshType) {
         super.init(name: name)
         _mesh = Assets.Meshes[meshType]
@@ -29,7 +31,7 @@ class GameObject: Node {
 extension GameObject: Renderable {
     func doRender(_ renderCommandEncoder: MTLRenderCommandEncoder) {
         renderCommandEncoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
-        renderCommandEncoder.setRenderPipelineState(Graphics.RenderPipelineStates[.Basic])
+        renderCommandEncoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
         renderCommandEncoder.setDepthStencilState(Graphics.DepthStencilStates[.Less])
         renderCommandEncoder.setVertexBytes(&_modelConstants, length: ModelConstants.stride, index: 2)
         _mesh.drawPrimitives(renderCommandEncoder, material: _material, diffuseMapTextureType: _diffuseMapTextureType, normalMapTextureType: _normalMapTextureType)

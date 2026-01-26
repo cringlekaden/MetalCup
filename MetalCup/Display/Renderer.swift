@@ -17,6 +17,7 @@ class Renderer: NSObject {
     init(_ mtkView: MTKView) {
         super.init()
         updateScreenSize(view: mtkView)
+        SceneManager.SetScene(Preferences.initialSceneType)
     }
 }
 
@@ -31,16 +32,19 @@ extension Renderer: MTKViewDelegate {
     }
     
     func draw(in view: MTKView) {
-        guard let drawable = view.currentDrawable, let renderPassDescriptor = view.currentRenderPassDescriptor else { return }
+        SceneManager.Update(deltaTime: 1.0 / Float(view.preferredFramesPerSecond))
         let commandBuffer = Engine.CommandQueue.makeCommandBuffer()
         commandBuffer?.label = "MetalCup Command Buffer"
-        let renderCommandEncoder = commandBuffer?.makeRenderCommandEncoder(descriptor: renderPassDescriptor)
+        
+        guard let sceneRenderPassDescriptor = view.currentRenderPassDescriptor else { return }
+        let renderCommandEncoder = commandBuffer?.makeRenderCommandEncoder(descriptor: sceneRenderPassDescriptor)
         renderCommandEncoder?.label = "MetalCup Render Command Encoder"
         renderCommandEncoder?.pushDebugGroup("Rendering Scene")
-        SceneManager.TickScene(renderCommandEncoder: renderCommandEncoder!, deltaTime: 1 / Float(view.preferredFramesPerSecond))
+        SceneManager.Render(renderCommandEncoder: renderCommandEncoder!)
         renderCommandEncoder?.popDebugGroup()
         renderCommandEncoder?.endEncoding()
-        commandBuffer?.present(drawable)
+        
+        commandBuffer?.present(view.currentDrawable!)
         commandBuffer?.commit()
     }
 }

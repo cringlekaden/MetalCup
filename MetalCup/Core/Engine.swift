@@ -19,6 +19,5 @@ class Engine {
         self.DefaultLibrary = device.makeDefaultLibrary()
         Graphics.initialize()
         Assets.initialize()
-        SceneManager.initialize(Preferences.initialSceneType)
     }
 }

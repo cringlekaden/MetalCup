@@ -13,6 +13,7 @@ enum TextureType {
     case Cruiser
     case MetalPlateDiffuse
     case MetalPlateNormal
+    case CloudsSkysphere
 }
 
 class TextureLibrary: Library<TextureType, MTLTexture> {
@@ -20,10 +21,11 @@ class TextureLibrary: Library<TextureType, MTLTexture> {
     private var _library: [TextureType : Texture] = [:]
     
     override func fillLibrary() {
-        _library[.PartyPirateParrot] = Texture("PartyPirateParrot", origin: .topLeft)
+        _library[.PartyPirateParrot] = Texture("PartyPirateParrot", origin: .bottomLeft)
         _library[.Cruiser] = Texture("cruiser", ext: "bmp", origin: .bottomLeft)
         _library[.MetalPlateDiffuse] = Texture("metal_plate_diff")
         _library[.MetalPlateNormal] = Texture("metal_plate_nor")
+        _library[.CloudsSkysphere] = Texture("clouds", origin: .bottomLeft)
     }
     
     override subscript(_ type: TextureType) -> MTLTexture? {
@@ -41,11 +43,19 @@ class TextureLibrary: Library<TextureType, MTLTexture> {
         }
         return fallback
     }
+    
+    func setTexture(textureType: TextureType, texture: MTLTexture) {
+        _library.updateValue(Texture(texture: texture), forKey: textureType)
+    }
 }
 
-class Texture {
+private class Texture {
     
     var texture: MTLTexture!
+    
+    init(texture: MTLTexture) {
+        self.texture = texture
+    }
     
     init(_ textureName: String, ext: String = "png", origin: MTKTextureLoader.Origin = .topLeft) {
         let textureLoader = TextureLoader(textureName: textureName, textureExtension: ext, origin: origin)

@@ -11,6 +11,8 @@ enum ShaderType {
     case BasicVertex
     case InstancedVertex
     case BasicFragment
+    case SkysphereVertex
+    case SkysphereFragment
 }
 
 class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -21,6 +23,8 @@ class ShaderLibrary: Library<ShaderType, MTLFunction> {
         _library[.BasicVertex] = Shader(name: "Basic Vertex Shader", functionName: "vertex_basic")
         _library[.InstancedVertex] = Shader(name: "Instanced Vertex Shader", functionName: "vertex_instanced")
         _library[.BasicFragment] = Shader(name: "Basic Fragment Shader", functionName: "fragment_basic")
+        _library[.SkysphereVertex] = Shader(name: "Skysphere Vertex Shader", functionName: "vertex_skysphere")
+        _library[.SkysphereFragment] = Shader(name: "Skysphere Fragment Shader", functionName: "fragment_skysphere")
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {
