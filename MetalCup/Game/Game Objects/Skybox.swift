@@ -13,7 +13,6 @@ class Skybox: GameObject {
 
     init() {
         super.init(name: "Skybox", meshType: .Skybox)
-        setScale(100)
         setCullMode(.front)
         setFrontFacing(.clockwise)
         setDepthState(.LessEqualNoWrite)

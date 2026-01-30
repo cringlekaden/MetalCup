@@ -27,6 +27,8 @@ fragment float4 fragment_final(const FinalRasterizerData rd [[ stage_in ]],
     float2 texCoord = rd.texCoord;
     texCoord.y = 1 - texCoord.y;
     float4 color = renderTexture.sample(s, texCoord);
+    color = color / (color + 1.0);
+    color = pow(color, 1.0 / 2.2);
     return float4(color);
 }
 

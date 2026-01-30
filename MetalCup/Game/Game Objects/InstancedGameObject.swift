@@ -51,7 +51,7 @@ class InstancedGameObject: Node {
 
 extension InstancedGameObject: Renderable {
     func doRender(_ renderCommandEncoder: any MTLRenderCommandEncoder) {
-        renderCommandEncoder.setRenderPipelineState(Graphics.RenderPipelineStates[.Instanced])
+        renderCommandEncoder.setRenderPipelineState(Graphics.RenderPipelineStates[.HDRInstanced])
         renderCommandEncoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
         renderCommandEncoder.setDepthStencilState(Graphics.DepthStencilStates[.Less])
         renderCommandEncoder.setVertexBuffer(_modelConstantBuffer, offset: 0, index: 2)

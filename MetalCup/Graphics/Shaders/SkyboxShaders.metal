@@ -28,6 +28,5 @@ vertex SkyboxRasterizerData vertex_skybox(const CubemapVertex vert [[ stage_in ]
 
 fragment float4 fragment_skybox(SkyboxRasterizerData rd [[ stage_in ]], sampler sampler [[ sampler(0) ]], texturecube<float> skyboxTexture [[ texture(10) ]]) {
     float3 dir = normalize(rd.direction);
-    float3 color = skyboxTexture.sample(sampler, dir).rgb;
-    return float4(color / (color + 1.0), 1.0);
+    return float4(skyboxTexture.sample(sampler, dir, level(0.0)).rgb, 1.0);
 }

@@ -39,7 +39,7 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
                               texture2d<float> aoMap [[ texture(4) ]],
                               texturecube<float> irradianceMap [[ texture(5) ]])  {
     // --- Sample textures ---
-    float3 albedo = pow(albedoMap.sample(sam, rd.texCoord).rgb, float3(2.2));
+    float3 albedo = albedoMap.sample(sam, rd.texCoord).rgb;
     float metallic = metallicMap.sample(sam, rd.texCoord).r;
     float roughness = roughnessMap.sample(sam, rd.texCoord).r;
     float ao = aoMap.sample(sam, rd.texCoord).r;
@@ -88,9 +88,5 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
     float3 diffuseIBL = irradiance * albedo / PBR::PI;
     diffuseIBL *= ao;
     float3 color = diffuseIBL + Lo;
-
-    // --- Tonemap + gamma ---
-    color = color / (color + float3(1.0));
-    color = pow(color, float3(1.0 / 2.2));
     return float4(color, 1.0);
 }

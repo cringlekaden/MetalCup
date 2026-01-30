@@ -21,7 +21,7 @@ class GameObject: Node {
     private var _frontFacing: MTLWinding = .counterClockwise
     private var _depthState: DepthStencilStateType = .Less
     
-    var renderPipelineState: RenderPipelineStateType { return .Basic }
+    var renderPipelineState: RenderPipelineStateType { return .HDRBasic }
     
     init(name: String, meshType: MeshType) {
         super.init(name: name)

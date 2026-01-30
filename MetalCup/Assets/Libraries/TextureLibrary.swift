@@ -19,15 +19,18 @@ enum TextureType {
     case MetalPlateNormal
     case CloudsSkysphere
     case VeniceSunset
-    case Sunset2
+    case Studio
+    case Cruise
+    case Night
+    case Rocks
 }
 
 class TextureLibrary: Library<TextureType, MTLTexture> {
     
     private var _library: [TextureType : Texture] = [:]
-    private let _environmentSize = 2048
+    private let _environmentSize = 1024
     private let _irradianceSize = 64
-    private let _prefilteredSize = 256
+    private let _prefilteredSize = 512
     private let _brdfLutSize = 512
     
     override func fillLibrary() {
@@ -35,7 +38,10 @@ class TextureLibrary: Library<TextureType, MTLTexture> {
         _library[.MetalPlateNormal] = Texture("metal_plate_nor")
         _library[.CloudsSkysphere] = Texture("clouds", origin: .bottomLeft)
         _library[.VeniceSunset] = Texture("venice_sunset", ext: "hdr", srgb: false, generateMipmaps: false)
-        _library[.Sunset2] = Texture("sunset2", ext: "hdr", srgb: false, generateMipmaps: false)
+        _library[.Studio] = Texture("studio", ext: "exr", srgb: false, generateMipmaps: false)
+        _library[.Cruise] = Texture("cruise", ext: "exr", srgb: false, generateMipmaps: false)
+        _library[.Night] = Texture("night", ext: "exr", srgb: false, generateMipmaps: false)
+        _library[.Rocks] = Texture("rocks", ext: "exr", srgb: false, generateMipmaps: false)
         createIBLTextures()
     }
     
@@ -60,15 +66,15 @@ class TextureLibrary: Library<TextureType, MTLTexture> {
     }
     
     func createIBLTextures() {
-        let environmentDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.defaultCubemapPixelFormat, size: _environmentSize, mipmapped: false)
+        let environmentDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRCubemapPixelFormat, size: _environmentSize, mipmapped: true)
         environmentDescriptor.usage = [.renderTarget, .shaderRead]
         environmentDescriptor.storageMode = .private
         _library[.EnvironmentCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: environmentDescriptor)!)
-        let irradianceDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.defaultCubemapPixelFormat, size: _irradianceSize, mipmapped: false)
+        let irradianceDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRCubemapPixelFormat, size: _irradianceSize, mipmapped: false)
         irradianceDescriptor.usage = [.renderTarget, .shaderRead]
         irradianceDescriptor.storageMode = .private
         _library[.IrradianceCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: irradianceDescriptor)!)
-        let prefilteredDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.defaultCubemapPixelFormat, size: _prefilteredSize, mipmapped: true)
+        let prefilteredDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRCubemapPixelFormat, size: _prefilteredSize, mipmapped: true)
         prefilteredDescriptor.usage = [.renderTarget, .shaderRead]
         prefilteredDescriptor.storageMode = .private
         _library[.PrefilteredCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: prefilteredDescriptor)!)
@@ -140,3 +146,4 @@ class TextureLoader {
         return result
     }
 }
+
