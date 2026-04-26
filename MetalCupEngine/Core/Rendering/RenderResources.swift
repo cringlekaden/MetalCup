@@ -10,6 +10,18 @@ enum RenderResourceLifetime: String {
 }
 
 enum RenderNamedResourceKey {
+    static let sceneColor = "scene.color"
+    static let sceneColorFogged = "scene.colorFogged"
+    static let sceneDepth = "scene.depth"
+    static let sceneNormals = "scene.normals"
+    static let ssaoNormals = "scene.ssaoNormals"
+    static let sceneColorMSAA = "scene.colorMSAA"
+    static let sceneDepthMSAA = "scene.depthMSAA"
+    static let ssaoRaw = "ao.raw"
+    static let ssaoFiltered = "ao.filtered"
+    static let ssaoPing = "ao.ping"
+    static let postFinalColor = "post.finalColor"
+    static let sceneColorResolved = sceneColor
     static let forwardPlusCullingDepth = "forwardPlus.cullingDepth"
     static let forwardPlusTileLightGrid = "forwardPlus.tileLightGrid"
     static let forwardPlusTileLightIndexList = "forwardPlus.tileLightIndexList"
@@ -226,12 +238,22 @@ final class RenderResourceRegistry {
 
 enum RenderResourceTexture {
     case baseColor
+    case sceneColorFogged
     case finalColor
     case baseDepth
+    case sceneNormals
+    case ssaoNormals
+    case sceneColorMSAA
+    case sceneDepthMSAA
+    case ssaoRaw
+    case ssaoFiltered
+    case ssaoPing
+    case autoExposure
     case bloomPing
     case bloomPong
     case outlineMask
     case gridColor
+    case worldDebugColor
     case pickId
     case pickDepth
 
@@ -239,10 +261,28 @@ enum RenderResourceTexture {
         switch self {
         case .baseColor:
             return BuiltinAssets.baseColorRender
+        case .sceneColorFogged:
+            return BuiltinAssets.sceneColorFoggedRender
         case .finalColor:
             return BuiltinAssets.finalColorRender
         case .baseDepth:
             return BuiltinAssets.baseDepthRender
+        case .sceneNormals:
+            return BuiltinAssets.sceneNormalsRender
+        case .ssaoNormals:
+            return BuiltinAssets.ssaoNormalsRender
+        case .sceneColorMSAA:
+            return BuiltinAssets.sceneColorMSAARender
+        case .sceneDepthMSAA:
+            return BuiltinAssets.sceneDepthMSAARender
+        case .ssaoRaw:
+            return BuiltinAssets.ssaoRawRender
+        case .ssaoFiltered:
+            return BuiltinAssets.ssaoFilteredRender
+        case .ssaoPing:
+            return BuiltinAssets.ssaoPingRender
+        case .autoExposure:
+            return BuiltinAssets.autoExposureRender
         case .bloomPing:
             return BuiltinAssets.bloomPing
         case .bloomPong:
@@ -251,6 +291,8 @@ enum RenderResourceTexture {
             return BuiltinAssets.outlineMask
         case .gridColor:
             return BuiltinAssets.gridColor
+        case .worldDebugColor:
+            return BuiltinAssets.worldDebugColorRender
         case .pickId:
             return BuiltinAssets.pickIdRender
         case .pickDepth:
@@ -262,6 +304,7 @@ enum RenderResourceTexture {
 final class RenderResources {
     private var drawableSize = SIMD2<Int>(0, 0)
     private var bloomResolutionScale: UInt32 = BloomResolutionScale.quarter.rawValue
+    private var sceneMSAASampleCount: Int = 4
     private let preferences: Preferences
     private let settingsProvider: () -> RendererSettings
     private let settingsUpdater: (RendererSettings) -> Void
@@ -284,13 +327,25 @@ final class RenderResources {
         if drawableSize.x != width || drawableSize.y != height { return false }
         let currentScale = normalizedBloomScale(settingsProvider().bloomResolutionScale)
         if bloomResolutionScale != currentScale { return false }
+        let currentSceneSampleCount = normalizedSceneSampleCount(preferences.sceneMSAASampleCount)
+        if sceneMSAASampleCount != currentSceneSampleCount { return false }
         return texture(.baseColor) != nil
+            && texture(.sceneColorFogged) != nil
             && texture(.finalColor) != nil
             && texture(.baseDepth) != nil
+            && texture(.sceneNormals) != nil
+            && texture(.ssaoNormals) != nil
+            && texture(.sceneColorMSAA) != nil
+            && texture(.sceneDepthMSAA) != nil
+            && texture(.ssaoRaw) != nil
+            && texture(.ssaoFiltered) != nil
+            && texture(.ssaoPing) != nil
+            && texture(.autoExposure) != nil
             && texture(.bloomPing) != nil
             && texture(.bloomPong) != nil
             && texture(.outlineMask) != nil
             && texture(.gridColor) != nil
+            && texture(.worldDebugColor) != nil
             && texture(.pickId) != nil
             && texture(.pickDepth) != nil
     }
@@ -301,6 +356,29 @@ final class RenderResources {
         guard width > 0, height > 0 else { return }
         drawableSize = SIMD2<Int>(width, height)
         bloomResolutionScale = normalizedBloomScale(settingsProvider().bloomResolutionScale)
+        let sceneSampleCount = normalizedSceneSampleCount(preferences.sceneMSAASampleCount)
+        sceneMSAASampleCount = sceneSampleCount
+
+        let sceneColorMSAADesc: MTLTextureDescriptor
+        if sceneSampleCount > 1 {
+            sceneColorMSAADesc = MTLTextureDescriptor()
+            sceneColorMSAADesc.textureType = .type2DMultisample
+            sceneColorMSAADesc.sampleCount = sceneSampleCount
+        } else {
+            sceneColorMSAADesc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: preferences.HDRPixelFormat,
+                width: width,
+                height: height,
+                mipmapped: false
+            )
+        }
+        sceneColorMSAADesc.pixelFormat = preferences.HDRPixelFormat
+        sceneColorMSAADesc.width = width
+        sceneColorMSAADesc.height = height
+        sceneColorMSAADesc.mipmapLevelCount = 1
+        sceneColorMSAADesc.usage = [.renderTarget]
+        sceneColorMSAADesc.storageMode = .private
+        registerTexture(descriptor: sceneColorMSAADesc, handle: .sceneColorMSAA, label: "RenderTarget.SceneColorMSAA")
 
         let baseColorDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: preferences.HDRPixelFormat,
@@ -310,7 +388,17 @@ final class RenderResources {
         )
         baseColorDesc.usage = [.renderTarget, .shaderRead]
         baseColorDesc.storageMode = .private
-        registerTexture(descriptor: baseColorDesc, handle: .baseColor, label: "RenderTarget.BaseColor")
+        registerTexture(descriptor: baseColorDesc, handle: .baseColor, label: "RenderTarget.SceneColorResolved")
+
+        let foggedSceneColorDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: preferences.HDRPixelFormat,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        foggedSceneColorDesc.usage = [.renderTarget, .shaderRead]
+        foggedSceneColorDesc.storageMode = .private
+        registerTexture(descriptor: foggedSceneColorDesc, handle: .sceneColorFogged, label: "RenderTarget.SceneColorFogged")
 
         let finalColorDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: preferences.defaultColorPixelFormat,
@@ -322,6 +410,16 @@ final class RenderResources {
         finalColorDesc.storageMode = .private
         registerTexture(descriptor: finalColorDesc, handle: .finalColor, label: "RenderTarget.FinalColor")
 
+        let autoExposureDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: preferences.HDRPixelFormat,
+            width: max(1, width / 2),
+            height: max(1, height / 2),
+            mipmapped: true
+        )
+        autoExposureDesc.usage = [.renderTarget, .shaderRead]
+        autoExposureDesc.storageMode = .private
+        registerTexture(descriptor: autoExposureDesc, handle: .autoExposure, label: "RenderTarget.AutoExposure")
+
         let baseDepthDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: preferences.defaultDepthPixelFormat,
             width: width,
@@ -331,6 +429,50 @@ final class RenderResources {
         baseDepthDesc.usage = [.renderTarget, .shaderRead]
         baseDepthDesc.storageMode = .private
         registerTexture(descriptor: baseDepthDesc, handle: .baseDepth, label: "RenderTarget.BaseDepth")
+
+        let sceneNormalsDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rg16Float,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        sceneNormalsDesc.usage = [.renderTarget, .shaderRead]
+        sceneNormalsDesc.storageMode = .private
+        registerTexture(descriptor: sceneNormalsDesc, handle: .sceneNormals, label: "RenderTarget.SceneNormals")
+        registerTexture(descriptor: sceneNormalsDesc, handle: .ssaoNormals, label: "RenderTarget.SSAONormals")
+
+        let ssaoDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r16Float,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        ssaoDesc.usage = [.renderTarget, .shaderRead]
+        ssaoDesc.storageMode = .private
+        registerTexture(descriptor: ssaoDesc, handle: .ssaoRaw, label: "RenderTarget.SSAORaw")
+        registerTexture(descriptor: ssaoDesc, handle: .ssaoFiltered, label: "RenderTarget.SSAOFiltered")
+        registerTexture(descriptor: ssaoDesc, handle: .ssaoPing, label: "RenderTarget.SSAOPing")
+
+        let sceneDepthMSAADesc: MTLTextureDescriptor
+        if sceneSampleCount > 1 {
+            sceneDepthMSAADesc = MTLTextureDescriptor()
+            sceneDepthMSAADesc.textureType = .type2DMultisample
+            sceneDepthMSAADesc.sampleCount = sceneSampleCount
+        } else {
+            sceneDepthMSAADesc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: preferences.defaultDepthPixelFormat,
+                width: width,
+                height: height,
+                mipmapped: false
+            )
+        }
+        sceneDepthMSAADesc.pixelFormat = preferences.defaultDepthPixelFormat
+        sceneDepthMSAADesc.width = width
+        sceneDepthMSAADesc.height = height
+        sceneDepthMSAADesc.mipmapLevelCount = 1
+        sceneDepthMSAADesc.usage = [.renderTarget]
+        sceneDepthMSAADesc.storageMode = .private
+        registerTexture(descriptor: sceneDepthMSAADesc, handle: .sceneDepthMSAA, label: "RenderTarget.SceneDepthMSAA")
 
         let outlineDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm,
@@ -351,6 +493,16 @@ final class RenderResources {
         gridDesc.usage = [.renderTarget, .shaderRead]
         gridDesc.storageMode = .private
         registerTexture(descriptor: gridDesc, handle: .gridColor, label: "RenderTarget.GridColor")
+
+        let worldDebugDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: preferences.HDRPixelFormat,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        worldDebugDesc.usage = [.renderTarget, .shaderRead]
+        worldDebugDesc.storageMode = .private
+        registerTexture(descriptor: worldDebugDesc, handle: .worldDebugColor, label: "RenderTarget.WorldDebugColor")
 
         let pickIdDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r32Uint,
@@ -399,18 +551,61 @@ final class RenderResources {
         let registry = RenderResourceRegistry()
         let allTextures: [RenderResourceTexture] = [
             .baseColor,
+            .sceneColorFogged,
             .finalColor,
             .baseDepth,
+            .sceneNormals,
+            .ssaoNormals,
+            .sceneColorMSAA,
+            .sceneDepthMSAA,
+            .ssaoRaw,
+            .ssaoFiltered,
+            .ssaoPing,
+            .autoExposure,
             .bloomPing,
             .bloomPong,
             .outlineMask,
             .gridColor,
+            .worldDebugColor,
             .pickId,
             .pickDepth
         ]
         for key in allTextures {
             guard let texture = texture(key) else { continue }
             registry.registerTexture(key, texture: texture, lifetime: .persistent)
+        }
+        if let sceneColorResolved = texture(.baseColor) {
+            registry.registerNamedTexture(RenderNamedResourceKey.sceneColor, texture: sceneColorResolved, lifetime: .persistent)
+        }
+        if let foggedSceneColor = texture(.sceneColorFogged) {
+            registry.registerNamedTexture(RenderNamedResourceKey.sceneColorFogged, texture: foggedSceneColor, lifetime: .persistent)
+        }
+        if let sceneDepth = texture(.baseDepth) {
+            registry.registerNamedTexture(RenderNamedResourceKey.sceneDepth, texture: sceneDepth, lifetime: .persistent)
+        }
+        if let sceneNormals = texture(.sceneNormals) {
+            registry.registerNamedTexture(RenderNamedResourceKey.sceneNormals, texture: sceneNormals, lifetime: .persistent)
+        }
+        if let ssaoNormals = texture(.ssaoNormals) {
+            registry.registerNamedTexture(RenderNamedResourceKey.ssaoNormals, texture: ssaoNormals, lifetime: .persistent)
+        }
+        if let sceneColorMSAA = texture(.sceneColorMSAA) {
+            registry.registerNamedTexture(RenderNamedResourceKey.sceneColorMSAA, texture: sceneColorMSAA, lifetime: .persistent)
+        }
+        if let sceneDepthMSAA = texture(.sceneDepthMSAA) {
+            registry.registerNamedTexture(RenderNamedResourceKey.sceneDepthMSAA, texture: sceneDepthMSAA, lifetime: .persistent)
+        }
+        if let ssaoRaw = texture(.ssaoRaw) {
+            registry.registerNamedTexture(RenderNamedResourceKey.ssaoRaw, texture: ssaoRaw, lifetime: .persistent)
+        }
+        if let ssaoFiltered = texture(.ssaoFiltered) {
+            registry.registerNamedTexture(RenderNamedResourceKey.ssaoFiltered, texture: ssaoFiltered, lifetime: .persistent)
+        }
+        if let ssaoPing = texture(.ssaoPing) {
+            registry.registerNamedTexture(RenderNamedResourceKey.ssaoPing, texture: ssaoPing, lifetime: .persistent)
+        }
+        if let finalColor = texture(.finalColor) {
+            registry.registerNamedTexture(RenderNamedResourceKey.postFinalColor, texture: finalColor, lifetime: .persistent)
         }
         return registry
     }
@@ -469,6 +664,16 @@ final class RenderResources {
         value <= BloomResolutionScale.half.rawValue
             ? BloomResolutionScale.half.rawValue
             : BloomResolutionScale.quarter.rawValue
+    }
+
+    private func normalizedSceneSampleCount(_ value: Int) -> Int {
+        if value >= 8 && device.supportsTextureSampleCount(8) {
+            return 8
+        }
+        if value >= 4 && device.supportsTextureSampleCount(4) {
+            return 4
+        }
+        return 1
     }
 }
 

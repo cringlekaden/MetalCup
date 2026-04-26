@@ -33,6 +33,7 @@ struct SceneUpdateScheduler {
     struct FixedPipeline {
         let profiler: RendererProfiler?
         let scriptFixedPrePhysics: (_ executeScripts: Bool, _ fixedDelta: Float) -> Void
+        let animationFixed: (_ fixedDelta: Float) -> Void
         let characterFixed: (_ fixedDelta: Float) -> Void
         let physicsStep: (_ fixedDelta: Float) -> Void
         let drainPhysicsEvents: (_ dispatchEvents: Bool) -> [PhysicsScriptEvent]?
@@ -76,6 +77,7 @@ struct SceneUpdateScheduler {
         recordScope(.scriptFixed, profiler: pipeline.profiler) {
             pipeline.scriptFixedPrePhysics(request.mode.contains(.executeScripts), request.fixedDelta)
         }
+        pipeline.animationFixed(request.fixedDelta)
         recordScope(.characterFixed, profiler: pipeline.profiler) {
             pipeline.characterFixed(request.fixedDelta)
         }

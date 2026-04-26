@@ -299,11 +299,21 @@ public final class PhysicsSystem {
                 if drawColliders {
                     switch shape.shapeType {
                     case .box:
-                        debugDraw.submitWireBox(transform: colliderMatrix, halfExtents: scaled.boxHalfExtents, color: color)
+                        debugDraw.submitWireBox(category: .physics,
+                                                transform: colliderMatrix,
+                                                halfExtents: scaled.boxHalfExtents,
+                                                color: color)
                     case .sphere:
-                        debugDraw.submitWireSphere(transform: colliderMatrix, radius: scaled.sphereRadius, color: color)
+                        debugDraw.submitWireSphere(category: .physics,
+                                                   transform: colliderMatrix,
+                                                   radius: scaled.sphereRadius,
+                                                   color: color)
                     case .capsule:
-                        debugDraw.submitWireCapsule(transform: colliderMatrix, radius: scaled.capsuleRadius, halfHeight: scaled.capsuleHalfHeight, color: color)
+                        debugDraw.submitWireCapsule(category: .physics,
+                                                    transform: colliderMatrix,
+                                                    radius: scaled.capsuleRadius,
+                                                    halfHeight: scaled.capsuleHalfHeight,
+                                                    color: color)
                     }
                 }
             }
@@ -321,9 +331,9 @@ public final class PhysicsSystem {
                 let xAxis = SIMD3<Float>(basis.columns.0.x, basis.columns.0.y, basis.columns.0.z) * axisLength
                 let yAxis = SIMD3<Float>(basis.columns.1.x, basis.columns.1.y, basis.columns.1.z) * axisLength
                 let zAxis = SIMD3<Float>(basis.columns.2.x, basis.columns.2.y, basis.columns.2.z) * axisLength
-                debugDraw.submitLine(origin, origin + xAxis, color: SIMD4<Float>(1.0, 0.2, 0.2, 1.0))
-                debugDraw.submitLine(origin, origin + yAxis, color: SIMD4<Float>(0.2, 1.0, 0.2, 1.0))
-                debugDraw.submitLine(origin, origin + zAxis, color: SIMD4<Float>(0.2, 0.4, 1.0, 1.0))
+                debugDraw.submitLine(category: .physics, origin, origin + xAxis, color: SIMD4<Float>(1.0, 0.2, 0.2, 1.0))
+                debugDraw.submitLine(category: .physics, origin, origin + yAxis, color: SIMD4<Float>(0.2, 1.0, 0.2, 1.0))
+                debugDraw.submitLine(category: .physics, origin, origin + zAxis, color: SIMD4<Float>(0.2, 0.4, 1.0, 1.0))
             }
 
             if let controller = ecs.get(CharacterControllerComponent.self, for: entity) {
@@ -333,7 +343,8 @@ public final class PhysicsSystem {
                 let controllerColor = SIMD4<Float>(0.9, 0.95, 0.3, 0.9)
                 let controllerRadius = max(0.02, controller.radius)
                 let controllerHalfHeight = max(0.02, controller.height * 0.5 - controllerRadius)
-                debugDraw.submitWireCapsule(transform: worldMatrix,
+                debugDraw.submitWireCapsule(category: .physics,
+                                            transform: worldMatrix,
                                             radius: controllerRadius,
                                             halfHeight: controllerHalfHeight,
                                             color: controllerColor)
@@ -348,9 +359,9 @@ public final class PhysicsSystem {
                     ? simd_normalize(debugState.groundNormal)
                     : SIMD3<Float>(0.0, 1.0, 0.0)
                 // Basis debug: right=red, forward=green, ground normal=blue.
-                debugDraw.submitLine(origin, origin + rightBasis * basisScale, color: SIMD4<Float>(1.0, 0.2, 0.2, 0.95))
-                debugDraw.submitLine(origin, origin + forwardBasis * basisScale, color: SIMD4<Float>(0.2, 1.0, 0.2, 0.95))
-                debugDraw.submitLine(origin, origin + groundNormal * basisScale, color: SIMD4<Float>(0.2, 0.4, 1.0, 0.95))
+                debugDraw.submitLine(category: .physics, origin, origin + rightBasis * basisScale, color: SIMD4<Float>(1.0, 0.2, 0.2, 0.95))
+                debugDraw.submitLine(category: .physics, origin, origin + forwardBasis * basisScale, color: SIMD4<Float>(0.2, 1.0, 0.2, 0.95))
+                debugDraw.submitLine(category: .physics, origin, origin + groundNormal * basisScale, color: SIMD4<Float>(0.2, 0.4, 1.0, 0.95))
             }
         }
 
@@ -369,9 +380,9 @@ public final class PhysicsSystem {
                         : (isDynamic ? SIMD4<Float>(1.0, 0.2, 0.2, 1.0) : SIMD4<Float>(1.0, 0.6, 0.2, 1.0))
                     let offsetX = SIMD3<Float>(pointSize, 0.0, 0.0)
                     let offsetZ = SIMD3<Float>(0.0, 0.0, pointSize)
-                    debugDraw.submitLine(contact.position - offsetX, contact.position + offsetX, color: color)
-                    debugDraw.submitLine(contact.position - offsetZ, contact.position + offsetZ, color: color)
-                    debugDraw.submitLine(contact.position, contact.position + contact.normal * normalLength, color: color)
+                    debugDraw.submitLine(category: .physics, contact.position - offsetX, contact.position + offsetX, color: color)
+                    debugDraw.submitLine(category: .physics, contact.position - offsetZ, contact.position + offsetZ, color: color)
+                    debugDraw.submitLine(category: .physics, contact.position, contact.position + contact.normal * normalLength, color: color)
                 }
             }
         }
@@ -387,7 +398,9 @@ public final class PhysicsSystem {
                           ecs.get(TransformComponent.self, for: entityB) != nil else { continue }
                     let worldA = ecs.worldTransform(for: entityA)
                     let worldB = ecs.worldTransform(for: entityB)
-                    debugDraw.submitLine(worldA.position, worldB.position,
+                    debugDraw.submitLine(category: .physics,
+                                         worldA.position,
+                                         worldB.position,
                                          color: SIMD4<Float>(0.85, 0.4, 1.0, 0.9))
                 }
             }

@@ -25,6 +25,16 @@ public enum BuiltinAssets {
     public static let pickDepthRender = AssetHandle(string: "00000000-0000-0000-0000-000000000107")
     public static let outlineMask = AssetHandle(string: "00000000-0000-0000-0000-000000000108")
     public static let gridColor = AssetHandle(string: "00000000-0000-0000-0000-000000000109")
+    public static let sceneColorMSAARender = AssetHandle(string: "00000000-0000-0000-0000-000000000110")
+    public static let sceneDepthMSAARender = AssetHandle(string: "00000000-0000-0000-0000-000000000111")
+    public static let autoExposureRender = AssetHandle(string: "00000000-0000-0000-0000-000000000112")
+    public static let sceneNormalsRender = AssetHandle(string: "00000000-0000-0000-0000-000000000113")
+    public static let ssaoRawRender = AssetHandle(string: "00000000-0000-0000-0000-000000000114")
+    public static let ssaoFilteredRender = AssetHandle(string: "00000000-0000-0000-0000-000000000115")
+    public static let ssaoPingRender = AssetHandle(string: "00000000-0000-0000-0000-000000000116")
+    public static let ssaoNormalsRender = AssetHandle(string: "00000000-0000-0000-0000-000000000117")
+    public static let sceneColorFoggedRender = AssetHandle(string: "00000000-0000-0000-0000-000000000119")
+    public static let worldDebugColorRender = AssetHandle(string: "00000000-0000-0000-0000-000000000120")
 
     // IBL textures
     public static let environmentCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000201")

@@ -99,6 +99,7 @@ public class EngineScene {
     public private(set) var name: String
     private var _lightManager = LightManager()
     private var _sceneConstants = SceneConstants()
+    private var _viewExposureSettings = SceneViewExposureSettings()
     private let _editorCameraController = EditorCameraController()
     private var lastFrameContext: FrameContext?
     public lazy var transformAuthority = TransformAuthorityService(scene: self)
@@ -110,6 +111,7 @@ public class EngineScene {
     private var loggedAnimationEvaluationModes: Set<TransformAuthorityMode> = []
     private var loggedAnimatorParameterSignatures: Set<String> = []
     private var loggedAnimatorResolutionEntities: Set<UUID> = []
+    private var loggedAnimatorResolutionFailures: Set<UUID> = []
     private var animationGraphDebugLoggingEnabled: Bool {
 #if DEBUG
         ProcessInfo.processInfo.environment["MCE_ANIM_GRAPH_DEBUG"] == "1"
@@ -298,7 +300,9 @@ public class EngineScene {
               let graphHandle = animator.graphHandle,
               let compiledGraph = engineContext?.assets.compiledAnimationGraph(handle: graphHandle) else { return false }
         var runtimeState = animator.graphRuntimeState ?? AnimationGraphRuntimeInstanceState()
-        if runtimeState.graphHandle != graphHandle || !runtimeState.hasParameterStorage(count: compiledGraph.parameters.count) {
+        if runtimeState.graphHandle != graphHandle ||
+            !runtimeState.hasStorage(parameterCount: compiledGraph.parameters.count,
+                                     localVariableCount: compiledGraph.localVariables.count) {
             runtimeState.resetDefaults(from: compiledGraph, graphHandle: graphHandle)
         }
         guard mutation(&runtimeState, compiledGraph) else { return false }
@@ -327,7 +331,12 @@ public class EngineScene {
     @discardableResult
     public func render(view: SceneView, context: RenderContext) -> RenderOutputs {
         guard let engineContext else {
-            return RenderOutputs(color: context.colorTarget, depth: context.depthTarget, pickingId: context.idTarget)
+            return RenderOutputs(color: context.colorTarget,
+                                 depth: context.depthTarget,
+                                 pickingId: context.idTarget,
+                                 sceneColor: context.colorTarget,
+                                 sceneDepth: context.depthTarget,
+                                 finalColor: context.colorTarget)
         }
         let storage = RendererFrameContextStorage(engineContext: engineContext)
         let frameContext = storage.beginFrame()
@@ -339,12 +348,14 @@ public class EngineScene {
               let camera = ecs.get(CameraComponent.self, for: cameraEntity) else { return }
         let worldTransform = ecs.worldTransform(for: cameraEntity)
         let snapshot = makeRenderFrameSnapshot(frameToken: frameContext.currentFrameCounter(), layerFilterMask: .all)
+        let previewViewId = UInt64(bitPattern: Int64(cameraEntity.id.hashValue))
         SceneRenderer.renderPreview(
             encoder: encoder,
             snapshot: snapshot,
             camera: camera,
             worldTransform: worldTransform,
             viewportSize: viewportSize,
+            previewViewId: previewViewId,
             frameContext: frameContext
         )
     }
@@ -444,72 +455,80 @@ public class EngineScene {
 
     public func animatorGraphOwnerEntityID(for sourceEntityId: UUID) -> UUID? {
         guard let sourceEntity = ecs.entity(with: sourceEntityId) else { return nil }
+        if var controller = ecs.get(CharacterControllerComponent.self, for: sourceEntity) {
+            let visualSummary = controller.visualEntityId?.uuidString ?? "<none>"
+            let animatorSummary = controller.animatorEntityId?.uuidString ?? "<none>"
+            if let animatorID = controller.animatorEntityId,
+               let animatorEntity = ecs.entity(with: animatorID),
+               hasAnimatorComponent(entity: animatorEntity) {
+                logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                         resolvedEntityId: animatorEntity.id,
+                                         source: "controller.animatorEntityId")
+                return animatorEntity.id
+            }
+            if let visualID = controller.visualEntityId,
+               let visualEntity = ecs.entity(with: visualID),
+               hasAnimatorComponent(entity: visualEntity) {
+                if controller.animatorEntityId != visualEntity.id {
+                    controller.animatorEntityId = visualEntity.id
+                    ecs.add(controller, to: sourceEntity)
+                }
+                logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                         resolvedEntityId: visualEntity.id,
+                                         source: "controller.visualEntityId")
+                return visualEntity.id
+            }
+            if hasAnimatorComponent(entity: sourceEntity) {
+                if controller.animatorEntityId != sourceEntity.id {
+                    controller.animatorEntityId = sourceEntity.id
+                    ecs.add(controller, to: sourceEntity)
+                }
+                logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                         resolvedEntityId: sourceEntity.id,
+                                         source: "controller.ownerAnimator")
+                return sourceEntity.id
+            }
+
+            // Temporary migration fallback for legacy content: discover once, persist explicitly.
+            if let migrated = firstAnimatorEntity(inSubtreeRootedAt: controller.visualEntityId.flatMap { ecs.entity(with: $0) } ?? sourceEntity) {
+                controller.animatorEntityId = migrated.id
+                ecs.add(controller, to: sourceEntity)
+                logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                         resolvedEntityId: migrated.id,
+                                         source: "migration.subtreeToExplicit")
+                engineContext?.log.logWarning(
+                    "Animator binding migration sourceEntity=\(sourceEntity.id.uuidString) visualEntity=\(visualSummary) previousAnimator=\(animatorSummary) migratedAnimator=\(migrated.id.uuidString)",
+                    category: .scene
+                )
+                return migrated.id
+            }
+
+            if loggedAnimatorResolutionFailures.insert(sourceEntity.id).inserted {
+                engineContext?.log.logWarning(
+                    "Animator entity unresolved sourceEntity=\(sourceEntity.id.uuidString) visualEntity=\(visualSummary) animatorEntity=\(animatorSummary) reason=noExplicitBindingAndNoAnimatorOnOwnerOrVisual",
+                    category: .scene
+                )
+            }
+            return nil
+        }
+
         if hasAnimatorComponent(entity: sourceEntity) {
             logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
                                      resolvedEntityId: sourceEntity.id,
-                                     source: "explicit")
+                                     source: "entityAnimator")
             return sourceEntity.id
         }
-
-        var controller = ecs.get(CharacterControllerComponent.self, for: sourceEntity)
-        if let visualID = controller?.visualEntityId,
-           let visualEntity = ecs.entity(with: visualID),
-           hasAnimatorComponent(entity: visualEntity) {
-            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
-                                     resolvedEntityId: visualEntity.id,
-                                     source: "explicit")
-            return visualEntity.id
+        if loggedAnimatorResolutionFailures.insert(sourceEntity.id).inserted {
+            engineContext?.log.logWarning(
+                "Animator entity unresolved sourceEntity=\(sourceEntity.id.uuidString) reason=noCharacterControllerAndNoAnimator",
+                category: .scene
+            )
         }
-
-        if let directChild = firstAnimatorChild(of: sourceEntity) {
-            controller?.visualEntityId = directChild.id
-            if let controller {
-                ecs.add(controller, to: sourceEntity)
-            }
-            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
-                                     resolvedEntityId: directChild.id,
-                                     source: "child")
-            return directChild.id
-        }
-
-        if let visualID = controller?.visualEntityId,
-           let visualEntity = ecs.entity(with: visualID),
-           let nestedVisual = firstAnimatorEntity(inSubtreeRootedAt: visualEntity) {
-            controller?.visualEntityId = nestedVisual.id
-            if let controller {
-                ecs.add(controller, to: sourceEntity)
-            }
-            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
-                                     resolvedEntityId: nestedVisual.id,
-                                     source: "subtreeSearch")
-            return nestedVisual.id
-        }
-
-        if let nested = firstAnimatorEntity(inSubtreeRootedAt: sourceEntity) {
-            controller?.visualEntityId = nested.id
-            if let controller {
-                ecs.add(controller, to: sourceEntity)
-            }
-            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
-                                     resolvedEntityId: nested.id,
-                                     source: "subtreeSearch")
-            return nested.id
-        }
-
         return nil
     }
 
     private func hasAnimatorComponent(entity: Entity) -> Bool {
         ecs.get(AnimatorComponent.self, for: entity) != nil
-    }
-
-    private func firstAnimatorChild(of root: Entity) -> Entity? {
-        for child in ecs.getChildren(root) {
-            if hasAnimatorComponent(entity: child) {
-                return child
-            }
-        }
-        return nil
     }
 
     private func firstAnimatorEntity(inSubtreeRootedAt root: Entity) -> Entity? {
@@ -739,6 +758,25 @@ public class EngineScene {
                 )
             )
         }
+        var reflectionProbes: [ReflectionProbeSnapshot] = []
+        ecs.viewReflectionProbes { entity, probe in
+            reflectionProbes.append(
+                ReflectionProbeSnapshot(
+                    entity: entity,
+                    enabled: probe.enabled,
+                    worldTransform: renderWorldTransform(for: entity),
+                    boxExtents: probe.boxExtents,
+                    blendDistance: probe.blendDistance,
+                    priority: probe.priority,
+                    intensity: probe.intensity,
+                    captureResolution: probe.captureResolution,
+                    rebuildMode: probe.rebuildMode,
+                    includeSky: probe.includeSky,
+                    runtimeReady: false,
+                    prefilteredHandle: nil
+                )
+            )
+        }
         let activeSkyLight = ecs.activeSkyLight()?.1
         let lightData = _lightManager.snapshotLightData()
         let directionalLights = lightData.filter { $0.type == 2 }
@@ -750,11 +788,35 @@ public class EngineScene {
         hasher.combine(renderables.count)
         hasher.combine(directionalLights.count)
         hasher.combine(localLights.count)
+        hasher.combine(reflectionProbes.count)
         hasher.combine(animationPreparation.skinnedEntityCount)
         hasher.combine(activeSkyLight != nil)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.x.bitPattern)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.y.bitPattern)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.z.bitPattern)
+        for probe in reflectionProbes {
+            hasher.combine(probe.entity.id)
+            hasher.combine(probe.enabled)
+            hasher.combine(probe.worldTransform.position.x.bitPattern)
+            hasher.combine(probe.worldTransform.position.y.bitPattern)
+            hasher.combine(probe.worldTransform.position.z.bitPattern)
+            hasher.combine(probe.worldTransform.rotation.x.bitPattern)
+            hasher.combine(probe.worldTransform.rotation.y.bitPattern)
+            hasher.combine(probe.worldTransform.rotation.z.bitPattern)
+            hasher.combine(probe.worldTransform.rotation.w.bitPattern)
+            hasher.combine(probe.worldTransform.scale.x.bitPattern)
+            hasher.combine(probe.worldTransform.scale.y.bitPattern)
+            hasher.combine(probe.worldTransform.scale.z.bitPattern)
+            hasher.combine(probe.boxExtents.x.bitPattern)
+            hasher.combine(probe.boxExtents.y.bitPattern)
+            hasher.combine(probe.boxExtents.z.bitPattern)
+            hasher.combine(probe.blendDistance.bitPattern)
+            hasher.combine(probe.priority)
+            hasher.combine(probe.intensity.bitPattern)
+            hasher.combine(probe.captureResolution)
+            hasher.combine(probe.rebuildMode.rawValue)
+            hasher.combine(probe.includeSky)
+        }
 
         return RenderFrameSnapshot(
             sceneKey: ObjectIdentifier(self),
@@ -766,7 +828,8 @@ public class EngineScene {
             localLights: localLights,
             directionalShadowLightDirection: shadowLightDirection,
             animationPayload: animationPreparation.payload,
-            renderables: renderables
+            renderables: renderables,
+            reflectionProbes: reflectionProbes
         )
     }
 
@@ -845,6 +908,9 @@ public class EngineScene {
             profiler: engineContext?.renderer?.profiler,
             scriptFixedPrePhysics: { executeScripts, fixedDelta in
                 self.scriptSystem.fixedPrePhysics(dt: fixedDelta, executeScripts: executeScripts)
+            },
+            animationFixed: { fixedDelta in
+                self.animationSystem.fixedStepGameplay(scene: self, fixedDelta: fixedDelta)
             },
             characterFixed: { fixedDelta in
                 self.characterSystem.fixedStep(scene: self, fixedDelta: fixedDelta)
@@ -989,13 +1055,16 @@ public class EngineScene {
 
     private func applyCameraConstants(transform: TransformComponent, camera: CameraComponent, aspectRatio: Float) {
         _sceneConstants.viewMatrix = SceneRenderer.viewMatrix(from: transform)
+        _sceneConstants.inverseViewMatrix = simd_inverse(_sceneConstants.viewMatrix)
         _sceneConstants.skyViewMatrix = _sceneConstants.viewMatrix
         _sceneConstants.skyViewMatrix[3][0] = 0
         _sceneConstants.skyViewMatrix[3][1] = 0
         _sceneConstants.skyViewMatrix[3][2] = 0
         _sceneConstants.projectionMatrix = SceneRenderer.projectionMatrix(from: camera, aspectRatio: aspectRatio)
         _sceneConstants.inverseProjectionMatrix = simd_inverse(_sceneConstants.projectionMatrix)
+        _sceneConstants.inverseViewProjectionMatrix = simd_inverse(_sceneConstants.projectionMatrix * _sceneConstants.viewMatrix)
         _sceneConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, 1.0)
+        _viewExposureSettings = SceneRenderer.exposureSettings(from: camera, forceAutoExposure: camera.isEditor)
     }
 
     private func updateSceneConstantsForFrame(_ frame: FrameContext) {
@@ -1170,6 +1239,10 @@ public class EngineScene {
 
     func setSceneConstants(_ value: SceneConstants) {
         _sceneConstants = value
+    }
+
+    func getViewExposureSettings() -> SceneViewExposureSettings {
+        _viewExposureSettings
     }
 
     func getLightManager() -> LightManager {

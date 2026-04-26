@@ -7,8 +7,34 @@ import simd
 
 public enum MaterialAlphaMode: String, Codable {
     case opaque
-    case masked
-    case blended
+    case alphaClip
+    case transparent
+    case additive
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        switch rawValue {
+        case Self.opaque.rawValue:
+            self = .opaque
+        case Self.alphaClip.rawValue, "masked":
+            self = .alphaClip
+        case Self.transparent.rawValue, "blended":
+            self = .transparent
+        case Self.additive.rawValue:
+            self = .additive
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported MaterialAlphaMode value: \(rawValue)"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 public enum PBRMaskMode: String, Codable {
@@ -174,10 +200,13 @@ public struct MaterialAsset {
         switch alphaMode {
         case .opaque:
             break
-        case .masked:
+        case .alphaClip:
             flags.insert(.alphaMasked)
-        case .blended:
+        case .transparent:
             flags.insert(.alphaBlended)
+        case .additive:
+            flags.insert(.alphaBlended)
+            flags.insert(.additiveBlended)
         }
 
         if let normalHandle = textures.normal,

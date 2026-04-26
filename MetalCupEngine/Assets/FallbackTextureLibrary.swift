@@ -7,6 +7,7 @@ import MetalKit
 public final class FallbackTextureLibrary {
     public let whiteRGBA: MTLTexture
     public let blackRGBA: MTLTexture
+    public let transparentBlackRGBA: MTLTexture
     public let flatNormal: MTLTexture
     public let aoMap: MTLTexture
     public let metalRoughness: MTLTexture
@@ -22,6 +23,7 @@ public final class FallbackTextureLibrary {
     public init(device: MTLDevice, preferences: Preferences) {
         whiteRGBA = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(255, 255, 255, 255), label: "Fallback.WhiteRGBA")
         blackRGBA = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(0, 0, 0, 255), label: "Fallback.BlackRGBA")
+        transparentBlackRGBA = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(0, 0, 0, 0), label: "Fallback.TransparentBlackRGBA")
         flatNormal = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(128, 128, 255, 255), label: "Fallback.FlatNormal")
         aoMap = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(255, 255, 255, 255), label: "Fallback.AO")
         metalRoughness = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(0, 255, 0, 255), label: "Fallback.MetalRoughness")
@@ -35,6 +37,7 @@ public final class FallbackTextureLibrary {
         textureIds = Set([
             ObjectIdentifier(whiteRGBA),
             ObjectIdentifier(blackRGBA),
+            ObjectIdentifier(transparentBlackRGBA),
             ObjectIdentifier(flatNormal),
             ObjectIdentifier(aoMap),
             ObjectIdentifier(metalRoughness),

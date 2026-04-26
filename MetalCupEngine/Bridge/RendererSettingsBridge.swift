@@ -3,6 +3,7 @@
 /// Created by Kaden Cringle.
 
 import Foundation
+import Metal
 
 private func resolveEngineContext(_ contextPtr: UnsafeRawPointer?) -> EngineContext? {
     guard let contextPtr else { return nil }
@@ -30,6 +31,20 @@ private func updateSettings(_ contextPtr: UnsafeRawPointer?, _ body: (inout Rend
 
 private func profiler(_ contextPtr: UnsafeRawPointer?) -> RendererProfiler? {
     return resolveEngineContext(contextPtr)?.renderer?.profiler
+}
+
+private func getPreferences(_ contextPtr: UnsafeRawPointer?) -> Preferences? {
+    resolveEngineContext(contextPtr)?.preferences
+}
+
+private func normalizedSceneMSAASampleCount(_ engineContext: EngineContext, requested value: UInt32) -> Int {
+    if value >= 8 && engineContext.device.supportsTextureSampleCount(8) {
+        return 8
+    }
+    if value >= 4 && engineContext.device.supportsTextureSampleCount(4) {
+        return 4
+    }
+    return 1
 }
 
 private func getForwardPlusStats(_ contextPtr: UnsafeRawPointer?) -> ForwardPlusStats {
@@ -110,42 +125,6 @@ public func MCERendererSetBloomResolutionScale(_ contextPtr: UnsafeRawPointer?, 
     }
 }
 
-@_cdecl("MCERendererGetBloomUpsampleScale")
-public func MCERendererGetBloomUpsampleScale(_ contextPtr: UnsafeRawPointer?) -> Float {
-    getSettings(contextPtr).bloomUpsampleScale
-}
-
-@_cdecl("MCERendererSetBloomUpsampleScale")
-public func MCERendererSetBloomUpsampleScale(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
-    updateSettings(contextPtr) { settings in
-        settings.bloomUpsampleScale = value
-    }
-}
-
-@_cdecl("MCERendererGetBloomDirtIntensity")
-public func MCERendererGetBloomDirtIntensity(_ contextPtr: UnsafeRawPointer?) -> Float {
-    getSettings(contextPtr).bloomDirtIntensity
-}
-
-@_cdecl("MCERendererSetBloomDirtIntensity")
-public func MCERendererSetBloomDirtIntensity(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
-    updateSettings(contextPtr) { settings in
-        settings.bloomDirtIntensity = value
-    }
-}
-
-@_cdecl("MCERendererGetBlurPasses")
-public func MCERendererGetBlurPasses(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
-    getSettings(contextPtr).blurPasses
-}
-
-@_cdecl("MCERendererSetBlurPasses")
-public func MCERendererSetBlurPasses(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
-    updateSettings(contextPtr) { settings in
-        settings.blurPasses = value
-    }
-}
-
 @_cdecl("MCERendererGetBloomMaxMips")
 public func MCERendererGetBloomMaxMips(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
     getSettings(contextPtr).bloomMaxMips
@@ -170,18 +149,6 @@ public func MCERendererSetTonemap(_ contextPtr: UnsafeRawPointer?, _ value: UInt
     }
 }
 
-@_cdecl("MCERendererGetExposure")
-public func MCERendererGetExposure(_ contextPtr: UnsafeRawPointer?) -> Float {
-    getSettings(contextPtr).exposure
-}
-
-@_cdecl("MCERendererSetExposure")
-public func MCERendererSetExposure(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
-    updateSettings(contextPtr) { settings in
-        settings.exposure = value
-    }
-}
-
 @_cdecl("MCERendererGetGamma")
 public func MCERendererGetGamma(_ contextPtr: UnsafeRawPointer?) -> Float {
     getSettings(contextPtr).gamma
@@ -192,6 +159,29 @@ public func MCERendererSetGamma(_ contextPtr: UnsafeRawPointer?, _ value: Float)
     updateSettings(contextPtr) { settings in
         settings.gamma = value
     }
+}
+
+@_cdecl("MCERendererGetSceneMSAASampleCount")
+public func MCERendererGetSceneMSAASampleCount(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    UInt32(getPreferences(contextPtr)?.sceneMSAASampleCount ?? 4)
+}
+
+@_cdecl("MCERendererGetMaxSceneMSAASampleCount")
+public func MCERendererGetMaxSceneMSAASampleCount(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    guard let engineContext = resolveEngineContext(contextPtr) else { return 1 }
+    if engineContext.device.supportsTextureSampleCount(8) {
+        return 8
+    }
+    if engineContext.device.supportsTextureSampleCount(4) {
+        return 4
+    }
+    return 1
+}
+
+@_cdecl("MCERendererSetSceneMSAASampleCount")
+public func MCERendererSetSceneMSAASampleCount(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    guard let engineContext = resolveEngineContext(contextPtr) else { return }
+    engineContext.preferences.sceneMSAASampleCount = normalizedSceneMSAASampleCount(engineContext, requested: value)
 }
 
 @_cdecl("MCERendererGetIBLEnabled")
@@ -367,6 +357,189 @@ public func MCERendererSetShadingDebugMode(_ contextPtr: UnsafeRawPointer?, _ va
     }
 }
 
+@_cdecl("MCERendererGetSSAOEnabled")
+public func MCERendererGetSSAOEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).ssaoEnabled
+}
+
+// Deprecated compatibility aliases retained for older callers still using SSAO naming.
+// New code should use the AO* entry points above instead of extending this legacy surface.
+@_cdecl("MCERendererSetSSAOEnabled")
+public func MCERendererSetSSAOEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOEnabled(value != 0)
+    }
+}
+
+@_cdecl("MCERendererGetAOEnabled")
+public func MCERendererGetAOEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).isAOEnabled ? 1 : 0
+}
+
+@_cdecl("MCERendererSetAOEnabled")
+public func MCERendererSetAOEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOEnabled(value != 0)
+    }
+}
+
+@_cdecl("MCERendererGetAOMethod")
+public func MCERendererGetAOMethod(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).aoMethod.rawValue
+}
+
+@_cdecl("MCERendererSetAOMethod")
+public func MCERendererSetAOMethod(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.aoMethod = AOMethod(rawValue: value) ?? .sao
+    }
+}
+
+@_cdecl("MCERendererGetAOQuality")
+public func MCERendererGetAOQuality(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).aoQuality.rawValue
+}
+
+@_cdecl("MCERendererSetAOQuality")
+public func MCERendererSetAOQuality(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.applyAOQuality(AOQualityPreset(rawValue: value) ?? .high)
+    }
+}
+
+@_cdecl("MCERendererGetSSAORadius")
+public func MCERendererGetSSAORadius(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoRadius
+}
+
+@_cdecl("MCERendererSetSSAORadius")
+public func MCERendererSetSSAORadius(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAORadius(value)
+    }
+}
+
+@_cdecl("MCERendererGetAORadius")
+public func MCERendererGetAORadius(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoRadius
+}
+
+@_cdecl("MCERendererSetAORadius")
+public func MCERendererSetAORadius(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAORadius(value)
+    }
+}
+
+@_cdecl("MCERendererGetSSAOIntensity")
+public func MCERendererGetSSAOIntensity(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoIntensity
+}
+
+@_cdecl("MCERendererSetSSAOIntensity")
+public func MCERendererSetSSAOIntensity(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOIntensity(value)
+    }
+}
+
+@_cdecl("MCERendererGetAOIntensity")
+public func MCERendererGetAOIntensity(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoIntensity
+}
+
+@_cdecl("MCERendererSetAOIntensity")
+public func MCERendererSetAOIntensity(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOIntensity(value)
+    }
+}
+
+@_cdecl("MCERendererGetSSAOPower")
+public func MCERendererGetSSAOPower(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoPower
+}
+
+@_cdecl("MCERendererSetSSAOPower")
+public func MCERendererSetSSAOPower(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOPower(value)
+    }
+}
+
+@_cdecl("MCERendererGetAOPower")
+public func MCERendererGetAOPower(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoPower
+}
+
+@_cdecl("MCERendererSetAOPower")
+public func MCERendererSetAOPower(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOPower(value)
+    }
+}
+
+@_cdecl("MCERendererGetSSAOBias")
+public func MCERendererGetSSAOBias(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoBias
+}
+
+@_cdecl("MCERendererSetSSAOBias")
+public func MCERendererSetSSAOBias(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOBias(value)
+    }
+}
+
+@_cdecl("MCERendererGetAOBias")
+public func MCERendererGetAOBias(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoBias
+}
+
+@_cdecl("MCERendererSetAOBias")
+public func MCERendererSetAOBias(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOBias(value)
+    }
+}
+
+@_cdecl("MCERendererGetSSAOThickness")
+public func MCERendererGetSSAOThickness(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoThickness
+}
+
+@_cdecl("MCERendererSetSSAOThickness")
+public func MCERendererSetSSAOThickness(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    _ = contextPtr
+    _ = value
+    // Deprecated compatibility stub.
+    // Thickness belonged to an older AO path and no longer affects active SAO rendering.
+}
+
+@_cdecl("MCERendererGetSSAOBlurSharpness")
+public func MCERendererGetSSAOBlurSharpness(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoBlurSharpness
+}
+
+@_cdecl("MCERendererSetSSAOBlurSharpness")
+public func MCERendererSetSSAOBlurSharpness(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOSharpness(value)
+    }
+}
+
+@_cdecl("MCERendererGetAOSharpness")
+public func MCERendererGetAOSharpness(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).ssaoBlurSharpness
+}
+
+@_cdecl("MCERendererSetAOSharpness")
+public func MCERendererSetAOSharpness(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setAOSharpness(value)
+    }
+}
+
 @_cdecl("MCERendererGetIBLSpecularLodExponent")
 public func MCERendererGetIBLSpecularLodExponent(_ contextPtr: UnsafeRawPointer?) -> Float {
     getSettings(contextPtr).iblSpecularLodExponent
@@ -448,6 +621,99 @@ public func MCERendererGetNormalMapMipBiasGrazing(_ contextPtr: UnsafeRawPointer
 public func MCERendererSetNormalMapMipBiasGrazing(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
     updateSettings(contextPtr) { settings in
         settings.normalMapMipBiasGrazing = max(0.0, value)
+    }
+}
+
+@_cdecl("MCERendererGetHeightFogEnabled")
+public func MCERendererGetHeightFogEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).heightFogEnabled
+}
+
+@_cdecl("MCERendererSetHeightFogEnabled")
+public func MCERendererSetHeightFogEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setHeightFogEnabled(value != 0)
+    }
+}
+
+@_cdecl("MCERendererGetHeightFogBaseHeight")
+public func MCERendererGetHeightFogBaseHeight(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).heightFogBaseHeight
+}
+
+@_cdecl("MCERendererSetHeightFogBaseHeight")
+public func MCERendererSetHeightFogBaseHeight(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.heightFogBaseHeight = value
+    }
+}
+
+@_cdecl("MCERendererGetHeightFogDensity")
+public func MCERendererGetHeightFogDensity(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).heightFogDensity
+}
+
+@_cdecl("MCERendererSetHeightFogDensity")
+public func MCERendererSetHeightFogDensity(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.heightFogDensity = max(0.0, value)
+    }
+}
+
+@_cdecl("MCERendererGetHeightFogHeightFalloff")
+public func MCERendererGetHeightFogHeightFalloff(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).heightFogHeightFalloff
+}
+
+@_cdecl("MCERendererSetHeightFogHeightFalloff")
+public func MCERendererSetHeightFogHeightFalloff(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.heightFogHeightFalloff = max(0.0, value)
+    }
+}
+
+@_cdecl("MCERendererGetHeightFogStartDistance")
+public func MCERendererGetHeightFogStartDistance(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).heightFogStartDistance
+}
+
+@_cdecl("MCERendererSetHeightFogStartDistance")
+public func MCERendererSetHeightFogStartDistance(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.heightFogStartDistance = max(0.0, value)
+    }
+}
+
+@_cdecl("MCERendererGetHeightFogDistanceDensity")
+public func MCERendererGetHeightFogDistanceDensity(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).heightFogDistanceDensity
+}
+
+@_cdecl("MCERendererSetHeightFogDistanceDensity")
+public func MCERendererSetHeightFogDistanceDensity(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.heightFogDistanceDensity = max(0.0, value)
+    }
+}
+
+@_cdecl("MCERendererGetHeightFogColor")
+public func MCERendererGetHeightFogColor(_ contextPtr: UnsafeRawPointer?,
+                                         _ r: UnsafeMutablePointer<Float>?,
+                                         _ g: UnsafeMutablePointer<Float>?,
+                                         _ b: UnsafeMutablePointer<Float>?) {
+    let color = getSettings(contextPtr).heightFogColor
+    r?.pointee = color.x
+    g?.pointee = color.y
+    b?.pointee = color.z
+}
+
+@_cdecl("MCERendererSetHeightFogColor")
+public func MCERendererSetHeightFogColor(_ contextPtr: UnsafeRawPointer?,
+                                         _ r: Float,
+                                         _ g: Float,
+                                         _ b: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.heightFogColor = SIMD3<Float>(r, g, b)
     }
 }
 
@@ -677,7 +943,7 @@ public func MCERendererGetShadowDepthBias(_ contextPtr: UnsafeRawPointer?) -> Fl
 @_cdecl("MCERendererSetShadowDepthBias")
 public func MCERendererSetShadowDepthBias(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
     updateSettings(contextPtr) { settings in
-        settings.shadows.depthBias = max(0.0, value)
+        settings.shadows.depthBias = max(0.0, min(0.003, value))
     }
 }
 
@@ -689,7 +955,7 @@ public func MCERendererGetShadowNormalBias(_ contextPtr: UnsafeRawPointer?) -> F
 @_cdecl("MCERendererSetShadowNormalBias")
 public func MCERendererSetShadowNormalBias(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
     updateSettings(contextPtr) { settings in
-        settings.shadows.normalBias = max(0.0, value)
+        settings.shadows.normalBias = max(0.0, min(0.08, value))
     }
 }
 

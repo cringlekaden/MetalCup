@@ -11,11 +11,14 @@ struct RenderPlan {
     let cullingDepthSource: ForwardPlusCullingDepthSource
     let cullingDepthBinding: RenderResourceHandle?
     let sceneDepthLoadAction: MTLLoadAction
+    let heightFogEnabled: Bool
+    let autoExposureEnabled: Bool
     let bloomEnabled: Bool
+    let ssaoEnabled: Bool
     let pickingEnabled: Bool
     let showEditorOverlays: Bool
     let gridEnabled: Bool
-    let debugDrawEnabled: Bool
+    let worldDebugEnabled: Bool
 
     static func unplanned(viewSignature: UInt64) -> RenderPlan {
         RenderPlan(
@@ -25,11 +28,14 @@ struct RenderPlan {
             cullingDepthSource: .none,
             cullingDepthBinding: nil,
             sceneDepthLoadAction: .clear,
+            heightFogEnabled: false,
+            autoExposureEnabled: false,
             bloomEnabled: false,
+            ssaoEnabled: false,
             pickingEnabled: false,
             showEditorOverlays: false,
             gridEnabled: false,
-            debugDrawEnabled: false
+            worldDebugEnabled: false
         )
     }
 
@@ -98,12 +104,18 @@ final class RenderGraph {
     private enum PassName {
         static let depthPrepass = "DepthPrepassPass"
         static let cullingDepthFallback = "CullingDepthFallbackPass"
+        static let aoNormals = "AONormalsPass"
+        static let saoEvaluate = "SAOEvaluatePass"
+        static let aoBlur = "AOBlurPass"
         static let forwardPlusTileBin = "ForwardPlusTileBinPass"
         static let lightCulling = "LightCullingPass"
-        static let scene = "ScenePass"
+        static let opaqueScene = "OpaqueScenePass"
+        static let transparentScene = "TransparentScenePass"
+        static let heightFog = "HeightFogPass"
         static let picking = "PickingPass"
         static let gridOverlay = "GridOverlayPass"
         static let debugDraw = "DebugDrawPass"
+        static let autoExposure = "AutoExposurePass"
         static let bloomExtract = "BloomExtractPass"
         static let bloomBlur = "BloomBlurPass"
     }
@@ -113,13 +125,20 @@ final class RenderGraph {
             ShadowPass(),
             DepthPrepassPass(),
             CullingDepthFallbackPass(),
+            SceneNormalsPass(),
+            AONormalsPass(),
+            SAOEvaluatePass(),
+            AOBlurPass(),
             ForwardPlusTileBinPass(),
             LightCullingPass(),
-            ScenePass(),
+            OpaqueScenePass(),
+            TransparentScenePass(),
+            HeightFogPass(),
             GridOverlayPass(),
             DebugDrawPass(),
             PickingPass(),
             SelectionOutlinePass(),
+            AutoExposurePass(),
             BloomExtractPass(),
             BloomBlurPass(),
             FinalCompositePass()
@@ -166,6 +185,7 @@ final class RenderGraph {
         var enabledPassNames = Set(passes.map(\.name))
         let depthPrepassEnabled = frame.frameContext.useDepthPrepass()
         let showEditorOverlays = RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
+        let requiresSingleSampleDepth = true
         if depthPrepassEnabled {
             enabledPassNames.remove(PassName.cullingDepthFallback)
         } else {
@@ -181,9 +201,23 @@ final class RenderGraph {
         }
 
         let bloomEnabled = settings.bloomEnabled != 0
+        let ssaoEnabled = settings.ssaoEnabled != 0
+        let heightFogEnabled = settings.heightFogEnabled != 0
+        let autoExposureEnabled = frame.sceneView.exposureSettings.autoExposureEnabled != 0
+        if !heightFogEnabled {
+            enabledPassNames.remove(PassName.heightFog)
+        }
+        if !autoExposureEnabled {
+            enabledPassNames.remove(PassName.autoExposure)
+        }
         if !bloomEnabled {
             enabledPassNames.remove(PassName.bloomExtract)
             enabledPassNames.remove(PassName.bloomBlur)
+        }
+        if !ssaoEnabled {
+            enabledPassNames.remove(PassName.aoNormals)
+            enabledPassNames.remove(PassName.saoEvaluate)
+            enabledPassNames.remove(PassName.aoBlur)
         }
 
         let gridEnabled = settings.gridEnabled != 0 && showEditorOverlays
@@ -191,9 +225,13 @@ final class RenderGraph {
             enabledPassNames.remove(PassName.gridOverlay)
         }
 
-        let debugDrawEnabled = frame.engineContext.physicsSettings.debugDrawEnabled
+        let debugDraw = frame.engineContext.debugDraw
+        let hasWorldDebugPrimitives = debugDraw.hasWorldDebugPrimitives()
+        // Phase 0 decoupling: schedule non-grid world overlays from actual queued debug geometry
+        // plus view intent, not from physics debug settings or grid visibility.
+        let worldDebugEnabled = hasWorldDebugPrimitives
             && (showEditorOverlays || (frame.engineContext.physicsSettings.debugDrawInPlay && !frame.sceneView.isEditorView))
-        if !debugDrawEnabled {
+        if !worldDebugEnabled {
             enabledPassNames.remove(PassName.debugDraw)
         }
 
@@ -201,9 +239,9 @@ final class RenderGraph {
         var cullingDepthSource: ForwardPlusCullingDepthSource = .none
         var cullingDepthBinding: RenderResourceHandle?
         if forwardPlusEnabled {
-            if frame.resourceRegistry.texture(.baseDepth) == nil {
+            if frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) == nil {
 #if DEBUG
-                let message = "Forward+ planning requires baseDepth for view \(frame.viewSignature)."
+                let message = "Forward+ planning requires scene.depth for view \(frame.viewSignature)."
                 assertionFailure(message)
                 fatalError(message)
 #else
@@ -220,6 +258,10 @@ final class RenderGraph {
         if !forwardPlusEnabled {
             enabledPassNames.remove(PassName.forwardPlusTileBin)
             enabledPassNames.remove(PassName.lightCulling)
+        }
+
+        if !requiresSingleSampleDepth {
+            enabledPassNames.remove(PassName.depthPrepass)
             enabledPassNames.remove(PassName.cullingDepthFallback)
         }
 
@@ -230,11 +272,14 @@ final class RenderGraph {
             cullingDepthSource: cullingDepthSource,
             cullingDepthBinding: cullingDepthBinding,
             sceneDepthLoadAction: depthPrepassEnabled ? .load : .clear,
+            heightFogEnabled: heightFogEnabled,
+            autoExposureEnabled: autoExposureEnabled,
             bloomEnabled: bloomEnabled,
+            ssaoEnabled: ssaoEnabled,
             pickingEnabled: pickingEnabled,
             showEditorOverlays: showEditorOverlays,
             gridEnabled: gridEnabled,
-            debugDrawEnabled: debugDrawEnabled
+            worldDebugEnabled: worldDebugEnabled
         )
     }
 
@@ -250,7 +295,7 @@ final class RenderGraph {
             }
         }()
         guard shouldPublishDepthSource,
-              let depth = frame.resourceRegistry.texture(.baseDepth) else { return }
+              let depth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) else { return }
         frame.resourceRegistry.registerNamedTexture(
             RenderNamedResourceKey.forwardPlusCullingDepth,
             texture: depth,

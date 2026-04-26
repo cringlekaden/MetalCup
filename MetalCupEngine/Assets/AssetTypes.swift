@@ -189,6 +189,12 @@ public enum AnimationGraphParameterType: String, Codable {
     case trigger
 }
 
+public enum AnimationGraphLocalVariableType: String, Codable {
+    case float
+    case bool
+    case int
+}
+
 public struct AnimationGraphParameterDefinition: Codable {
     public var name: String
     public var type: AnimationGraphParameterType
@@ -198,6 +204,26 @@ public struct AnimationGraphParameterDefinition: Codable {
 
     public init(name: String,
                 type: AnimationGraphParameterType,
+                defaultFloat: Float = 0.0,
+                defaultBool: Bool = false,
+                defaultInt: Int = 0) {
+        self.name = name
+        self.type = type
+        self.defaultFloat = defaultFloat
+        self.defaultBool = defaultBool
+        self.defaultInt = defaultInt
+    }
+}
+
+public struct AnimationGraphLocalVariableDefinition: Codable {
+    public var name: String
+    public var type: AnimationGraphLocalVariableType
+    public var defaultFloat: Float
+    public var defaultBool: Bool
+    public var defaultInt: Int
+
+    public init(name: String,
+                type: AnimationGraphLocalVariableType,
                 defaultFloat: Float = 0.0,
                 defaultBool: Bool = false,
                 defaultInt: Int = 0) {
@@ -220,7 +246,14 @@ public enum AnimationGraphNodeType: String, Codable {
     case stateMachine
     case parameterFloat
     case parameterBool
+    case parameterInt
     case parameterTrigger
+    case localFloat
+    case localBool
+    case localInt
+    case setLocalFloat
+    case setLocalBool
+    case setLocalInt
     case select
     case poseCache
     case aimOffset
@@ -233,6 +266,86 @@ public enum AnimationGraphNodeType: String, Codable {
     case state
     case transition
     case parameter
+}
+
+public struct AnimationGraphTransitionGraphNodeDefinition: Codable {
+    public var id: UUID
+    public var type: String
+    public var title: String
+    public var position: SIMD2<Float>
+    public var parameterName: String?
+    public var floatValue: Float?
+    public var boolValue: Bool?
+    public var synchronizeValue: Bool?
+
+    public init(id: UUID = UUID(),
+                type: String,
+                title: String,
+                position: SIMD2<Float> = .zero,
+                parameterName: String? = nil,
+                floatValue: Float? = nil,
+                boolValue: Bool? = nil,
+                synchronizeValue: Bool? = nil) {
+        self.id = id
+        self.type = type
+        self.title = title
+        self.position = position
+        self.parameterName = parameterName
+        self.floatValue = floatValue
+        self.boolValue = boolValue
+        self.synchronizeValue = synchronizeValue
+    }
+}
+
+public struct AnimationGraphTransitionGraphLinkDefinition: Codable {
+    public var id: UUID
+    public var fromNodeID: UUID
+    public var fromSlotIndex: Int
+    public var toNodeID: UUID
+    public var toSlotIndex: Int
+
+    public init(id: UUID = UUID(),
+                fromNodeID: UUID,
+                fromSlotIndex: Int,
+                toNodeID: UUID,
+                toSlotIndex: Int) {
+        self.id = id
+        self.fromNodeID = fromNodeID
+        self.fromSlotIndex = fromSlotIndex
+        self.toNodeID = toNodeID
+        self.toSlotIndex = toSlotIndex
+    }
+}
+
+public struct AnimationGraphTransitionGraphDefinition: Codable {
+    public var id: UUID
+    public var outputNodeID: UUID?
+    public var nodes: [AnimationGraphTransitionGraphNodeDefinition]
+    public var links: [AnimationGraphTransitionGraphLinkDefinition]
+
+    public init(id: UUID = UUID(),
+                outputNodeID: UUID? = nil,
+                nodes: [AnimationGraphTransitionGraphNodeDefinition] = [],
+                links: [AnimationGraphTransitionGraphLinkDefinition] = []) {
+        self.id = id
+        self.outputNodeID = outputNodeID
+        self.nodes = nodes
+        self.links = links
+    }
+}
+
+public struct AnimationGraphTransitionGraphReference: Codable {
+    public var transitionGraphID: UUID?
+    public var graphHandle: AnimationGraphHandle?
+    public var inlineGraph: AnimationGraphTransitionGraphDefinition?
+
+    public init(transitionGraphID: UUID? = nil,
+                graphHandle: AnimationGraphHandle? = nil,
+                inlineGraph: AnimationGraphTransitionGraphDefinition? = nil) {
+        self.transitionGraphID = transitionGraphID
+        self.graphHandle = graphHandle
+        self.inlineGraph = inlineGraph
+    }
 }
 
 public struct AnimationGraphConditionDefinition: Codable {
@@ -262,19 +375,22 @@ public struct AnimationGraphTransitionDefinition: Codable {
     public var durationSeconds: Float
     public var minimumNormalizedTime: Float?
     public var conditions: [AnimationGraphConditionDefinition]
+    public var transitionGraph: AnimationGraphTransitionGraphReference?
 
     public init(id: UUID = UUID(),
                 fromStateID: UUID,
                 toStateID: UUID,
                 durationSeconds: Float = 0.15,
                 minimumNormalizedTime: Float? = nil,
-                conditions: [AnimationGraphConditionDefinition] = []) {
+                conditions: [AnimationGraphConditionDefinition] = [],
+                transitionGraph: AnimationGraphTransitionGraphReference? = nil) {
         self.id = id
         self.fromStateID = fromStateID
         self.toStateID = toStateID
         self.durationSeconds = durationSeconds
         self.minimumNormalizedTime = minimumNormalizedTime
         self.conditions = conditions
+        self.transitionGraph = transitionGraph
     }
 }
 
@@ -444,6 +560,7 @@ public struct AnimationGraphAsset {
     public var sourcePath: String
     public var outputNodeID: UUID?
     public var parameters: [AnimationGraphParameterDefinition]
+    public var localVariables: [AnimationGraphLocalVariableDefinition]
     public var nodes: [AnimationGraphNodeDefinition]
     public var links: [AnimationGraphLinkDefinition]
 
@@ -452,6 +569,7 @@ public struct AnimationGraphAsset {
                 sourcePath: String,
                 outputNodeID: UUID? = nil,
                 parameters: [AnimationGraphParameterDefinition] = [],
+                localVariables: [AnimationGraphLocalVariableDefinition] = [],
                 nodes: [AnimationGraphNodeDefinition] = [],
                 links: [AnimationGraphLinkDefinition] = []) {
         self.handle = handle
@@ -459,6 +577,7 @@ public struct AnimationGraphAsset {
         self.sourcePath = sourcePath
         self.outputNodeID = outputNodeID
         self.parameters = parameters
+        self.localVariables = localVariables
         self.nodes = nodes
         self.links = links
     }
@@ -487,6 +606,15 @@ public struct CompiledAnimationGraph {
         public let stateMachine: AnimationGraphStateMachineScaffold?
     }
 
+    public struct LocalVariable {
+        public let index: Int
+        public let name: String
+        public let type: AnimationGraphLocalVariableType
+        public let defaultFloat: Float
+        public let defaultBool: Bool
+        public let defaultInt: Int
+    }
+
     public struct Link {
         public let id: UUID
         public let fromNodeIndex: Int
@@ -500,6 +628,8 @@ public struct CompiledAnimationGraph {
     public let outputNodeIndex: Int
     public let parameters: [Parameter]
     public let parameterIndexByName: [String: Int]
+    public let localVariables: [LocalVariable]
+    public let localVariableIndexByName: [String: Int]
     public let nodes: [Node]
     public let links: [Link]
     public let evaluationOrder: [Int]
@@ -511,6 +641,34 @@ public enum AnimationGraphCompileError: Error {
 }
 
 public enum AnimationGraphCompiler {
+    private static func isScalarNodeType(_ type: AnimationGraphNodeType) -> Bool {
+        switch type {
+        case .parameterFloat,
+             .parameterBool,
+             .parameterInt,
+             .parameterTrigger,
+             .localFloat,
+             .localBool,
+             .localInt,
+             .setLocalFloat,
+             .setLocalBool,
+             .setLocalInt,
+             .parameter:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isParameterNodeType(_ type: AnimationGraphNodeType) -> Bool {
+        switch type {
+        case .parameterFloat, .parameterBool, .parameterInt, .parameterTrigger, .parameter:
+            return true
+        default:
+            return false
+        }
+    }
+
     private static func normalizedConditionOperator(_ rawOperator: String) -> String {
         let normalized = rawOperator
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -550,6 +708,69 @@ public enum AnimationGraphCompiler {
         }
     }
 
+    private static func normalizedTransitionGraphNodeType(_ rawType: String) -> String {
+        rawType
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: " ", with: "")
+    }
+
+    private static func transitionGraphNodeTypeIsSupported(_ normalizedType: String) -> Bool {
+        switch normalizedType {
+        case "floatconstant",
+             "boolconstant",
+             "comparefloatgreater",
+             "comparefloatless",
+             "comparefloatequal",
+             "and",
+             "or",
+             "not",
+             "transitionoutput",
+             "parameterfloat",
+             "parameterbool",
+             "parameterint",
+             "parametertrigger",
+             "parameter",
+             "localfloat",
+             "localbool",
+             "localint",
+             "setlocalfloat",
+             "setlocalbool",
+             "setlocalint":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func transitionGraphNodeProducesScalar(_ normalizedType: String) -> Bool {
+        switch normalizedType {
+        case "floatconstant",
+             "boolconstant",
+             "comparefloatgreater",
+             "comparefloatless",
+             "comparefloatequal",
+             "and",
+             "or",
+             "not",
+             "parameterfloat",
+             "parameterbool",
+             "parameterint",
+             "parametertrigger",
+             "parameter",
+             "localfloat",
+             "localbool",
+             "localint",
+             "setlocalfloat",
+             "setlocalbool",
+             "setlocalint":
+            return true
+        default:
+            return false
+        }
+    }
+
     public static func compile(asset: AnimationGraphAsset,
                                clipExists: (AssetHandle) -> Bool) -> Result<CompiledAnimationGraph, AnimationGraphCompileError> {
         var diagnostics: [String] = []
@@ -580,6 +801,37 @@ public enum AnimationGraphCompiler {
         }
         let parameterTypeByName = Dictionary(uniqueKeysWithValues: compiledParameters.map { ($0.name, $0.type) })
 
+        var localVariableNameSet = Set<String>()
+        var compiledLocalVariables: [CompiledAnimationGraph.LocalVariable] = []
+        compiledLocalVariables.reserveCapacity(asset.localVariables.count)
+        for (index, localVariable) in asset.localVariables.enumerated() {
+            let name = localVariable.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.isEmpty {
+                diagnostics.append("LocalVariable[\(index)] has an empty name.")
+                continue
+            }
+            if parameterNameSet.contains(name) {
+                diagnostics.append("LocalVariable '\(name)' conflicts with parameter name.")
+                continue
+            }
+            if localVariableNameSet.contains(name) {
+                diagnostics.append("Duplicate local variable name '\(name)'.")
+                continue
+            }
+            localVariableNameSet.insert(name)
+            compiledLocalVariables.append(
+                CompiledAnimationGraph.LocalVariable(
+                    index: compiledLocalVariables.count,
+                    name: name,
+                    type: localVariable.type,
+                    defaultFloat: localVariable.defaultFloat,
+                    defaultBool: localVariable.defaultBool,
+                    defaultInt: localVariable.defaultInt
+                )
+            )
+        }
+        let localVariableTypeByName = Dictionary(uniqueKeysWithValues: compiledLocalVariables.map { ($0.name, $0.type) })
+
         guard !asset.nodes.isEmpty else {
             diagnostics.append("Graph has no nodes.")
             return .failure(.invalidGraph(diagnostics))
@@ -608,9 +860,6 @@ public enum AnimationGraphCompiler {
                     diagnostics.append("Blend1D node '\(node.title)' is missing blend data.")
                     continue
                 }
-                if blend.parameterName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    diagnostics.append("Blend1D node '\(node.title)' has empty parameter name.")
-                }
                 if blend.samples.isEmpty {
                     diagnostics.append("Blend1D node '\(node.title)' has no samples.")
                 }
@@ -625,10 +874,6 @@ public enum AnimationGraphCompiler {
                     diagnostics.append("Blend2D node '\(node.title)' is missing blend data.")
                     continue
                 }
-                if blend.parameterXName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                    blend.parameterYName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    diagnostics.append("Blend2D node '\(node.title)' has empty parameter name(s).")
-                }
                 if blend.samples.isEmpty {
                     diagnostics.append("Blend2D node '\(node.title)' has no samples.")
                 }
@@ -637,6 +882,60 @@ public enum AnimationGraphCompiler {
                         diagnostics.append("Blend2D node '\(node.title)' references missing clip handle '\(sample.clipHandle.rawValue.uuidString)'.")
                     }
                     referencedClipHandles.insert(sample.clipHandle)
+                }
+            } else if node.type == .localFloat ||
+                        node.type == .localBool ||
+                        node.type == .localInt {
+                let localName = node.parameterName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if localName.isEmpty {
+                    diagnostics.append("Local variable node '\(node.title)' is missing local variable name.")
+                } else if !localVariableNameSet.contains(localName) {
+                    diagnostics.append("Local variable node '\(node.title)' references unknown local variable '\(localName)'.")
+                } else if let localType = localVariableTypeByName[localName] {
+                    switch (node.type, localType) {
+                    case (.localFloat, .float),
+                         (.localBool, .bool),
+                         (.localInt, .int):
+                        break
+                    default:
+                        diagnostics.append("Local variable node '\(node.title)' type '\(node.type.rawValue)' does not match local variable '\(localName)' type '\(localType.rawValue)'.")
+                    }
+                }
+            } else if node.type == .setLocalFloat ||
+                        node.type == .setLocalBool ||
+                        node.type == .setLocalInt {
+                let localName = node.parameterName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if localName.isEmpty {
+                    diagnostics.append("Set local node '\(node.title)' is missing local variable name.")
+                } else if !localVariableNameSet.contains(localName) {
+                    diagnostics.append("Set local node '\(node.title)' references unknown local variable '\(localName)'.")
+                } else if let localType = localVariableTypeByName[localName] {
+                    switch (node.type, localType) {
+                    case (.setLocalFloat, .float),
+                         (.setLocalBool, .bool),
+                         (.setLocalInt, .int):
+                        break
+                    default:
+                        diagnostics.append("Set local node '\(node.title)' type '\(node.type.rawValue)' does not match local variable '\(localName)' type '\(localType.rawValue)'.")
+                    }
+                }
+            } else if isParameterNodeType(node.type) {
+                let parameterName = node.parameterName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if parameterName.isEmpty {
+                    diagnostics.append("Parameter node '\(node.title)' is missing parameter name.")
+                } else if !parameterNameSet.contains(parameterName) {
+                    diagnostics.append("Parameter node '\(node.title)' references unknown parameter '\(parameterName)'.")
+                } else if let parameterType = parameterTypeByName[parameterName] {
+                    switch (node.type, parameterType) {
+                    case (.parameterFloat, .float),
+                         (.parameterBool, .bool),
+                         (.parameterInt, .int),
+                         (.parameterTrigger, .trigger),
+                         (.parameter, _):
+                        break
+                    default:
+                        diagnostics.append("Parameter node '\(node.title)' type '\(node.type.rawValue)' does not match parameter '\(parameterName)' type '\(parameterType.rawValue)'.")
+                    }
                 }
             } else if node.type == .stateMachine {
                 guard let machine = node.stateMachine else {
@@ -709,6 +1008,97 @@ public enum AnimationGraphCompiler {
                     if let minimumNormalizedTime = transition.minimumNormalizedTime,
                        minimumNormalizedTime < 0.0 || minimumNormalizedTime > 1.0 {
                         diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' has minimumNormalizedTime outside [0, 1].")
+                    }
+                    if let transitionGraph = transition.transitionGraph {
+                        if transitionGraph.transitionGraphID == nil &&
+                            transitionGraph.graphHandle == nil &&
+                            transitionGraph.inlineGraph == nil {
+                            diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' has empty transition graph reference.")
+                        }
+                        if let inlineGraph = transitionGraph.inlineGraph {
+                            if let requestedID = transitionGraph.transitionGraphID,
+                               requestedID != inlineGraph.id {
+                                diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' has transitionGraphID that does not match inline graph ID.")
+                            }
+                            var inlineNodeIDs = Set<UUID>()
+                            var normalizedTypeByNodeID: [UUID: String] = [:]
+                            var transitionOutputCount = 0
+                            for inlineNode in inlineGraph.nodes {
+                                if !inlineNodeIDs.insert(inlineNode.id).inserted {
+                                    diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph has duplicate node ID '\(inlineNode.id.uuidString)'.")
+                                }
+                                let normalizedType = normalizedTransitionGraphNodeType(inlineNode.type)
+                                normalizedTypeByNodeID[inlineNode.id] = normalizedType
+                                if !transitionGraphNodeTypeIsSupported(normalizedType) {
+                                    diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph node '\(inlineNode.title)' has unsupported type '\(inlineNode.type)'.")
+                                }
+                                switch normalizedType {
+                                case "parameterfloat",
+                                     "parameterbool",
+                                     "parameterint",
+                                     "parametertrigger",
+                                     "parameter",
+                                     "localfloat",
+                                     "localbool",
+                                     "localint",
+                                     "setlocalfloat",
+                                     "setlocalbool",
+                                     "setlocalint":
+                                    let parameterName = inlineNode.parameterName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                                    if parameterName.isEmpty {
+                                        diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph node '\(inlineNode.title)' requires parameterName.")
+                                    } else {
+                                        switch normalizedType {
+                                        case "parameterfloat", "parameterbool", "parameterint", "parametertrigger", "parameter":
+                                            if !parameterNameSet.contains(parameterName) {
+                                                diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph parameter node '\(inlineNode.title)' references unknown parameter '\(parameterName)'.")
+                                            }
+                                        case "localfloat", "localbool", "localint", "setlocalfloat", "setlocalbool", "setlocalint":
+                                            if !localVariableNameSet.contains(parameterName) {
+                                                diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph local node '\(inlineNode.title)' references unknown local variable '\(parameterName)'.")
+                                            }
+                                        default:
+                                            break
+                                        }
+                                    }
+                                case "transitionoutput":
+                                    transitionOutputCount += 1
+                                default:
+                                    break
+                                }
+                            }
+                            if let outputNodeID = inlineGraph.outputNodeID,
+                               !inlineNodeIDs.contains(outputNodeID) {
+                                diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph output node does not exist.")
+                            }
+                            if transitionOutputCount == 0 {
+                                diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph is missing transitionOutput node.")
+                            } else if transitionOutputCount > 1 {
+                                diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph has multiple transitionOutput nodes.")
+                            }
+                            if let outputNodeID = inlineGraph.outputNodeID,
+                               let outputType = normalizedTypeByNodeID[outputNodeID],
+                               outputType != "transitionoutput" {
+                                diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph output node must be type transitionOutput.")
+                            }
+                            for inlineLink in inlineGraph.links {
+                                if !inlineNodeIDs.contains(inlineLink.fromNodeID) || !inlineNodeIDs.contains(inlineLink.toNodeID) {
+                                    diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph link '\(inlineLink.id.uuidString)' references unknown node.")
+                                }
+                                if inlineLink.fromSlotIndex < 0 || inlineLink.toSlotIndex < 0 {
+                                    diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph link '\(inlineLink.id.uuidString)' uses negative slot index.")
+                                }
+                                if let sourceType = normalizedTypeByNodeID[inlineLink.fromNodeID],
+                                   !transitionGraphNodeProducesScalar(sourceType) {
+                                    diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph link '\(inlineLink.id.uuidString)' source node '\(inlineLink.fromNodeID.uuidString)' does not output a scalar value.")
+                                }
+                                if let destinationType = normalizedTypeByNodeID[inlineLink.toNodeID],
+                                   destinationType == "transitionoutput",
+                                   inlineLink.toSlotIndex > 2 {
+                                    diagnostics.append("Transition '\(transition.id.uuidString)' in StateMachine '\(node.title)' transition graph transitionOutput node only supports slots 0(Transition),1(Synchronize),2(Duration).")
+                                }
+                            }
+                        }
                     }
                     for condition in transition.conditions {
                         let parameterName = condition.parameterName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -788,11 +1178,58 @@ public enum AnimationGraphCompiler {
             diagnostics.append("OutputPose node has multiple incoming source links; exactly one is required.")
         }
 
+        for node in compiledNodes {
+            if node.type == .blend1D, let blend = node.blend1D {
+                let fallbackName = blend.parameterName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let hasParameterInputLink = compiledLinks.contains { link in
+                    link.toNodeIndex == node.index &&
+                    link.toSlotIndex == 0 &&
+                    isScalarNodeType(compiledNodes[link.fromNodeIndex].type)
+                }
+                if fallbackName.isEmpty && !hasParameterInputLink {
+                    diagnostics.append("Blend1D node '\(node.title)' requires a parameter name or parameter node link on input slot 0.")
+                }
+            } else if node.type == .blend2D, let blend = node.blend2D {
+                let fallbackX = blend.parameterXName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallbackY = blend.parameterYName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let hasXLink = compiledLinks.contains { link in
+                    link.toNodeIndex == node.index &&
+                    link.toSlotIndex == 0 &&
+                    isScalarNodeType(compiledNodes[link.fromNodeIndex].type)
+                }
+                let hasYLink = compiledLinks.contains { link in
+                    link.toNodeIndex == node.index &&
+                    link.toSlotIndex == 1 &&
+                    isScalarNodeType(compiledNodes[link.fromNodeIndex].type)
+                }
+                if fallbackX.isEmpty && !hasXLink {
+                    diagnostics.append("Blend2D node '\(node.title)' requires parameter X name or parameter node link on input slot 0.")
+                }
+                if fallbackY.isEmpty && !hasYLink {
+                    diagnostics.append("Blend2D node '\(node.title)' requires parameter Y name or parameter node link on input slot 1.")
+                }
+            }
+        }
+
+        for node in compiledNodes where node.type == .setLocalFloat || node.type == .setLocalBool || node.type == .setLocalInt {
+            let inputLinks = compiledLinks.filter { $0.toNodeIndex == node.index && $0.toSlotIndex == 0 }
+            if inputLinks.count > 1 {
+                diagnostics.append("Set local node '\(node.title)' has multiple inbound value links on slot 0.")
+            }
+            if let inputLink = inputLinks.first {
+                let sourceNodeType = compiledNodes[inputLink.fromNodeIndex].type
+                if !isScalarNodeType(sourceNodeType) {
+                    diagnostics.append("Set local node '\(node.title)' requires a scalar value input on slot 0.")
+                }
+            }
+        }
+
         if !diagnostics.isEmpty {
             return .failure(.invalidGraph(diagnostics))
         }
 
         let parameterIndexByName = Dictionary(uniqueKeysWithValues: compiledParameters.map { ($0.name, $0.index) })
+        let localVariableIndexByName = Dictionary(uniqueKeysWithValues: compiledLocalVariables.map { ($0.name, $0.index) })
         let evaluationOrder = Array(0..<compiledNodes.count)
         return .success(
             CompiledAnimationGraph(
@@ -801,6 +1238,8 @@ public enum AnimationGraphCompiler {
                 outputNodeIndex: outputNodeIndex,
                 parameters: compiledParameters,
                 parameterIndexByName: parameterIndexByName,
+                localVariables: compiledLocalVariables,
+                localVariableIndexByName: localVariableIndexByName,
                 nodes: compiledNodes,
                 links: compiledLinks,
                 evaluationOrder: evaluationOrder,

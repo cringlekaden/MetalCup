@@ -111,6 +111,46 @@ public struct AnimationGraphAssetDocument: Codable {
         public var defaultInt: Int
     }
 
+    public struct LocalVariableDocument: Codable {
+        public var name: String
+        public var type: String
+        public var defaultFloat: Float
+        public var defaultBool: Bool
+        public var defaultInt: Int
+    }
+
+    public struct TransitionGraphNodeDocument: Codable {
+        public var id: String
+        public var type: String
+        public var title: String
+        public var position: Vector2DTO
+        public var parameterName: String?
+        public var floatValue: Float?
+        public var boolValue: Bool?
+        public var synchronizeValue: Bool?
+    }
+
+    public struct TransitionGraphLinkDocument: Codable {
+        public var id: String
+        public var fromNodeID: String
+        public var fromSlotIndex: Int
+        public var toNodeID: String
+        public var toSlotIndex: Int
+    }
+
+    public struct TransitionGraphDocument: Codable {
+        public var id: String
+        public var outputNodeID: String?
+        public var nodes: [TransitionGraphNodeDocument]
+        public var links: [TransitionGraphLinkDocument]
+    }
+
+    public struct TransitionGraphReferenceDocument: Codable {
+        public var transitionGraphID: String?
+        public var graphHandle: String?
+        public var inlineGraph: TransitionGraphDocument?
+    }
+
     public struct ConditionDocument: Codable {
         public var parameterName: String
         public var op: String
@@ -126,6 +166,7 @@ public struct AnimationGraphAssetDocument: Codable {
         public var durationSeconds: Float
         public var minimumNormalizedTime: Float?
         public var conditions: [ConditionDocument]
+        public var transitionGraph: TransitionGraphReferenceDocument?
     }
 
     public struct StateDocument: Codable {
@@ -201,6 +242,7 @@ public struct AnimationGraphAssetDocument: Codable {
     public var sourcePath: String?
     public var outputNodeID: String?
     public var parameters: [ParameterDocument]
+    public var localVariables: [LocalVariableDocument]
     public var nodes: [NodeDocument]
     public var links: [LinkDocument]
 
@@ -210,6 +252,7 @@ public struct AnimationGraphAssetDocument: Codable {
                 sourcePath: String? = nil,
                 outputNodeID: String? = nil,
                 parameters: [ParameterDocument] = [],
+                localVariables: [LocalVariableDocument] = [],
                 nodes: [NodeDocument] = [],
                 links: [LinkDocument] = []) {
         self.schemaVersion = schemaVersion
@@ -218,8 +261,34 @@ public struct AnimationGraphAssetDocument: Codable {
         self.sourcePath = sourcePath
         self.outputNodeID = outputNodeID
         self.parameters = parameters
+        self.localVariables = localVariables
         self.nodes = nodes
         self.links = links
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case name
+        case sourcePath
+        case outputNodeID
+        case parameters
+        case localVariables
+        case nodes
+        case links
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try container.decodeIfPresent(String.self, forKey: .id)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath)
+        outputNodeID = try container.decodeIfPresent(String.self, forKey: .outputNodeID)
+        parameters = try container.decodeIfPresent([ParameterDocument].self, forKey: .parameters) ?? []
+        localVariables = try container.decodeIfPresent([LocalVariableDocument].self, forKey: .localVariables) ?? []
+        nodes = try container.decodeIfPresent([NodeDocument].self, forKey: .nodes) ?? []
+        links = try container.decodeIfPresent([LinkDocument].self, forKey: .links) ?? []
     }
 }
 
@@ -386,13 +455,24 @@ public enum AnimationGraphAssetSerializer {
             let document = try decoder.decode(AnimationGraphAssetDocument.self, from: data)
             let handle = resolvedHandle(id: document.id, fallback: fallbackHandle)
 
-            let parameters = document.parameters.map { parameter -> AnimationGraphParameterDefinition in
+            var parameters = document.parameters.map { parameter -> AnimationGraphParameterDefinition in
                 AnimationGraphParameterDefinition(
                     name: parameter.name,
                     type: AnimationGraphParameterType(rawValue: parameter.type) ?? .float,
                     defaultFloat: parameter.defaultFloat,
                     defaultBool: parameter.defaultBool,
                     defaultInt: parameter.defaultInt
+                )
+            }
+            ensureCanonicalControllerParameters(in: &parameters)
+
+            let localVariables = document.localVariables.map { localVariable in
+                AnimationGraphLocalVariableDefinition(
+                    name: localVariable.name,
+                    type: AnimationGraphLocalVariableType(rawValue: localVariable.type) ?? .float,
+                    defaultFloat: localVariable.defaultFloat,
+                    defaultBool: localVariable.defaultBool,
+                    defaultInt: localVariable.defaultInt
                 )
             }
 
@@ -422,13 +502,16 @@ public enum AnimationGraphAssetSerializer {
                                 consumeRotation: rootMotion.consumeRotation
                             )
                         }
+                        let resolvedUsesRootMotion = state.usesRootMotion ?? inferredRootMotionUsage(for: state.name)
+                        let resolvedRootMotionSettings = rootMotionSettings
+                            ?? defaultRootMotionSettings(for: state.name, usesRootMotion: resolvedUsesRootMotion)
                         return AnimationGraphStateDefinition(id: stateID,
                                                              name: state.name,
                                                              clipHandle: stateClipHandle,
                                                              nodeID: stateNodeID,
                                                              isOneShot: state.isOneShot ?? false,
-                                                             usesRootMotion: state.usesRootMotion ?? inferredRootMotionUsage(for: state.name),
-                                                             rootMotion: rootMotionSettings)
+                                                             usesRootMotion: resolvedUsesRootMotion,
+                                                             rootMotion: resolvedRootMotionSettings)
                     }
                     let transitions = machine.transitions.compactMap { transition -> AnimationGraphTransitionDefinition? in
                         guard let transitionID = UUID(uuidString: transition.id),
@@ -443,13 +526,62 @@ public enum AnimationGraphAssetSerializer {
                                 boolValue: condition.boolValue
                             )
                         }
+                        let transitionGraph: AnimationGraphTransitionGraphReference? = transition.transitionGraph.map { reference in
+                            let graphHandle: AssetHandle?
+                            if let rawGraphHandle = reference.graphHandle,
+                               let uuid = UUID(uuidString: rawGraphHandle) {
+                                graphHandle = AssetHandle(rawValue: uuid)
+                            } else {
+                                graphHandle = nil
+                            }
+                            let inlineGraph = reference.inlineGraph.flatMap { inline -> AnimationGraphTransitionGraphDefinition? in
+                                guard let inlineID = UUID(uuidString: inline.id) else { return nil }
+                                let nodes = inline.nodes.compactMap { node -> AnimationGraphTransitionGraphNodeDefinition? in
+                                    guard let nodeID = UUID(uuidString: node.id) else { return nil }
+                                    return AnimationGraphTransitionGraphNodeDefinition(
+                                        id: nodeID,
+                                        type: node.type,
+                                        title: node.title,
+                                        position: node.position.toSIMD(),
+                                        parameterName: node.parameterName,
+                                        floatValue: node.floatValue,
+                                        boolValue: node.boolValue,
+                                        synchronizeValue: node.synchronizeValue
+                                    )
+                                }
+                                let links = inline.links.compactMap { link -> AnimationGraphTransitionGraphLinkDefinition? in
+                                    guard let linkID = UUID(uuidString: link.id),
+                                          let fromNodeID = UUID(uuidString: link.fromNodeID),
+                                          let toNodeID = UUID(uuidString: link.toNodeID) else { return nil }
+                                    return AnimationGraphTransitionGraphLinkDefinition(
+                                        id: linkID,
+                                        fromNodeID: fromNodeID,
+                                        fromSlotIndex: link.fromSlotIndex,
+                                        toNodeID: toNodeID,
+                                        toSlotIndex: link.toSlotIndex
+                                    )
+                                }
+                                return AnimationGraphTransitionGraphDefinition(
+                                    id: inlineID,
+                                    outputNodeID: inline.outputNodeID.flatMap { UUID(uuidString: $0) },
+                                    nodes: nodes,
+                                    links: links
+                                )
+                            }
+                            return AnimationGraphTransitionGraphReference(
+                                transitionGraphID: reference.transitionGraphID.flatMap { UUID(uuidString: $0) },
+                                graphHandle: graphHandle,
+                                inlineGraph: inlineGraph
+                            )
+                        }
                         return AnimationGraphTransitionDefinition(
                             id: transitionID,
                             fromStateID: fromStateID,
                             toStateID: toStateID,
                             durationSeconds: transition.durationSeconds,
                             minimumNormalizedTime: transition.minimumNormalizedTime,
-                            conditions: conditions
+                            conditions: conditions,
+                            transitionGraph: transitionGraph
                         )
                     }
                     let defaultStateID = machine.defaultStateID.flatMap(UUID.init(uuidString:))
@@ -508,6 +640,7 @@ public enum AnimationGraphAssetSerializer {
                 sourcePath: document.sourcePath ?? url.lastPathComponent,
                 outputNodeID: outputNodeID,
                 parameters: parameters,
+                localVariables: localVariables,
                 nodes: nodes,
                 links: links
             )
@@ -538,6 +671,15 @@ public enum AnimationGraphAssetSerializer {
                     defaultFloat: parameter.defaultFloat,
                     defaultBool: parameter.defaultBool,
                     defaultInt: parameter.defaultInt
+                )
+            },
+            localVariables: asset.localVariables.map { localVariable in
+                AnimationGraphAssetDocument.LocalVariableDocument(
+                    name: localVariable.name,
+                    type: localVariable.type.rawValue,
+                    defaultFloat: localVariable.defaultFloat,
+                    defaultBool: localVariable.defaultBool,
+                    defaultInt: localVariable.defaultInt
                 )
             },
             nodes: asset.nodes.map { node in
@@ -579,6 +721,39 @@ public enum AnimationGraphAssetSerializer {
                                         floatValue: condition.floatValue,
                                         intValue: condition.intValue,
                                         boolValue: condition.boolValue
+                                    )
+                                },
+                                transitionGraph: transition.transitionGraph.map { transitionGraph in
+                                    AnimationGraphAssetDocument.TransitionGraphReferenceDocument(
+                                        transitionGraphID: transitionGraph.transitionGraphID?.uuidString,
+                                        graphHandle: transitionGraph.graphHandle?.rawValue.uuidString,
+                                        inlineGraph: transitionGraph.inlineGraph.map { inlineGraph in
+                                            AnimationGraphAssetDocument.TransitionGraphDocument(
+                                                id: inlineGraph.id.uuidString,
+                                                outputNodeID: inlineGraph.outputNodeID?.uuidString,
+                                                nodes: inlineGraph.nodes.map { node in
+                                                    AnimationGraphAssetDocument.TransitionGraphNodeDocument(
+                                                        id: node.id.uuidString,
+                                                        type: node.type,
+                                                        title: node.title,
+                                                        position: Vector2DTO(node.position),
+                                                        parameterName: node.parameterName,
+                                                        floatValue: node.floatValue,
+                                                        boolValue: node.boolValue,
+                                                        synchronizeValue: node.synchronizeValue
+                                                    )
+                                                },
+                                                links: inlineGraph.links.map { link in
+                                                    AnimationGraphAssetDocument.TransitionGraphLinkDocument(
+                                                        id: link.id.uuidString,
+                                                        fromNodeID: link.fromNodeID.uuidString,
+                                                        fromSlotIndex: link.fromSlotIndex,
+                                                        toNodeID: link.toNodeID.uuidString,
+                                                        toSlotIndex: link.toSlotIndex
+                                                    )
+                                                }
+                                            )
+                                        }
                                     )
                                 }
                             )
@@ -658,4 +833,54 @@ private func inferredRootMotionUsage(for stateName: String) -> Bool {
         || normalized.contains("strafe")
         || normalized.contains("turn")
         || normalized.contains("locomotion")
+}
+
+private func defaultRootMotionSettings(for stateName: String,
+                                       usesRootMotion: Bool) -> AnimationGraphStateDefinition.RootMotionSettings? {
+    _ = stateName
+    guard usesRootMotion else { return nil }
+    return nil
+}
+
+private func ensureCanonicalControllerParameters(in parameters: inout [AnimationGraphParameterDefinition]) {
+    func containsParameter(_ name: String) -> Bool {
+        parameters.contains {
+            normalizedCanonicalName($0.name) == normalizedCanonicalName(name)
+        }
+    }
+
+    if !containsParameter("Moving") {
+        parameters.append(
+            AnimationGraphParameterDefinition(
+                name: "Moving",
+                type: .bool,
+                defaultBool: false
+            )
+        )
+    }
+    if !containsParameter("Sprinting") {
+        parameters.append(
+            AnimationGraphParameterDefinition(
+                name: "Sprinting",
+                type: .bool,
+                defaultBool: false
+            )
+        )
+    }
+    if !containsParameter("jumpTrigger") {
+        parameters.append(
+            AnimationGraphParameterDefinition(
+                name: "jumpTrigger",
+                type: .trigger
+            )
+        )
+    }
+}
+
+private func normalizedCanonicalName(_ rawName: String) -> String {
+    rawName
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "_", with: "")
+        .replacingOccurrences(of: "-", with: "")
+        .lowercased()
 }

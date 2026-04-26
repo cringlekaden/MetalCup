@@ -6,6 +6,21 @@ import MetalKit
 import QuartzCore
 import simd
 
+public struct ReflectionProbeSnapshot {
+    let entity: Entity
+    let enabled: Bool
+    let worldTransform: TransformComponent
+    let boxExtents: SIMD3<Float>
+    let blendDistance: Float
+    let priority: Int32
+    let intensity: Float
+    let captureResolution: Int32
+    let rebuildMode: ReflectionProbeRebuildMode
+    let includeSky: Bool
+    let runtimeReady: Bool
+    let prefilteredHandle: AssetHandle?
+}
+
 public struct RenderFrameSnapshot {
     public struct Renderable {
         let entity: Entity
@@ -25,6 +40,28 @@ public struct RenderFrameSnapshot {
     let directionalShadowLightDirection: SIMD3<Float>?
     let animationPayload: AnimationSnapshotPayload?
     let renderables: [Renderable]
+    let reflectionProbes: [ReflectionProbeSnapshot]
+}
+
+public enum ReflectionProbeDebugFallbackReason {
+    case none
+    case noEnabledProbes
+    case noReadyProbes
+    case outsideInfluence
+}
+
+public struct ReflectionProbeDebugSelection {
+    public let selectedProbeEntityID: UUID?
+    public let weight: Float
+    public let fallbackReason: ReflectionProbeDebugFallbackReason
+
+    public init(selectedProbeEntityID: UUID?,
+                weight: Float,
+                fallbackReason: ReflectionProbeDebugFallbackReason) {
+        self.selectedProbeEntityID = selectedProbeEntityID
+        self.weight = weight
+        self.fallbackReason = fallbackReason
+    }
 }
 
 public enum SceneRenderer {
@@ -41,7 +78,7 @@ public enum SceneRenderer {
     private struct FrameCacheEntry {
         let key: FrameCacheKey
         let snapshot: RenderFrameSnapshot
-        let result: RenderBatchResult?
+        let result: RenderSubmissionResult?
     }
 
     private static var frameCache: [FrameCacheKey: FrameCacheEntry] = [:]
@@ -72,6 +109,8 @@ public enum SceneRenderer {
                 viewportSize: view.viewportSize,
                 layerFilterMask: view.layerMask,
                 depthPrepassEnabled: view.depthPrepassEnabled,
+                updatesPickingMapping: true,
+                updatesBatchStats: true,
                 debugFlags: view.debugFlags,
                 showEditorOverlays: view.isEditorView
             )
@@ -82,7 +121,10 @@ public enum SceneRenderer {
         }
         return RenderOutputs(color: context.colorTarget,
                              depth: context.depthTarget,
-                             pickingId: context.idTarget)
+                             pickingId: context.idTarget,
+                             sceneColor: context.colorTarget,
+                             sceneDepth: context.depthTarget,
+                             finalColor: context.colorTarget)
     }
 
     @discardableResult
@@ -110,6 +152,15 @@ public enum SceneRenderer {
             bindLightingInputs(encoder, frameContext: frameContext)
             renderSky(encoder, snapshot: snapshot, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
             renderMeshes(encoder, snapshot: snapshot, pass: .main, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
+        case .normal:
+            renderMeshes(encoder, snapshot: snapshot, pass: .normal, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
+        case .ssaoNormal:
+            renderMeshes(encoder, snapshot: snapshot, pass: .ssaoNormal, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
+        case .transparent:
+            bindRendererSettings(encoder, settings: frameContext.rendererSettings(), frameContext: frameContext)
+            bindShadowResources(encoder, frameContext: frameContext)
+            bindLightingInputs(encoder, frameContext: frameContext)
+            renderMeshes(encoder, snapshot: snapshot, pass: .transparent, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
         case .shadow:
             renderMeshes(encoder, snapshot: snapshot, pass: .shadow, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
         case .picking:
@@ -125,26 +176,37 @@ public enum SceneRenderer {
                               camera: CameraComponent,
                               worldTransform: TransformComponent,
                               viewportSize: SIMD2<Float>,
+                              previewViewId: UInt64,
                               frameContext: RendererFrameContext) {
         guard viewportSize.x > 1, viewportSize.y > 1 else { return }
         let previousPass = frameContext.currentRenderPass()
         let previousUsePrepass = frameContext.useDepthPrepass()
+        let previousViewContext = frameContext.viewContext()
         let aspect = max(0.01, viewportSize.x / viewportSize.y)
         var previewConstants = snapshot.sceneConstants
         previewConstants.viewMatrix = viewMatrix(from: worldTransform)
+        previewConstants.inverseViewMatrix = simd_inverse(previewConstants.viewMatrix)
         previewConstants.skyViewMatrix = previewConstants.viewMatrix
         previewConstants.skyViewMatrix[3][0] = 0
         previewConstants.skyViewMatrix[3][1] = 0
         previewConstants.skyViewMatrix[3][2] = 0
         previewConstants.projectionMatrix = projectionMatrix(from: camera, aspectRatio: aspect)
         previewConstants.inverseProjectionMatrix = simd_inverse(previewConstants.projectionMatrix)
+        previewConstants.inverseViewProjectionMatrix = simd_inverse(previewConstants.projectionMatrix * previewConstants.viewMatrix)
         previewConstants.cameraPositionAndIBL = SIMD4<Float>(worldTransform.position, snapshot.sceneConstants.cameraPositionAndIBL.w)
         let previewConstantsBuffer = frameContext.makeSceneConstantsBuffer(
             previewConstants,
             label: "SceneConstants.Preview"
         )
         frameContext.setCurrentRenderPass(.main)
-        frameContext.setUseDepthPrepass(false)
+        var previewViewContext = previousViewContext
+        previewViewContext.viewId = previewViewId
+        previewViewContext.viewportSize = viewportSize
+        previewViewContext.depthPrepassEnabled = false
+        previewViewContext.updatesPickingMapping = false
+        previewViewContext.updatesBatchStats = false
+        previewViewContext.showEditorOverlays = false
+        frameContext.setViewContext(previewViewContext)
         encoder.setViewport(MTLViewport(originX: 0,
                                         originY: 0,
                                         width: Double(viewportSize.x),
@@ -156,8 +218,118 @@ public enum SceneRenderer {
         bindRendererSettings(encoder, settings: frameContext.rendererSettings(), frameContext: frameContext)
         bindShadowResources(encoder, frameContext: frameContext)
         bindLightingInputs(encoder, frameContext: frameContext)
-        renderSky(encoder, snapshot: snapshot, frameContext: frameContext, sceneConstantsBuffer: previewConstantsBuffer)
-        renderMeshes(encoder, snapshot: snapshot, pass: .main, frameContext: frameContext, sceneConstantsBuffer: previewConstantsBuffer)
+        // Inspector camera previews render into dedicated single-sample targets, so they must not
+        // inherit the main scene's MSAA-derived pipeline variants.
+        let previewSampleCount = 1
+        renderSky(
+            encoder,
+            snapshot: snapshot,
+            frameContext: frameContext,
+            sceneConstantsBuffer: previewConstantsBuffer,
+            sampleCountOverride: previewSampleCount
+        )
+        renderMeshes(
+            encoder,
+            snapshot: snapshot,
+            pass: .main,
+            frameContext: frameContext,
+            sceneConstantsBuffer: previewConstantsBuffer,
+            sampleCountOverride: previewSampleCount
+        )
+        frameContext.setCurrentRenderPass(.transparent)
+        renderMeshes(
+            encoder,
+            snapshot: snapshot,
+            pass: .transparent,
+            frameContext: frameContext,
+            sceneConstantsBuffer: previewConstantsBuffer,
+            sampleCountOverride: previewSampleCount
+        )
+        frameContext.setViewContext(previousViewContext)
+        frameContext.setUseDepthPrepass(previousUsePrepass)
+        frameContext.setCurrentRenderPass(previousPass)
+    }
+
+    static func renderCaptureView(encoder: MTLRenderCommandEncoder,
+                                  snapshot: RenderFrameSnapshot,
+                                  viewMatrix: matrix_float4x4,
+                                  projectionMatrix: matrix_float4x4,
+                                  cameraPosition: SIMD3<Float>,
+                                  viewportSize: SIMD2<Float>,
+                                  captureViewId: UInt64,
+                                  includeSky: Bool,
+                                  frameContext: RendererFrameContext) {
+        guard viewportSize.x > 1, viewportSize.y > 1 else { return }
+        let previousPass = frameContext.currentRenderPass()
+        let previousUsePrepass = frameContext.useDepthPrepass()
+        let previousViewContext = frameContext.viewContext()
+        let captureSnapshot = RenderFrameSnapshot(
+            sceneKey: snapshot.sceneKey,
+            frameToken: snapshot.frameToken,
+            signature: snapshot.signature,
+            sceneConstants: snapshot.sceneConstants,
+            activeSkyLight: snapshot.activeSkyLight,
+            directionalLights: snapshot.directionalLights,
+            localLights: snapshot.localLights,
+            directionalShadowLightDirection: snapshot.directionalShadowLightDirection,
+            animationPayload: snapshot.animationPayload,
+            renderables: snapshot.renderables,
+            reflectionProbes: []
+        )
+        var captureConstants = captureSnapshot.sceneConstants
+        captureConstants.viewMatrix = viewMatrix
+        captureConstants.inverseViewMatrix = simd_inverse(viewMatrix)
+        captureConstants.skyViewMatrix = viewMatrix
+        captureConstants.skyViewMatrix[3][0] = 0
+        captureConstants.skyViewMatrix[3][1] = 0
+        captureConstants.skyViewMatrix[3][2] = 0
+        captureConstants.projectionMatrix = projectionMatrix
+        captureConstants.inverseProjectionMatrix = simd_inverse(projectionMatrix)
+        captureConstants.inverseViewProjectionMatrix = simd_inverse(projectionMatrix * viewMatrix)
+        captureConstants.cameraPositionAndIBL = SIMD4<Float>(cameraPosition, captureSnapshot.sceneConstants.cameraPositionAndIBL.w)
+        let captureConstantsBuffer = frameContext.makeSceneConstantsBuffer(
+            captureConstants,
+            label: "SceneConstants.ReflectionProbeCapture"
+        )
+        frameContext.setCurrentRenderPass(.main)
+        var captureViewContext = previousViewContext
+        captureViewContext.viewId = captureViewId
+        captureViewContext.viewportSize = viewportSize
+        captureViewContext.depthPrepassEnabled = false
+        captureViewContext.updatesPickingMapping = false
+        captureViewContext.updatesBatchStats = false
+        captureViewContext.showEditorOverlays = false
+        frameContext.setViewContext(captureViewContext)
+        encoder.setViewport(MTLViewport(originX: 0,
+                                        originY: 0,
+                                        width: Double(viewportSize.x),
+                                        height: Double(viewportSize.y),
+                                        znear: 0,
+                                        zfar: 1))
+        prepareLightingInputs(snapshot: captureSnapshot, frameContext: frameContext)
+        syncIBLTextures(snapshot: captureSnapshot, frameContext: frameContext)
+        bindRendererSettings(encoder, settings: frameContext.rendererSettings(), frameContext: frameContext)
+        bindShadowResources(encoder, frameContext: frameContext)
+        bindLightingInputs(encoder, frameContext: frameContext)
+        let captureSampleCount = 1
+        if includeSky {
+            renderSky(
+                encoder,
+                snapshot: captureSnapshot,
+                frameContext: frameContext,
+                sceneConstantsBuffer: captureConstantsBuffer,
+                sampleCountOverride: captureSampleCount
+            )
+        }
+        renderMeshes(
+            encoder,
+            snapshot: captureSnapshot,
+            pass: .main,
+            frameContext: frameContext,
+            sceneConstantsBuffer: captureConstantsBuffer,
+            sampleCountOverride: captureSampleCount
+        )
+        frameContext.setViewContext(previousViewContext)
         frameContext.setUseDepthPrepass(previousUsePrepass)
         frameContext.setCurrentRenderPass(previousPass)
     }
@@ -165,13 +337,22 @@ public enum SceneRenderer {
     private static func renderSky(_ encoder: MTLRenderCommandEncoder,
                                   snapshot: RenderFrameSnapshot,
                                   frameContext: RendererFrameContext,
-                                  sceneConstantsBuffer: MTLBuffer? = nil) {
+                                  sceneConstantsBuffer: MTLBuffer? = nil,
+                                  sampleCountOverride: Int? = nil) {
         guard let sky = snapshot.activeSkyLight, sky.enabled else { return }
         let engineContext = frameContext.engineContext()
         guard let mesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         bindSceneConstants(encoder, snapshot: snapshot, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
         encoder.setTriangleFillMode(engineContext.preferences.isWireframeEnabled ? .lines : .fill)
-        encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.Skybox])
+        encoder.setRenderPipelineState(
+            engineContext.graphics.renderPipelineStates.skyboxPipeline(
+                sampleCount: scenePipelineSampleCount(
+                    for: .main,
+                    frameContext: frameContext,
+                    sampleCountOverride: sampleCountOverride
+                )
+            )
+        )
         encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessEqualNoWrite])
         encoder.setCullMode(.none)
         encoder.setFrontFacing(.clockwise)
@@ -218,9 +399,10 @@ public enum SceneRenderer {
                                      pass: RenderPassType,
                                      frameContext: RendererFrameContext,
                                      sceneConstantsBuffer: MTLBuffer? = nil,
-                                     shadowCullVolume: ShadowCullVolume? = nil) {
-        let batchResult = currentBatchResult(snapshot: snapshot, frameContext: frameContext)
-        guard let instanceBuffer = batchResult.instanceBuffer else { return }
+                                     shadowCullVolume: ShadowCullVolume? = nil,
+                                     sampleCountOverride: Int? = nil) {
+        let submissionResult = currentSubmissionResult(snapshot: snapshot, frameContext: frameContext)
+        let batchResult = submissionResult.opaqueBatchResult
         if let bonePaletteBuffer = batchResult.bonePaletteBuffer {
             encoder.setVertexBuffer(bonePaletteBuffer, offset: 0, index: VertexBufferIndex.bonePalette)
         } else {
@@ -230,12 +412,60 @@ public enum SceneRenderer {
                                    index: VertexBufferIndex.bonePalette)
         }
         bindSceneConstants(encoder, snapshot: snapshot, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
+        if let instanceBuffer = batchResult.instanceBuffer {
+            renderOpaqueBatches(
+                encoder,
+                snapshot: snapshot,
+                pass: pass,
+                batchResult: batchResult,
+                instanceBuffer: instanceBuffer,
+                sceneConstantsBuffer: sceneConstantsBuffer,
+                shadowCullVolume: shadowCullVolume,
+                frameContext: frameContext,
+                sampleCountOverride: sampleCountOverride
+            )
+        }
+        if pass == .transparent {
+            renderTransparentDraws(
+                encoder,
+                snapshot: snapshot,
+                submissionResult: submissionResult,
+                sceneConstantsBuffer: sceneConstantsBuffer,
+                frameContext: frameContext,
+                sampleCountOverride: sampleCountOverride
+            )
+        } else if pass == .picking {
+            renderTransparentPickingDraws(
+                encoder,
+                snapshot: snapshot,
+                submissionResult: submissionResult,
+                sceneConstantsBuffer: sceneConstantsBuffer,
+                frameContext: frameContext
+            )
+        }
+    }
+
+    private static func renderOpaqueBatches(_ encoder: MTLRenderCommandEncoder,
+                                            snapshot: RenderFrameSnapshot,
+                                            pass: RenderPassType,
+                                            batchResult: RenderBatchResult,
+                                            instanceBuffer: MTLBuffer,
+                                            sceneConstantsBuffer: MTLBuffer?,
+                                            shadowCullVolume: ShadowCullVolume?,
+                                            frameContext: RendererFrameContext,
+                                            sampleCountOverride: Int? = nil) {
         let instanceStride = InstanceData.stride
         for batch in batchResult.batches {
             let instanceCount = batch.instanceRange.count
             if instanceCount == 0 { continue }
             MC_ASSERT(batch.instanceRange.upperBound <= batchResult.instances.count, "Batch instance range out of bounds.")
-            applyPerDrawState(encoder, pass: pass, cullMode: batch.bindings.cullMode, frameContext: frameContext)
+            applyPerDrawState(
+                encoder,
+                pass: pass,
+                passKey: batch.bindings.passKey,
+                cullMode: batch.bindings.cullMode,
+                frameContext: frameContext
+            )
             if pass == .shadow, let shadowCullVolume {
                 if !batch.bindings.passKey.castsShadows { continue }
                 var visibleStart = -1
@@ -294,6 +524,18 @@ public enum SceneRenderer {
                     sceneConstantsBuffer: sceneConstantsBuffer,
                     frameContext: frameContext
                 )
+            case .normal, .ssaoNormal:
+                encodeNormalPass(
+                    encoder,
+                    snapshot: snapshot,
+                    batch: batch,
+                    batchResult: batchResult,
+                    instanceBuffer: instanceBuffer,
+                    instanceOffset: instanceOffset,
+                    instanceCount: instanceCount,
+                    sceneConstantsBuffer: sceneConstantsBuffer,
+                    frameContext: frameContext
+                )
             case .shadow:
                 if !batch.bindings.passKey.castsShadows { continue }
                 encodeShadowPass(
@@ -328,23 +570,105 @@ public enum SceneRenderer {
                     instanceOffset: instanceOffset,
                     instanceCount: instanceCount,
                     sceneConstantsBuffer: sceneConstantsBuffer,
-                    frameContext: frameContext
+                    frameContext: frameContext,
+                    sampleCountOverride: sampleCountOverride
                 )
+            case .transparent:
+                continue
             }
+        }
+    }
+
+    private static func renderTransparentDraws(_ encoder: MTLRenderCommandEncoder,
+                                               snapshot: RenderFrameSnapshot,
+                                               submissionResult: RenderSubmissionResult,
+                                               sceneConstantsBuffer: MTLBuffer?,
+                                               frameContext: RendererFrameContext,
+                                               sampleCountOverride: Int? = nil) {
+        guard let instanceBuffer = submissionResult.transparentInstanceBuffer else { return }
+        let instanceStride = InstanceData.stride
+        for draw in submissionResult.transparentDraws {
+            applyPerDrawState(
+                encoder,
+                pass: .transparent,
+                passKey: draw.item.bindings.passKey,
+                cullMode: draw.item.bindings.cullMode,
+                frameContext: frameContext
+            )
+            let pipeline = pipelineState(
+                for: .transparent,
+                key: draw.item.bindings.passKey,
+                frameContext: frameContext,
+                sampleCountOverride: sampleCountOverride
+            )
+            let instanceOffset = draw.instanceIndex * instanceStride
+            encodeTransparentDraw(
+                encoder,
+                snapshot: snapshot,
+                item: draw.item,
+                instanceBuffer: instanceBuffer,
+                instanceOffset: instanceOffset,
+                pipelineState: pipeline,
+                sceneConstantsBuffer: sceneConstantsBuffer,
+                frameContext: frameContext
+            )
+        }
+    }
+
+    private static func renderTransparentPickingDraws(_ encoder: MTLRenderCommandEncoder,
+                                                      snapshot: RenderFrameSnapshot,
+                                                      submissionResult: RenderSubmissionResult,
+                                                      sceneConstantsBuffer: MTLBuffer?,
+                                                      frameContext: RendererFrameContext) {
+        guard let instanceBuffer = submissionResult.transparentInstanceBuffer else { return }
+        let instanceStride = InstanceData.stride
+        for draw in submissionResult.transparentDraws {
+            // Phase 1 policy: visible transparent/additive items participate in picking.
+            // Use picking-specific depth behavior instead of the transparent color-pass state.
+            applyPerDrawState(
+                encoder,
+                pass: .picking,
+                passKey: draw.item.bindings.passKey,
+                cullMode: draw.item.bindings.cullMode,
+                frameContext: frameContext
+            )
+            let instanceOffset = draw.instanceIndex * instanceStride
+            encodeTransparentPickingDraw(
+                encoder,
+                snapshot: snapshot,
+                item: draw.item,
+                instanceBuffer: instanceBuffer,
+                instanceOffset: instanceOffset,
+                sceneConstantsBuffer: sceneConstantsBuffer,
+                frameContext: frameContext
+            )
         }
     }
 
     private static func applyPerDrawState(_ encoder: MTLRenderCommandEncoder,
                                           pass: RenderPassType,
+                                          passKey: MaterialPassKey,
                                           cullMode: MTLCullMode,
                                           frameContext: RendererFrameContext) {
         let engineContext = frameContext.engineContext()
         encoder.setTriangleFillMode(engineContext.preferences.isWireframeEnabled ? .lines : .fill)
-        let usePrepass = frameContext.useDepthPrepass() && pass == .main
+        let usePrepassEquality: Bool
+        if pass == .normal || pass == .ssaoNormal {
+            // SceneNormalsPass always depth-tests against canonical single-sample scene.depth,
+            // so it should use strict equality whenever the prepass populated that attachment.
+            usePrepassEquality = frameContext.useDepthPrepass()
+        } else {
+            usePrepassEquality = frameContext.useDepthPrepass()
+                && pass == .main
+                && mainPassUsesPrepassDepth(frameContext: frameContext)
+        }
         if pass == .depthPrepass {
             encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessEqual])
-        } else if usePrepass {
-            // Shared vertex shader keeps clip-space depth identical, so strict equality is safe.
+        } else if (pass == .main || pass == .transparent), passKey.blendMode.usesDepthWrite == false {
+            encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessNoWrite])
+        } else if usePrepassEquality {
+            // Shared vertex shader keeps clip-space depth identical, so strict equality is only safe
+            // when the main pass depth-tests against the same attachment produced by the prepass.
             encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.EqualNoWrite])
         } else {
             encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.Less])
@@ -370,6 +694,17 @@ public enum SceneRenderer {
         }
     }
 
+    private static func mainPassUsesPrepassDepth(frameContext: RendererFrameContext) -> Bool {
+        guard let registry = frameContext.renderResourceRegistry(),
+              let sceneDepth = registry.namedTexture(RenderNamedResourceKey.sceneDepthMSAA),
+              let prepassDepth = registry.namedTexture(RenderNamedResourceKey.sceneDepth) else {
+            return true
+        }
+        // Strict equality is only valid when the main pass actually tests against the exact depth
+        // texture produced by the prepass. Matching sample count alone is not sufficient.
+        return sceneDepth === prepassDepth
+    }
+
     private static func encodeDepthPrepass(
         _ encoder: MTLRenderCommandEncoder,
         snapshot: RenderFrameSnapshot,
@@ -382,7 +717,7 @@ public enum SceneRenderer {
         frameContext: RendererFrameContext
     ) {
         let pipeline = pipelineState(for: .depthPrepass, key: batch.bindings.passKey, frameContext: frameContext)
-        let useAlphaClip = batch.bindings.passKey.alphaMode == .alphaClip
+        let useAlphaClip = batch.bindings.passKey.blendMode == .alphaClip
         encodeMeshBatch(
             encoder,
             snapshot: snapshot,
@@ -410,7 +745,35 @@ public enum SceneRenderer {
         frameContext: RendererFrameContext
     ) {
         let pipeline = pipelineState(for: .shadow, key: batch.bindings.passKey, frameContext: frameContext)
-        let useAlphaClip = batch.bindings.passKey.alphaMode == .alphaClip
+        let useAlphaClip = batch.bindings.passKey.blendMode == .alphaClip
+        encodeMeshBatch(
+            encoder,
+            snapshot: snapshot,
+            batch: batch,
+            batchResult,
+            instanceBuffer: instanceBuffer,
+            instanceOffset: instanceOffset,
+            instanceCount: instanceCount,
+            pipelineState: pipeline,
+            bindings: useAlphaClip ? batch.bindings : nil,
+            sceneConstantsBuffer: sceneConstantsBuffer,
+            frameContext: frameContext
+        )
+    }
+
+    private static func encodeNormalPass(
+        _ encoder: MTLRenderCommandEncoder,
+        snapshot: RenderFrameSnapshot,
+        batch: RenderBatch,
+        batchResult: RenderBatchResult,
+        instanceBuffer: MTLBuffer,
+        instanceOffset: Int,
+        instanceCount: Int,
+        sceneConstantsBuffer: MTLBuffer?,
+        frameContext: RendererFrameContext
+    ) {
+        let pipeline = pipelineState(for: .normal, key: batch.bindings.passKey, frameContext: frameContext)
+        let useAlphaClip = batch.bindings.passKey.blendMode == .alphaClip
         encodeMeshBatch(
             encoder,
             snapshot: snapshot,
@@ -453,9 +816,15 @@ public enum SceneRenderer {
         instanceOffset: Int,
         instanceCount: Int,
         sceneConstantsBuffer: MTLBuffer?,
-        frameContext: RendererFrameContext
+        frameContext: RendererFrameContext,
+        sampleCountOverride: Int? = nil
     ) {
-        let pipelineState = pipelineState(for: .main, key: batch.bindings.passKey, frameContext: frameContext)
+        let pipelineState = pipelineState(
+            for: .main,
+            key: batch.bindings.passKey,
+            frameContext: frameContext,
+            sampleCountOverride: sampleCountOverride
+        )
         encodeMeshBatch(
             encoder,
             snapshot: snapshot,
@@ -469,6 +838,42 @@ public enum SceneRenderer {
             sceneConstantsBuffer: sceneConstantsBuffer,
             frameContext: frameContext
         )
+    }
+
+    private static func encodeTransparentDraw(
+        _ encoder: MTLRenderCommandEncoder,
+        snapshot: RenderFrameSnapshot,
+        item: RenderItem,
+        instanceBuffer: MTLBuffer,
+        instanceOffset: Int,
+        pipelineState: MTLRenderPipelineState,
+        sceneConstantsBuffer: MTLBuffer?,
+        frameContext: RendererFrameContext
+    ) {
+        encoder.setRenderPipelineState(pipelineState)
+        bindSceneConstants(encoder, snapshot: snapshot, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
+        bindInstanceBuffer(encoder, buffer: instanceBuffer, offset: instanceOffset)
+        assertInstanceBindings(instanceBuffer: instanceBuffer, instanceOffset: instanceOffset, instanceCount: 1)
+        item.mesh.setInstanceCount(1)
+        drawMesh(encoder, mesh: item.mesh, submeshIndex: item.submeshIndex, bindings: item.bindings, frameContext: frameContext)
+    }
+
+    private static func encodeTransparentPickingDraw(
+        _ encoder: MTLRenderCommandEncoder,
+        snapshot: RenderFrameSnapshot,
+        item: RenderItem,
+        instanceBuffer: MTLBuffer,
+        instanceOffset: Int,
+        sceneConstantsBuffer: MTLBuffer?,
+        frameContext: RendererFrameContext
+    ) {
+        let engineContext = frameContext.engineContext()
+        encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.PickID])
+        bindSceneConstants(encoder, snapshot: snapshot, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
+        bindInstanceBuffer(encoder, buffer: instanceBuffer, offset: instanceOffset)
+        assertInstanceBindings(instanceBuffer: instanceBuffer, instanceOffset: instanceOffset, instanceCount: 1)
+        item.mesh.setInstanceCount(1)
+        drawMesh(encoder, mesh: item.mesh, submeshIndex: item.submeshIndex, bindings: nil, frameContext: frameContext)
     }
 
     private static func encodeMeshBatch(
@@ -490,15 +895,39 @@ public enum SceneRenderer {
         bindInstanceBuffer(encoder, buffer: instanceBuffer, offset: instanceOffset)
         assertInstanceBindings(instanceBuffer: instanceBuffer, instanceOffset: instanceOffset, instanceCount: instanceCount)
         batch.mesh.setInstanceCount(instanceCount)
-        drawMesh(encoder, mesh: batch.mesh, bindings: bindings, frameContext: frameContext)
+        drawMesh(encoder, mesh: batch.mesh, submeshIndex: batch.submeshIndex, bindings: bindings, frameContext: frameContext)
     }
 
-    private static func drawMesh(_ encoder: MTLRenderCommandEncoder, mesh: MCMesh, bindings: MaterialBindings?, frameContext: RendererFrameContext) {
+    private static func drawMesh(_ encoder: MTLRenderCommandEncoder,
+                                 mesh: MCMesh,
+                                 submeshIndex: Int? = nil,
+                                 bindings: MaterialBindings?,
+                                 frameContext: RendererFrameContext) {
+        if let submeshIndex {
+            mesh.drawSubmeshPrimitives(
+                encoder,
+                submeshIndex: submeshIndex,
+                frameContext: frameContext,
+                material: bindings?.materialOverride,
+                albedoMapHandle: bindings?.albedoMapHandle,
+                normalMapHandle: bindings?.normalMapHandle,
+                metallicMapHandle: bindings?.metallicMapHandle,
+                roughnessMapHandle: bindings?.roughnessMapHandle,
+                mrMapHandle: bindings?.mrMapHandle,
+                ormMapHandle: bindings?.ormMapHandle,
+                aoMapHandle: bindings?.aoMapHandle,
+                emissiveMapHandle: bindings?.emissiveMapHandle,
+                localReflectionProbe: bindings?.localReflectionProbe,
+                localReflectionPrefilteredHandle: bindings?.localReflectionPrefilteredHandle,
+                useEmbeddedMaterial: false
+            )
+            return
+        }
+
         mesh.drawPrimitives(
             encoder,
             frameContext: frameContext,
             material: bindings?.materialOverride,
-            submeshMaterialHandles: bindings?.submeshMaterialHandles,
             albedoMapHandle: bindings?.albedoMapHandle,
             normalMapHandle: bindings?.normalMapHandle,
             metallicMapHandle: bindings?.metallicMapHandle,
@@ -507,6 +936,8 @@ public enum SceneRenderer {
             ormMapHandle: bindings?.ormMapHandle,
             aoMapHandle: bindings?.aoMapHandle,
             emissiveMapHandle: bindings?.emissiveMapHandle,
+            localReflectionProbe: bindings?.localReflectionProbe,
+            localReflectionPrefilteredHandle: bindings?.localReflectionPrefilteredHandle,
             useEmbeddedMaterial: false
         )
     }
@@ -531,10 +962,12 @@ public enum SceneRenderer {
         if let overrideBuffer {
             MC_ASSERT(overrideBuffer.length >= SceneConstants.stride, "SceneConstants override buffer too small.")
             encoder.setVertexBuffer(overrideBuffer, offset: 0, index: VertexBufferIndex.sceneConstants)
+            encoder.setFragmentBuffer(overrideBuffer, offset: 0, index: FragmentBufferIndex.postProcessSceneConstants)
             return
         }
         let buffer = resolvedSceneConstantsBuffer(snapshot: snapshot, frameContext: frameContext)
         encoder.setVertexBuffer(buffer, offset: 0, index: VertexBufferIndex.sceneConstants)
+        encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.postProcessSceneConstants)
     }
 
     private static func bindInstanceBuffer(_ encoder: MTLRenderCommandEncoder, buffer: MTLBuffer, offset: Int) {
@@ -602,31 +1035,99 @@ public enum SceneRenderer {
         encoder.setFragmentBuffer(inputs.localLightDataBuffer, offset: 0, index: FragmentBufferIndex.lightData)
         encoder.setFragmentBuffer(inputs.directionalLightCountBuffer, offset: 0, index: FragmentBufferIndex.directionalLightCount)
         encoder.setFragmentBuffer(inputs.directionalLightDataBuffer, offset: 0, index: FragmentBufferIndex.directionalLightData)
-        encoder.setFragmentBuffer(inputs.lightGridBuffer, offset: 0, index: FragmentBufferIndex.lightGrid)
-        encoder.setFragmentBuffer(inputs.lightIndexListBuffer, offset: 0, index: FragmentBufferIndex.lightIndexList)
-        encoder.setFragmentBuffer(inputs.lightIndexCountBuffer, offset: 0, index: FragmentBufferIndex.lightIndexCount)
-        encoder.setFragmentBuffer(inputs.clusterParamsBuffer, offset: 0, index: FragmentBufferIndex.lightClusterParams)
-        encoder.setFragmentBuffer(inputs.tileLightGridBuffer, offset: 0, index: FragmentBufferIndex.tileLightGrid)
-        encoder.setFragmentBuffer(inputs.tileParamsBuffer, offset: 0, index: FragmentBufferIndex.tileParams)
+        encoder.setFragmentBuffer(inputs.lightGridBuffer ?? frameContext.fallbackForwardPlusLightGridBuffer(),
+                                  offset: 0,
+                                  index: FragmentBufferIndex.lightGrid)
+        encoder.setFragmentBuffer(inputs.lightIndexListBuffer ?? frameContext.fallbackForwardPlusLightIndexListBuffer(),
+                                  offset: 0,
+                                  index: FragmentBufferIndex.lightIndexList)
+        encoder.setFragmentBuffer(inputs.lightIndexCountBuffer ?? frameContext.fallbackForwardPlusLightIndexCountBuffer(),
+                                  offset: 0,
+                                  index: FragmentBufferIndex.lightIndexCount)
+        encoder.setFragmentBuffer(inputs.clusterParamsBuffer ?? frameContext.fallbackForwardPlusClusterParamsBuffer(),
+                                  offset: 0,
+                                  index: FragmentBufferIndex.lightClusterParams)
+        encoder.setFragmentBuffer(inputs.tileLightGridBuffer ?? frameContext.fallbackForwardPlusTileLightGridBuffer(),
+                                  offset: 0,
+                                  index: FragmentBufferIndex.tileLightGrid)
+        encoder.setFragmentBuffer(inputs.tileParamsBuffer ?? frameContext.fallbackForwardPlusTileParamsBuffer(),
+                                  offset: 0,
+                                  index: FragmentBufferIndex.tileParams)
     }
 
-    private static func pipelineState(for pass: RenderPassType, key: MaterialPassKey, frameContext: RendererFrameContext) -> MTLRenderPipelineState {
+    private static func pipelineState(for pass: RenderPassType,
+                                      key: MaterialPassKey,
+                                      frameContext: RendererFrameContext,
+                                      sampleCountOverride: Int? = nil) -> MTLRenderPipelineState {
         let engineContext = frameContext.engineContext()
+        let sampleCount = scenePipelineSampleCount(
+            for: pass,
+            frameContext: frameContext,
+            sampleCountOverride: sampleCountOverride
+        )
         switch pass {
-        case .main:
-            return engineContext.graphics.renderPipelineStates.hdrInstancedPipeline(settings: frameContext.rendererSettings())
+        case .main, .transparent:
+            // Short-term cutout AA policy:
+            // - main scene color uses alpha-to-coverage for alpha-clip materials
+            // - depth prepass and shadow passes remain binary alpha clip for now
+            return engineContext.graphics.renderPipelineStates.hdrInstancedPipeline(
+                settings: frameContext.rendererSettings(),
+                blendMode: hdrBlendMode(for: key),
+                sampleCount: sampleCount,
+                alphaToCoverageEnabled: key.blendMode == .alphaClip
+            )
+        case .normal:
+            return engineContext.graphics.renderPipelineStates.sceneNormalsPipeline(
+                alphaMasked: key.blendMode == .alphaClip
+            )
+        case .ssaoNormal:
+            return engineContext.graphics.renderPipelineStates.aoNormalsPipeline(
+                alphaMasked: key.blendMode == .alphaClip
+            )
         case .depthPrepass:
-            if key.alphaMode == .alphaClip {
-                return engineContext.graphics.renderPipelineStates[.DepthPrepassAlphaInstanced]
-            }
-            return engineContext.graphics.renderPipelineStates[.DepthPrepassInstanced]
+            return engineContext.graphics.renderPipelineStates.depthPrepassPipeline(
+                alphaMasked: key.blendMode == .alphaClip,
+                sampleCount: sampleCount
+            )
         case .shadow:
-            if key.alphaMode == .alphaClip {
+            if key.blendMode == .alphaClip {
                 return engineContext.graphics.renderPipelineStates[.ShadowAlphaInstanced]
             }
             return engineContext.graphics.renderPipelineStates[.DepthPrepassInstanced]
         case .picking:
             return engineContext.graphics.renderPipelineStates[.PickID]
+        }
+    }
+
+    private static func hdrBlendMode(for key: MaterialPassKey) -> HDRBlendMode {
+        switch key.blendMode {
+        case .opaque, .alphaClip:
+            return .opaque
+        case .transparent:
+            return .transparent
+        case .additive:
+            return .additive
+        }
+    }
+
+    private static func scenePipelineSampleCount(for pass: RenderPassType,
+                                                 frameContext: RendererFrameContext,
+                                                 sampleCountOverride: Int? = nil) -> Int {
+        if let sampleCountOverride {
+            return max(sampleCountOverride, 1)
+        }
+        switch pass {
+        case .main, .transparent, .depthPrepass, .normal, .ssaoNormal:
+            if pass == .depthPrepass || pass == .normal || pass == .ssaoNormal {
+                return 1
+            }
+            let registry = frameContext.renderResourceRegistry()
+            if let sceneColorMSAA = registry?.namedTexture(RenderNamedResourceKey.sceneColorMSAA) {
+                return max(sceneColorMSAA.sampleCount, 1)
+            }
+            return max(frameContext.engineContext().preferences.sceneMSAASampleCount, 1)
+        case .shadow, .picking:
+            return 1
         }
     }
 
@@ -683,7 +1184,6 @@ public enum SceneRenderer {
 
     private struct MaterialBindings {
         var materialHandle: AssetHandle?
-        var submeshMaterialHandles: [AssetHandle?]?
         var materialOverride: MetalCupMaterial?
         var albedoMapHandle: AssetHandle?
         var normalMapHandle: AssetHandle?
@@ -693,6 +1193,8 @@ public enum SceneRenderer {
         var ormMapHandle: AssetHandle?
         var aoMapHandle: AssetHandle?
         var emissiveMapHandle: AssetHandle?
+        var localReflectionProbe: LocalReflectionProbeUniform?
+        var localReflectionPrefilteredHandle: AssetHandle?
         var cullMode: MTLCullMode
         var passKey: MaterialPassKey
     }
@@ -701,6 +1203,7 @@ public enum SceneRenderer {
         let entity: Entity
         let meshHandle: AssetHandle
         let mesh: MCMesh
+        let submeshIndex: Int?
         let transform: TransformComponent
         let bonePaletteRange: AnimationSnapshotPayload.BonePaletteRange?
         let skinnedEntry: AnimationSnapshotPayload.SkinnedEntry?
@@ -715,17 +1218,37 @@ public enum SceneRenderer {
 
     private struct RenderBatchKey: Hashable {
         let meshHandle: AssetHandle
+        let submeshIndexKey: Int
         let materialKey: MaterialBatchKey
         let pipeline: RenderPipelineStateType
         let cullModeKey: Int
-        let alphaModeKey: Int32
+        let blendModeKey: Int32
         let unlitKey: Int32
         let castsShadowsKey: Int32
         let receivesShadowsKey: Int32
+        let localReflectionPrefilteredHandle: AssetHandle?
+        let localReflectionProbeHash: UInt64
+    }
+
+    private struct LocalReflectionProbeSelection {
+        let prefilteredHandle: AssetHandle
+        let uniform: LocalReflectionProbeUniform
+        let priority: Int32
+        let weight: Float
+        let distanceSquared: Float
+        let stableEntityKey: UUID
+    }
+
+    private struct DebugReflectionProbeSelectionCandidate {
+        let stableEntityKey: UUID
+        let priority: Int32
+        let weight: Float
+        let distanceSquared: Float
     }
 
     private struct RenderBatchBuilder {
         var mesh: MCMesh
+        var submeshIndex: Int?
         var bindings: MaterialBindings
         var instances: [InstanceData]
         var bounds: [InstanceBounds]
@@ -733,6 +1256,7 @@ public enum SceneRenderer {
 
     private struct RenderBatch {
         let mesh: MCMesh
+        let submeshIndex: Int?
         let bindings: MaterialBindings
         let instanceRange: Range<Int>
     }
@@ -743,6 +1267,19 @@ public enum SceneRenderer {
         let batches: [RenderBatch]
         let instanceBuffer: MTLBuffer?
         let bonePaletteBuffer: MTLBuffer?
+    }
+
+    private struct TransparentDraw {
+        let item: RenderItem
+        let instanceIndex: Int
+        let sortDepth: Float
+        let originalIndex: Int
+    }
+
+    private struct RenderSubmissionResult {
+        let opaqueBatchResult: RenderBatchResult
+        let transparentDraws: [TransparentDraw]
+        let transparentInstanceBuffer: MTLBuffer?
     }
 
     struct ShadowCullVolume {
@@ -835,8 +1372,8 @@ public enum SceneRenderer {
 #endif
     }
 
-    private static func currentBatchResult(snapshot: RenderFrameSnapshot,
-                                           frameContext: RendererFrameContext) -> RenderBatchResult {
+    private static func currentSubmissionResult(snapshot: RenderFrameSnapshot,
+                                                frameContext: RendererFrameContext) -> RenderSubmissionResult {
         let key = FrameCacheKey(
             sceneKey: snapshot.sceneKey,
             frameToken: snapshot.frameToken,
@@ -849,7 +1386,7 @@ public enum SceneRenderer {
         if let cached = frameCache[key], let result = cached.result {
             return result
         }
-        let result = buildRenderBatches(snapshot: snapshot, frameContext: frameContext)
+        let result = buildRenderSubmission(snapshot: snapshot, frameContext: frameContext)
         frameCache[key] = FrameCacheEntry(key: key, snapshot: snapshot, result: result)
         trimFrameCache(keepingFrameToken: snapshot.frameToken)
         return result
@@ -898,77 +1435,154 @@ public enum SceneRenderer {
             guard let meshHandle = renderable.meshHandle,
                   let mesh = engineContext.assets.mesh(handle: meshHandle) else { continue }
             let transform = renderable.worldTransform
-            let bindings = resolveMaterialBindings(renderable: renderable, engineContext: engineContext)
             let worldBounds = worldBounds(for: mesh, transform: transform)
-            renderItems.append(RenderItem(
-                entity: renderable.entity,
-                meshHandle: meshHandle,
-                mesh: mesh,
-                transform: transform,
-                bonePaletteRange: paletteRangesByEntity[renderable.entity],
-                skinnedEntry: skinnedEntriesByEntity[renderable.entity],
-                bindings: bindings,
-                bounds: worldBounds
-            ))
+            let submeshItemCount = max(mesh.submeshCount, 1)
+            for submeshItemIndex in 0..<submeshItemCount {
+                let submeshIndex = mesh.submeshCount > 0 ? submeshItemIndex : nil
+                let bindings = resolveMaterialBindings(
+                    renderable: renderable,
+                    submeshIndex: submeshIndex,
+                    engineContext: engineContext
+                )
+                let probeBindings = resolveLocalReflectionProbeBindings(
+                    bounds: worldBounds,
+                    snapshot: snapshot,
+                    baseBindings: bindings
+                )
+                renderItems.append(RenderItem(
+                    entity: renderable.entity,
+                    meshHandle: meshHandle,
+                    mesh: mesh,
+                    submeshIndex: submeshIndex,
+                    transform: transform,
+                    bonePaletteRange: paletteRangesByEntity[renderable.entity],
+                    skinnedEntry: skinnedEntriesByEntity[renderable.entity],
+                    bindings: probeBindings,
+                    bounds: worldBounds
+                ))
+            }
         }
 
         return renderItems
     }
 
-    private static func buildRenderBatches(snapshot: RenderFrameSnapshot, frameContext: RendererFrameContext) -> RenderBatchResult {
+    private static func splitRenderItems(_ items: [RenderItem]) -> (opaqueItems: [RenderItem], transparentItems: [RenderItem]) {
+        var opaqueItems: [RenderItem] = []
+        var transparentItems: [RenderItem] = []
+        opaqueItems.reserveCapacity(items.count)
+        transparentItems.reserveCapacity(items.count / 4)
+
+        for item in items {
+            if item.bindings.passKey.blendMode.isTransparent {
+                transparentItems.append(item)
+            } else {
+                opaqueItems.append(item)
+            }
+        }
+
+        return (opaqueItems, transparentItems)
+    }
+
+    private static func sortedTransparentItems(_ items: [RenderItem], viewMatrix: matrix_float4x4) -> [(item: RenderItem, sortDepth: Float, originalIndex: Int)] {
+        var keyedItems: [(item: RenderItem, sortDepth: Float, originalIndex: Int)] = []
+        keyedItems.reserveCapacity(items.count)
+
+        for (index, item) in items.enumerated() {
+            let centerVS = viewMatrix * SIMD4<Float>(item.bounds.center, 1.0)
+            let sortDepth = -centerVS.z
+            keyedItems.append((item: item, sortDepth: sortDepth, originalIndex: index))
+        }
+
+        keyedItems.sort { lhs, rhs in
+            if lhs.sortDepth != rhs.sortDepth {
+                return lhs.sortDepth > rhs.sortDepth
+            }
+            return lhs.originalIndex < rhs.originalIndex
+        }
+
+        return keyedItems
+    }
+
+    private static func buildRenderSubmission(snapshot: RenderFrameSnapshot, frameContext: RendererFrameContext) -> RenderSubmissionResult {
         let engineContext = frameContext.engineContext()
         let profiler = engineContext.renderer?.profiler
         let buildStart = CACurrentMediaTime()
+        let viewSignature = frameContext.viewSignature()
+        let shouldUpdatePickingMapping = frameContext.viewContext().updatesPickingMapping
+        let shouldUpdateBatchStats = frameContext.viewContext().updatesBatchStats
         var builders: [RenderBatchKey: RenderBatchBuilder] = [:]
         var uniqueMeshes = Set<AssetHandle>()
         let items = buildRenderItems(snapshot: snapshot, engineContext: engineContext)
-        engineContext.pickingSystem.resetMapping()
+        let queueSplit = splitRenderItems(items)
+        let sortedTransparentItems = sortedTransparentItems(queueSplit.transparentItems, viewMatrix: snapshot.sceneConstants.viewMatrix)
+        if shouldUpdatePickingMapping {
+            engineContext.pickingSystem.resetMapping()
+        }
 
-        for item in items {
+        for item in queueSplit.opaqueItems {
             let bindings = item.bindings
             let materialKey = makeMaterialKey(bindings: bindings)
             let key = RenderBatchKey(
                 meshHandle: item.meshHandle,
+                submeshIndexKey: item.submeshIndex ?? -1,
                 materialKey: materialKey,
                 pipeline: .HDRInstanced,
                 cullModeKey: bindings.cullMode == .none ? 0 : 1,
-                alphaModeKey: bindings.passKey.alphaMode.rawValue,
+                blendModeKey: bindings.passKey.blendMode.rawValue,
                 unlitKey: bindings.passKey.isUnlit ? 1 : 0,
                 castsShadowsKey: bindings.passKey.castsShadows ? 1 : 0,
-                receivesShadowsKey: bindings.passKey.receivesShadows ? 1 : 0
+                receivesShadowsKey: bindings.passKey.receivesShadows ? 1 : 0,
+                localReflectionPrefilteredHandle: bindings.localReflectionPrefilteredHandle,
+                localReflectionProbeHash: localReflectionProbeHash(bindings: bindings)
             )
-            var builder = builders[key] ?? RenderBatchBuilder(mesh: item.mesh, bindings: bindings, instances: [], bounds: [])
-            let pickId = engineContext.pickingSystem.assignPickId(for: item.entity)
-            var instance = InstanceData()
-            instance.modelMatrix = modelMatrix(for: item.transform)
-            instance.entityID = pickId
-            if let range = validatedSkinningRange(item: item,
-                                                  snapshot: snapshot,
-                                                  engineContext: engineContext) {
-                let maxUInt32AsInt = Int(UInt32.max)
-                if range.startIndex >= 0,
-                   range.count > 0,
-                   range.startIndex <= maxUInt32AsInt,
-                   range.count <= maxUInt32AsInt {
-                    instance.bonePaletteOffset = UInt32(range.startIndex)
-                    instance.bonePaletteCount = UInt32(range.count)
-                    instance.skinningFlags = 1
-                } else {
-#if DEBUG
-                    MC_ASSERT(false, "Bone palette range exceeds UInt32 limits; skinning disabled for this draw instance.")
-#endif
-                }
-            }
+            var builder = builders[key] ?? RenderBatchBuilder(mesh: item.mesh, submeshIndex: item.submeshIndex, bindings: bindings, instances: [], bounds: [])
+            let pickId = shouldUpdatePickingMapping
+                ? engineContext.pickingSystem.assignPickId(for: item.entity)
+                : 0
+            let instance = makeInstanceData(
+                item: item,
+                snapshot: snapshot,
+                engineContext: engineContext,
+                pickId: pickId
+            )
             builder.instances.append(instance)
             builder.bounds.append(item.bounds)
             builders[key] = builder
             uniqueMeshes.insert(item.meshHandle)
         }
 
+        var transparentInstances: [InstanceData] = []
+        var transparentDraws: [TransparentDraw] = []
+        transparentInstances.reserveCapacity(sortedTransparentItems.count)
+        transparentDraws.reserveCapacity(sortedTransparentItems.count)
+
+        for (sortedIndex, entry) in sortedTransparentItems.enumerated() {
+            let item = entry.item
+            let pickId = shouldUpdatePickingMapping
+                ? engineContext.pickingSystem.assignPickId(for: item.entity)
+                : 0
+            let instance = makeInstanceData(
+                item: item,
+                snapshot: snapshot,
+                engineContext: engineContext,
+                pickId: pickId
+            )
+            transparentInstances.append(instance)
+            transparentDraws.append(
+                TransparentDraw(
+                    item: item,
+                    instanceIndex: sortedIndex,
+                    sortDepth: entry.sortDepth,
+                    originalIndex: entry.originalIndex
+                )
+            )
+            uniqueMeshes.insert(item.meshHandle)
+        }
+
         var instances: [InstanceData] = []
         var instanceBounds: [InstanceBounds] = []
-        instances.reserveCapacity(items.count)
-        instanceBounds.reserveCapacity(items.count)
+        instances.reserveCapacity(queueSplit.opaqueItems.count)
+        instanceBounds.reserveCapacity(queueSplit.opaqueItems.count)
         var batches: [RenderBatch] = []
         batches.reserveCapacity(builders.count)
         var instancedDrawCalls = 0
@@ -978,57 +1592,111 @@ public enum SceneRenderer {
             instances.append(contentsOf: builder.instances)
             instanceBounds.append(contentsOf: builder.bounds)
             let end = instances.count
-            batches.append(RenderBatch(mesh: builder.mesh, bindings: builder.bindings, instanceRange: start..<end))
+            batches.append(RenderBatch(mesh: builder.mesh, submeshIndex: builder.submeshIndex, bindings: builder.bindings, instanceRange: start..<end))
             instancedDrawCalls += 1
         }
 
-        let instanceBuffer = frameContext.uploadInstanceData(instances)
-        let bonePaletteBuffer = frameContext.uploadBonePaletteData(snapshot.animationPayload?.bonePaletteMatrices ?? [])
-
+        let instanceBuffer = frameContext.makeDedicatedInstanceBuffer(
+            instances,
+            label: "OpaqueInstanceBuffer.View\(viewSignature)"
+        )
 #if DEBUG
-        if !didInstanceSanityCheck, let instanceBuffer, let first = instances.first {
-            didInstanceSanityCheck = true
-            let raw = instanceBuffer.contents().assumingMemoryBound(to: Float.self)
-            let reconstructed = matrix_float4x4(columns: (
-                SIMD4<Float>(raw[0], raw[1], raw[2], raw[3]),
-                SIMD4<Float>(raw[4], raw[5], raw[6], raw[7]),
-                SIMD4<Float>(raw[8], raw[9], raw[10], raw[11]),
-                SIMD4<Float>(raw[12], raw[13], raw[14], raw[15])
-            ))
-            let expected = first.modelMatrix
-            var maxDelta: Float = 0.0
-            for c in 0..<4 {
-                for r in 0..<4 {
-                    let delta = abs(reconstructed[c][r] - expected[c][r])
-                    if delta > maxDelta { maxDelta = delta }
-                }
-            }
-            MC_ASSERT(maxDelta < 1e-4, "Instance matrix upload mismatch (column-major). Max delta: \(maxDelta).")
+        validateUploadedInstanceBuffer(instanceBuffer, against: instances)
+#endif
+        let transparentInstanceBuffer = frameContext.makeDedicatedInstanceBuffer(
+            transparentInstances,
+            label: "TransparentInstanceBuffer.View\(viewSignature)"
+        )
+#if DEBUG
+        validateUploadedInstanceBuffer(transparentInstanceBuffer, against: transparentInstances)
+        if let instanceBuffer, let transparentInstanceBuffer {
+            MC_ASSERT(instanceBuffer !== transparentInstanceBuffer,
+                      "Opaque and transparent instance uploads must not alias the same MTLBuffer.")
         }
 #endif
+        let bonePaletteBuffer = frameContext.makeDedicatedBonePaletteBuffer(
+            snapshot.animationPayload?.bonePaletteMatrices ?? [],
+            label: "BonePaletteBuffer.View\(viewSignature)"
+        )
 
         let stats = RendererBatchStats(
             uniqueMeshes: uniqueMeshes.count,
             batches: batches.count,
             instancedDrawCalls: instancedDrawCalls,
-            nonInstancedDrawCalls: 0
+            nonInstancedDrawCalls: transparentDraws.count
         )
-        frameContext.updateBatchStats(stats)
+        if shouldUpdateBatchStats {
+            frameContext.updateBatchStats(stats)
+        }
 
         if let profiler {
             profiler.record(.renderBatches, seconds: CACurrentMediaTime() - buildStart)
         }
-        return RenderBatchResult(instances: instances,
-                                 instanceBounds: instanceBounds,
-                                 batches: batches,
-                                 instanceBuffer: instanceBuffer,
-                                 bonePaletteBuffer: bonePaletteBuffer)
+        let opaqueBatchResult = RenderBatchResult(instances: instances,
+                                                  instanceBounds: instanceBounds,
+                                                  batches: batches,
+                                                  instanceBuffer: instanceBuffer,
+                                                  bonePaletteBuffer: bonePaletteBuffer)
+        return RenderSubmissionResult(opaqueBatchResult: opaqueBatchResult,
+                                      transparentDraws: transparentDraws,
+                                      transparentInstanceBuffer: transparentInstanceBuffer)
     }
 
+    private static func makeInstanceData(item: RenderItem,
+                                         snapshot: RenderFrameSnapshot,
+                                         engineContext: EngineContext,
+                                         pickId: UInt32) -> InstanceData {
+        var instance = InstanceData()
+        instance.modelMatrix = modelMatrix(for: item.transform)
+        instance.entityID = pickId
+        if let range = validatedSkinningRange(item: item,
+                                              snapshot: snapshot,
+                                              engineContext: engineContext) {
+            let maxUInt32AsInt = Int(UInt32.max)
+            if range.startIndex >= 0,
+               range.count > 0,
+               range.startIndex <= maxUInt32AsInt,
+               range.count <= maxUInt32AsInt {
+                instance.bonePaletteOffset = UInt32(range.startIndex)
+                instance.bonePaletteCount = UInt32(range.count)
+                instance.skinningFlags = 1
+            } else {
+#if DEBUG
+                MC_ASSERT(false, "Bone palette range exceeds UInt32 limits; skinning disabled for this draw instance.")
+#endif
+            }
+        }
+        return instance
+    }
+
+#if DEBUG
+    private static func validateUploadedInstanceBuffer(_ instanceBuffer: MTLBuffer?, against instances: [InstanceData]) {
+        guard !didInstanceSanityCheck, let instanceBuffer, let first = instances.first else { return }
+        didInstanceSanityCheck = true
+        let raw = instanceBuffer.contents().assumingMemoryBound(to: Float.self)
+        let reconstructed = matrix_float4x4(columns: (
+            SIMD4<Float>(raw[0], raw[1], raw[2], raw[3]),
+            SIMD4<Float>(raw[4], raw[5], raw[6], raw[7]),
+            SIMD4<Float>(raw[8], raw[9], raw[10], raw[11]),
+            SIMD4<Float>(raw[12], raw[13], raw[14], raw[15])
+        ))
+        let expected = first.modelMatrix
+        var maxDelta: Float = 0.0
+        for c in 0..<4 {
+            for r in 0..<4 {
+                let delta = abs(reconstructed[c][r] - expected[c][r])
+                if delta > maxDelta { maxDelta = delta }
+            }
+        }
+        MC_ASSERT(maxDelta < 1e-4, "Instance matrix upload mismatch (column-major). Max delta: \(maxDelta).")
+    }
+#endif
+
     private static func resolveMaterialBindings(renderable: RenderFrameSnapshot.Renderable,
+                                                submeshIndex: Int?,
                                                 engineContext: EngineContext) -> MaterialBindings {
         let meshRenderer = renderable.meshRenderer
-        let materialHandle = meshRenderer.materialHandle ?? renderable.inheritedMaterialHandle
+        let baseMaterialHandle = meshRenderer.materialHandle ?? renderable.inheritedMaterialHandle
         let submeshMaterialHandles = meshRenderer.submeshMaterialHandles
         var materialOverride = meshRenderer.material
         var albedoMapHandle = meshRenderer.albedoMapHandle
@@ -1041,17 +1709,33 @@ public enum SceneRenderer {
         var emissiveMapHandle = meshRenderer.emissiveMapHandle
         // Cull mode is derived from material state only (never from entity naming hacks).
         var passKey = MaterialPassKey(
-            alphaMode: .opaque,
+            blendMode: .opaque,
             doubleSided: false,
             isUnlit: false,
             castsShadows: true,
             receivesShadows: true
         )
 
+        let hasExplicitOverrides = materialOverride != nil
+            || albedoMapHandle != nil
+            || normalMapHandle != nil
+            || metallicMapHandle != nil
+            || roughnessMapHandle != nil
+            || mrMapHandle != nil
+            || ormMapHandle != nil
+            || aoMapHandle != nil
+            || emissiveMapHandle != nil
         let usesSubmeshMaterials = submeshMaterialHandles?.contains(where: { $0 != nil }) == true
-        if !usesSubmeshMaterials,
-           let materialHandle,
-           let materialAsset = engineContext.assets.material(handle: materialHandle) {
+        let submeshMaterialHandle: AssetHandle? = {
+            guard let submeshIndex,
+                  let submeshMaterialHandles,
+                  submeshIndex < submeshMaterialHandles.count else { return nil }
+            return submeshMaterialHandles[submeshIndex]
+        }()
+        let resolvedMaterialHandle = (!hasExplicitOverrides && usesSubmeshMaterials) ? submeshMaterialHandle : baseMaterialHandle
+
+        if let resolvedMaterialHandle,
+           let materialAsset = engineContext.assets.material(handle: resolvedMaterialHandle) {
             materialOverride = materialAsset.buildMetalMaterial(database: engineContext.assetDatabase)
             albedoMapHandle = materialAsset.textures.baseColor
             normalMapHandle = materialAsset.textures.normal
@@ -1066,40 +1750,29 @@ public enum SceneRenderer {
             }
             switch materialAsset.alphaMode {
             case .opaque:
-                passKey.alphaMode = .opaque
-            case .masked:
-                passKey.alphaMode = .alphaClip
-            case .blended:
-                passKey.alphaMode = .alphaBlend
+                passKey.blendMode = .opaque
+            case .alphaClip:
+                passKey.blendMode = .alphaClip
+            case .transparent:
+                passKey.blendMode = .transparent
+            case .additive:
+                passKey.blendMode = .additive
             }
             passKey.isUnlit = materialAsset.unlit
         }
         if let overrideFlags = materialOverride?.flags {
             if (overrideFlags & MetalCupMaterialFlags.alphaMasked.rawValue) != 0 {
-                passKey.alphaMode = .alphaClip
+                passKey.blendMode = .alphaClip
+            } else if (overrideFlags & MetalCupMaterialFlags.additiveBlended.rawValue) != 0 {
+                passKey.blendMode = .additive
             } else if (overrideFlags & MetalCupMaterialFlags.alphaBlended.rawValue) != 0 {
-                passKey.alphaMode = .alphaBlend
+                passKey.blendMode = .transparent
             }
             if (overrideFlags & MetalCupMaterialFlags.isDoubleSided.rawValue) != 0 {
                 passKey.doubleSided = true
             }
             if (overrideFlags & MetalCupMaterialFlags.isUnlit.rawValue) != 0 {
                 passKey.isUnlit = true
-            }
-        }
-        if usesSubmeshMaterials, let handles = submeshMaterialHandles {
-            for handle in handles {
-                guard let handle,
-                      let submeshMaterial = engineContext.assets.material(handle: handle) else { continue }
-                if submeshMaterial.doubleSided {
-                    passKey.doubleSided = true
-                }
-                if submeshMaterial.alphaMode == .masked {
-                    passKey.alphaMode = .alphaClip
-                } else if submeshMaterial.alphaMode == .blended, passKey.alphaMode != .alphaClip {
-                    passKey.alphaMode = .alphaBlend
-                }
-                passKey.isUnlit = passKey.isUnlit || submeshMaterial.unlit
             }
         }
         if let normalHandle = normalMapHandle,
@@ -1114,8 +1787,7 @@ public enum SceneRenderer {
 
         let cullMode: MTLCullMode = passKey.doubleSided ? .none : .back
         return MaterialBindings(
-            materialHandle: materialHandle,
-            submeshMaterialHandles: submeshMaterialHandles,
+            materialHandle: resolvedMaterialHandle,
             materialOverride: materialOverride,
             albedoMapHandle: albedoMapHandle,
             normalMapHandle: normalMapHandle,
@@ -1125,9 +1797,187 @@ public enum SceneRenderer {
             ormMapHandle: ormMapHandle,
             aoMapHandle: aoMapHandle,
             emissiveMapHandle: emissiveMapHandle,
+            localReflectionProbe: nil,
+            localReflectionPrefilteredHandle: nil,
             cullMode: cullMode,
             passKey: passKey
         )
+    }
+
+    private static func resolveLocalReflectionProbeBindings(bounds: InstanceBounds,
+                                                            snapshot: RenderFrameSnapshot,
+                                                            baseBindings: MaterialBindings) -> MaterialBindings {
+        guard let selection = selectLocalReflectionProbe(at: bounds.center, snapshot: snapshot) else {
+            return baseBindings
+        }
+        var bindings = baseBindings
+        bindings.localReflectionProbe = selection.uniform
+        bindings.localReflectionPrefilteredHandle = selection.prefilteredHandle
+        return bindings
+    }
+
+    private static func selectLocalReflectionProbe(for bounds: InstanceBounds,
+                                                   snapshot: RenderFrameSnapshot) -> LocalReflectionProbeSelection? {
+        selectLocalReflectionProbe(at: bounds.center, snapshot: snapshot)
+    }
+
+    private static func selectLocalReflectionProbe(at samplePosition: SIMD3<Float>,
+                                                   snapshot: RenderFrameSnapshot) -> LocalReflectionProbeSelection? {
+        var bestSelection: LocalReflectionProbeSelection?
+
+        for probe in snapshot.reflectionProbes {
+            guard probe.enabled,
+                  probe.runtimeReady,
+                  let prefilteredHandle = probe.prefilteredHandle else { continue }
+            guard let influence = evaluateReflectionProbeInfluence(probe: probe, samplePosition: samplePosition) else {
+                continue
+            }
+            let boxExtents = influence.boxExtents
+            let blendDistance = influence.blendDistance
+            let uniform = LocalReflectionProbeUniform(
+                probePositionAndWeight: SIMD4<Float>(probe.worldTransform.position, influence.weight),
+                boxExtentsAndBlendDistance: SIMD4<Float>(boxExtents, blendDistance),
+                intensityAndFlags: SIMD4<Float>(max(probe.intensity, 0.0), 1.0, Float(probe.priority), 0.0),
+                worldToProbeMatrix: influence.worldToProbe
+            )
+            let selection = LocalReflectionProbeSelection(
+                prefilteredHandle: prefilteredHandle,
+                uniform: uniform,
+                priority: probe.priority,
+                weight: influence.weight,
+                distanceSquared: influence.distanceSquared,
+                stableEntityKey: probe.entity.id
+            )
+
+            if shouldPreferLocalReflectionProbe(selection, over: bestSelection) {
+                bestSelection = selection
+            }
+        }
+
+        return bestSelection
+    }
+
+    private static func selectDebugReflectionProbe(at samplePosition: SIMD3<Float>,
+                                                   snapshot: RenderFrameSnapshot) -> DebugReflectionProbeSelectionCandidate? {
+        var bestSelection: DebugReflectionProbeSelectionCandidate?
+
+        for probe in snapshot.reflectionProbes {
+            guard probe.enabled else { continue }
+            guard let influence = evaluateReflectionProbeInfluence(probe: probe, samplePosition: samplePosition) else {
+                continue
+            }
+
+            let candidate = DebugReflectionProbeSelectionCandidate(
+                stableEntityKey: probe.entity.id,
+                priority: probe.priority,
+                weight: influence.weight,
+                distanceSquared: influence.distanceSquared
+            )
+            if shouldPreferDebugReflectionProbe(candidate, over: bestSelection) {
+                bestSelection = candidate
+            }
+        }
+
+        return bestSelection
+    }
+
+    public static func debugLocalReflectionProbeSelection(samplePosition: SIMD3<Float>,
+                                                          snapshot: RenderFrameSnapshot) -> ReflectionProbeDebugSelection {
+        let hasEnabledProbes = snapshot.reflectionProbes.contains { $0.enabled }
+        let hasReadyProbes = snapshot.reflectionProbes.contains {
+            $0.enabled && $0.runtimeReady && $0.prefilteredHandle != nil
+        }
+        if let runtimeSelection = selectLocalReflectionProbe(at: samplePosition, snapshot: snapshot) {
+            return ReflectionProbeDebugSelection(
+                selectedProbeEntityID: runtimeSelection.stableEntityKey,
+                weight: runtimeSelection.weight,
+                fallbackReason: .none
+            )
+        }
+        if let authoredSelection = selectDebugReflectionProbe(at: samplePosition, snapshot: snapshot) {
+            return ReflectionProbeDebugSelection(
+                selectedProbeEntityID: authoredSelection.stableEntityKey,
+                weight: authoredSelection.weight,
+                fallbackReason: .none
+            )
+        }
+
+        let fallbackReason: ReflectionProbeDebugFallbackReason
+        if !hasEnabledProbes {
+            fallbackReason = .noEnabledProbes
+        } else if !hasReadyProbes {
+            fallbackReason = .noReadyProbes
+        } else {
+            fallbackReason = .outsideInfluence
+        }
+        return ReflectionProbeDebugSelection(
+            selectedProbeEntityID: nil,
+            weight: 0.0,
+            fallbackReason: fallbackReason
+        )
+    }
+
+    private static func evaluateReflectionProbeInfluence(probe: ReflectionProbeSnapshot,
+                                                         samplePosition: SIMD3<Float>) -> (weight: Float,
+                                                                                           distanceSquared: Float,
+                                                                                           boxExtents: SIMD3<Float>,
+                                                                                           blendDistance: Float,
+                                                                                           worldToProbe: matrix_float4x4)? {
+        let boxExtents = max(probe.boxExtents, SIMD3<Float>(repeating: 0.001))
+        let probeTransform = TransformComponent(
+            position: probe.worldTransform.position,
+            rotation: probe.worldTransform.rotation,
+            scale: SIMD3<Float>(repeating: 1.0)
+        )
+        let worldToProbe = simd_inverse(modelMatrix(for: probeTransform))
+        let sampleLocal4 = worldToProbe * SIMD4<Float>(samplePosition, 1.0)
+        let sampleLocal = SIMD3<Float>(sampleLocal4.x, sampleLocal4.y, sampleLocal4.z)
+        let absLocal = abs(sampleLocal)
+        let excess = max(absLocal - boxExtents, SIMD3<Float>(repeating: 0.0))
+        let maxExcess = max(excess.x, max(excess.y, excess.z))
+        let blendDistance = max(probe.blendDistance, 0.0)
+
+        let weight: Float
+        if blendDistance <= 0 {
+            guard maxExcess == 0 else { return nil }
+            weight = 1.0
+        } else {
+            guard maxExcess <= blendDistance else { return nil }
+            weight = max(0.0, 1.0 - (maxExcess / blendDistance))
+        }
+
+        let distanceSquared = simd_length_squared(probe.worldTransform.position - samplePosition)
+        return (weight, distanceSquared, boxExtents, blendDistance, worldToProbe)
+    }
+
+    private static func shouldPreferDebugReflectionProbe(_ candidate: DebugReflectionProbeSelectionCandidate,
+                                                         over current: DebugReflectionProbeSelectionCandidate?) -> Bool {
+        guard let current else { return true }
+        if candidate.priority != current.priority {
+            return candidate.priority > current.priority
+        }
+        if candidate.weight != current.weight {
+            return candidate.weight > current.weight
+        }
+        if candidate.distanceSquared != current.distanceSquared {
+            return candidate.distanceSquared < current.distanceSquared
+        }
+        return candidate.stableEntityKey.uuidString < current.stableEntityKey.uuidString
+    }
+
+    private static func shouldPreferLocalReflectionProbe(_ candidate: LocalReflectionProbeSelection,
+                                                         over current: LocalReflectionProbeSelection?) -> Bool {
+        guard let current else { return true }
+        if candidate.priority != current.priority {
+            return candidate.priority > current.priority
+        }
+        if candidate.weight != current.weight {
+            return candidate.weight > current.weight
+        }
+        if candidate.distanceSquared != current.distanceSquared {
+            return candidate.distanceSquared < current.distanceSquared
+        }
+        return candidate.stableEntityKey.uuidString < current.stableEntityKey.uuidString
     }
 
     private static func validatedSkinningRange(item: RenderItem,
@@ -1207,14 +2057,6 @@ public enum SceneRenderer {
     }
 
     private static func makeMaterialKey(bindings: MaterialBindings) -> MaterialBatchKey {
-        if let submeshHandles = bindings.submeshMaterialHandles,
-           submeshHandles.contains(where: { $0 != nil }) {
-            var hasher = Hasher()
-            for handle in submeshHandles {
-                hasher.combine(handle?.rawValue)
-            }
-            return MaterialBatchKey(materialHandle: nil, overrideHash: hasher.finalize())
-        }
         if let materialHandle = bindings.materialHandle {
             return MaterialBatchKey(materialHandle: materialHandle, overrideHash: 0)
         }
@@ -1231,6 +2073,11 @@ public enum SceneRenderer {
         hasher.combine(bindings.aoMapHandle?.rawValue)
         hasher.combine(bindings.emissiveMapHandle?.rawValue)
         return MaterialBatchKey(materialHandle: nil, overrideHash: hasher.finalize())
+    }
+
+    private static func localReflectionProbeHash(bindings: MaterialBindings) -> UInt64 {
+        guard var probe = bindings.localReflectionProbe else { return 0 }
+        return hashBytes(of: &probe)
     }
 
     private static func hashBytes<T>(of value: inout T) -> UInt64 {
@@ -1330,6 +2177,21 @@ public enum SceneRenderer {
         )
     }
 
+    public static func exposureSettings(from camera: CameraComponent, forceAutoExposure: Bool = false) -> SceneViewExposureSettings {
+        SceneViewExposureSettings(
+            autoExposureEnabled: (forceAutoExposure || camera.autoExposureEnabled) ? 1 : 0,
+            manualExposure: max(camera.manualExposure, 0.0001),
+            exposureCompensation: camera.exposureCompensation,
+            autoExposureMin: max(camera.autoExposureMin, 0.0001),
+            autoExposureMax: max(camera.autoExposureMax, max(camera.autoExposureMin, 0.0001)),
+            adaptationSpeed: max(camera.adaptationSpeed, 0.0)
+        )
+    }
+
+    public static func cameraExposure(scene: EngineScene) -> SceneViewExposureSettings {
+        scene.getViewExposureSettings()
+    }
+
     public static func gridParams(scene: EngineScene) -> GridParams {
         let constants = scene.getSceneConstants()
         var params = GridParams()
@@ -1370,14 +2232,33 @@ public enum SceneRenderer {
         }
     }
 }
-    private enum MaterialAlphaModeKey: Int32, Hashable {
+    private enum MaterialBlendModeKey: Int32, Hashable {
         case opaque = 0
         case alphaClip = 1
-        case alphaBlend = 2
+        case transparent = 2
+        case additive = 3
+
+        var isTransparent: Bool {
+            switch self {
+            case .transparent, .additive:
+                return true
+            case .opaque, .alphaClip:
+                return false
+            }
+        }
+
+        var usesDepthWrite: Bool {
+            switch self {
+            case .opaque, .alphaClip:
+                return true
+            case .transparent, .additive:
+                return false
+            }
+        }
     }
 
     private struct MaterialPassKey: Hashable {
-        var alphaMode: MaterialAlphaModeKey
+        var blendMode: MaterialBlendModeKey
         var doubleSided: Bool
         var isUnlit: Bool
         var castsShadows: Bool

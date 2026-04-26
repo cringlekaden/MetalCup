@@ -60,6 +60,11 @@ public enum FragmentBufferIndex {
     public static let tileParams = ShaderBindings.FragmentBuffer.tileParams
     public static let directionalLightCount = ShaderBindings.FragmentBuffer.directionalLightCount
     public static let directionalLightData = ShaderBindings.FragmentBuffer.directionalLightData
+    public static let viewExposure = ShaderBindings.FragmentBuffer.viewExposure
+    public static let postProcessDebugFlags = ShaderBindings.FragmentBuffer.postProcessDebugFlags
+    public static let postProcessSceneConstants = ShaderBindings.FragmentBuffer.postProcessSceneConstants
+    public static let postProcessParams = ShaderBindings.FragmentBuffer.postProcessParams
+    public static let localReflectionProbe = ShaderBindings.FragmentBuffer.localReflectionProbe
 }
 
 public enum FragmentTextureIndex {
@@ -81,6 +86,8 @@ public enum FragmentTextureIndex {
     public static let shadowMap = ShaderBindings.FragmentTexture.shadowMap
     public static let shadowMapSample = ShaderBindings.FragmentTexture.shadowMapSample
     public static let orm = ShaderBindings.FragmentTexture.orm
+    public static let sceneAO = ShaderBindings.FragmentTexture.sceneAO
+    public static let localReflectionPrefiltered = ShaderBindings.FragmentTexture.localReflectionPrefiltered
 }
 
 public enum FragmentSamplerIndex {
@@ -96,10 +103,26 @@ public enum PostProcessTextureIndex {
     public static let outlineMask = ShaderBindings.PostProcessTexture.outlineMask
     public static let depth = ShaderBindings.PostProcessTexture.depth
     public static let grid = ShaderBindings.PostProcessTexture.grid
+    public static let autoExposure = ShaderBindings.PostProcessTexture.autoExposure
+    public static let normals = ShaderBindings.PostProcessTexture.normals
+    public static let ssaoRaw = ShaderBindings.PostProcessTexture.ssaoRaw
+    public static let ssaoFiltered = ShaderBindings.PostProcessTexture.ssaoFiltered
+    public static let depthHierarchy = ShaderBindings.PostProcessTexture.depthHierarchy
+    public static let aoNormals = ShaderBindings.PostProcessTexture.aoNormals
+    public static let worldDebug = ShaderBindings.PostProcessTexture.worldDebug
 }
 
 public enum IBLTextureIndex {
     public static let environment = ShaderBindings.IBLTexture.environment
+}
+
+public struct PostProcessDebugFlags: sizeable {
+    public var hasSceneNormals: UInt32 = 0
+    public var hasSSAO: UInt32 = 0
+    public var hasAONormals: UInt32 = 0
+    public var padding: UInt32 = 0
+
+    public init() {}
 }
 
 // TBN invariants:
@@ -144,14 +167,35 @@ public struct InstanceData: sizeable {
 public struct SceneConstants: sizeable {
     public var totalGameTime = Float(0)
     public var viewMatrix = matrix_identity_float4x4
+    public var inverseViewMatrix = matrix_identity_float4x4
     public var skyViewMatrix = matrix_identity_float4x4
     public var projectionMatrix = matrix_identity_float4x4
     public var inverseProjectionMatrix = matrix_identity_float4x4
+    public var inverseViewProjectionMatrix = matrix_identity_float4x4
     public var cameraPositionAndIBL = SIMD4<Float>(0, 0, 0, 1)
 
     public static let expectedMetalStride = 16
-        + (MemoryLayout<matrix_float4x4>.stride * 4)
+        + (MemoryLayout<matrix_float4x4>.stride * 6)
         + MemoryLayout<SIMD4<Float>>.stride
+}
+
+public struct LocalReflectionProbeUniform: sizeable {
+    public static let expectedMetalStride: Int = 112
+
+    public var probePositionAndWeight = SIMD4<Float>(0, 0, 0, 0)
+    public var boxExtentsAndBlendDistance = SIMD4<Float>(0, 0, 0, 0)
+    public var intensityAndFlags = SIMD4<Float>(0, 0, 0, 0)
+    public var worldToProbeMatrix = matrix_identity_float4x4
+
+    public init(probePositionAndWeight: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 0),
+                boxExtentsAndBlendDistance: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 0),
+                intensityAndFlags: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 0),
+                worldToProbeMatrix: matrix_float4x4 = matrix_identity_float4x4) {
+        self.probePositionAndWeight = probePositionAndWeight
+        self.boxExtentsAndBlendDistance = boxExtentsAndBlendDistance
+        self.intensityAndFlags = intensityAndFlags
+        self.worldToProbeMatrix = worldToProbeMatrix
+    }
 }
 
 public struct MetalCupMaterial: sizeable {
@@ -203,6 +247,7 @@ public struct MetalCupMaterialFlags: OptionSet {
     public static let hasClearcoatGlossMap = MetalCupMaterialFlags(rawValue: 1 << 18)
     public static let usesFallbackMaterial = MetalCupMaterialFlags(rawValue: 1 << 19)
     public static let hasORMMap =            MetalCupMaterialFlags(rawValue: 1 << 20)
+    public static let additiveBlended =      MetalCupMaterialFlags(rawValue: 1 << 21)
 }
 
 public struct LightData: sizeable {

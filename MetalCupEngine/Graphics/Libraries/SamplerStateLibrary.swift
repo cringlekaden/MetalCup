@@ -115,8 +115,10 @@ class ShadowCompareSamplerState: SamplerState {
     var samplerState: MTLSamplerState!
     init(device: MTLDevice) {
         let samplerDescriptor = MTLSamplerDescriptor()
-        samplerDescriptor.minFilter = .linear
-        samplerDescriptor.magFilter = .linear
+        // Keep shadow compare taps point-sampled so hard shadows stay truthful
+        // and the shader's PCF kernel controls softness explicitly.
+        samplerDescriptor.minFilter = .nearest
+        samplerDescriptor.magFilter = .nearest
         samplerDescriptor.mipFilter = .notMipmapped
         samplerDescriptor.sAddressMode = .clampToEdge
         samplerDescriptor.tAddressMode = .clampToEdge
@@ -141,4 +143,3 @@ class ShadowDepthSamplerState: SamplerState {
         samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }
-

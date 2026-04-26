@@ -13,15 +13,6 @@ final class ReflectionProbeRuntimeManager {
                                    _ frameContext: RendererFrameContext,
                                    _ commandBuffer: MTLCommandBuffer) -> Void
 
-    private enum ReflectionProbeBakeStatus: String {
-        case idle
-        case queued
-        case capturing
-        case filtering
-        case ready
-        case failed
-    }
-
     private struct ReflectionProbeRuntimeHandles {
         var capturedEnvironmentHandle: AssetHandle?
         var prefilteredHandle: AssetHandle?
@@ -32,7 +23,7 @@ final class ReflectionProbeRuntimeManager {
         // Mirrors authored ECS data so runtime bake orchestration never mutates serialized scene state.
         var authoredProbe: ReflectionProbeComponent
         // Runtime-only bake status and transient handles.
-        var status: ReflectionProbeBakeStatus
+        var status: ReflectionProbeRuntimeStatus
         var runtimeHandles: ReflectionProbeRuntimeHandles
         var needsRebuild: Bool
         var queuedAtTime: Double?
@@ -114,8 +105,8 @@ final class ReflectionProbeRuntimeManager {
         runtimeStatesByScene[sceneKey] = runtimeState
     }
 
-    func reflectionProbeBakeStatus(scene: EngineScene, entityID: UUID) -> String? {
-        runtimeStatesByScene[ObjectIdentifier(scene)]?.probeStates[entityID]?.status.rawValue
+    func reflectionProbeBakeStatus(scene: EngineScene, entityID: UUID) -> ReflectionProbeRuntimeStatus? {
+        runtimeStatesByScene[ObjectIdentifier(scene)]?.probeStates[entityID]?.status
     }
 
     func debugReflectionProbeSelection(scene: EngineScene, entityID: UUID) -> ReflectionProbeDebugSelection? {

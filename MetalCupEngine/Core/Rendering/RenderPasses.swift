@@ -58,6 +58,12 @@ struct RenderPassHelpers {
         SIMD2<Float>(Float(texture.width), Float(texture.height))
     }
 
+    static func mipSize(for texture: MTLTexture, mip: Int = 0) -> SIMD2<Float> {
+        let width = max(1, texture.width >> mip)
+        let height = max(1, texture.height >> mip)
+        return SIMD2<Float>(Float(width), Float(height))
+    }
+
     static func withRenderPass(_ pass: RenderPassType, frameContext: RendererFrameContext, _ body: () -> Void) {
         let previous = frameContext.currentRenderPass()
         frameContext.setCurrentRenderPass(pass)
@@ -71,6 +77,91 @@ struct RenderPassHelpers {
     }
 }
 
+struct CanonicalScreenSpaceTextures {
+    let sceneColor: MTLTexture?
+    let sceneColorFogged: MTLTexture?
+    let sceneDepth: MTLTexture?
+    let sceneNormals: MTLTexture?
+    let ssaoNormals: MTLTexture?
+    let ssaoRaw: MTLTexture?
+    let ssaoFiltered: MTLTexture?
+    let ssaoPing: MTLTexture?
+    let sceneColorMSAA: MTLTexture?
+    let sceneDepthMSAA: MTLTexture?
+    let finalColor: MTLTexture?
+
+    init(registry: RenderResourceRegistry) {
+        sceneColor = registry.namedTexture(RenderNamedResourceKey.sceneColor)
+        sceneColorFogged = registry.namedTexture(RenderNamedResourceKey.sceneColorFogged)
+        sceneDepth = registry.namedTexture(RenderNamedResourceKey.sceneDepth)
+        sceneNormals = registry.namedTexture(RenderNamedResourceKey.sceneNormals)
+        ssaoNormals = registry.namedTexture(RenderNamedResourceKey.ssaoNormals)
+        ssaoRaw = registry.namedTexture(RenderNamedResourceKey.ssaoRaw)
+        ssaoFiltered = registry.namedTexture(RenderNamedResourceKey.ssaoFiltered)
+        ssaoPing = registry.namedTexture(RenderNamedResourceKey.ssaoPing)
+        sceneColorMSAA = registry.namedTexture(RenderNamedResourceKey.sceneColorMSAA)
+        sceneDepthMSAA = registry.namedTexture(RenderNamedResourceKey.sceneDepthMSAA)
+        finalColor = registry.namedTexture(RenderNamedResourceKey.postFinalColor)
+    }
+
+    func downstreamSceneColor(heightFogEnabled: Bool) -> MTLTexture? {
+        if heightFogEnabled, let fogged = sceneColorFogged {
+            return fogged
+        }
+        return sceneColor
+    }
+}
+
+enum ScreenSpaceDebugSurface {
+    case sceneDepth
+    case sceneNormals
+    case ssaoRaw
+    case ssaoFiltered
+
+    func texture(from surfaces: CanonicalScreenSpaceTextures) -> MTLTexture? {
+        switch self {
+        case .sceneDepth:
+            return surfaces.sceneDepth
+        case .sceneNormals:
+            return surfaces.sceneNormals
+        case .ssaoRaw:
+            return surfaces.ssaoRaw
+        case .ssaoFiltered:
+            return surfaces.ssaoFiltered
+        }
+    }
+}
+
+struct FullscreenTarget {
+    let texture: MTLTexture
+    let mipLevel: Int
+    let loadAction: MTLLoadAction
+    let clearColor: MTLClearColor
+
+    init(texture: MTLTexture,
+         mipLevel: Int = 0,
+         loadAction: MTLLoadAction = .clear,
+         clearColor: MTLClearColor = ClearColor.Black) {
+        self.texture = texture
+        self.mipLevel = mipLevel
+        self.loadAction = loadAction
+        self.clearColor = clearColor
+    }
+
+    var size: SIMD2<Float> {
+        RenderPassHelpers.mipSize(for: texture, mip: mipLevel)
+    }
+
+    func renderPassDescriptor() -> MTLRenderPassDescriptor {
+        switch loadAction {
+        case .load:
+            return RenderPassBuilder.colorLoad(texture: texture, level: mipLevel)
+        default:
+            return RenderPassBuilder.color(texture: texture, level: mipLevel, clearColor: clearColor)
+        }
+    }
+}
+
 #if DEBUG
 @inline(__always)
 private func assertForwardPlusLightsAreLocalOnly(_ lights: [LightData], context: StaticString) {
@@ -79,50 +170,134 @@ private func assertForwardPlusLightsAreLocalOnly(_ lights: [LightData], context:
 }
 #endif
 
+struct PostProcessInputs {
+    var sampler: SamplerStateType?
+    var source: MTLTexture?
+    var bloom: MTLTexture?
+    var outlineMask: MTLTexture?
+    var sceneDepth: MTLTexture?
+    var sceneNormals: MTLTexture?
+    var aoNormals: MTLTexture?
+    var ssaoRaw: MTLTexture?
+    var ssaoFiltered: MTLTexture?
+    var grid: MTLTexture?
+    var worldDebug: MTLTexture?
+    var autoExposure: MTLTexture?
+    var settings: RendererSettings?
+    var viewExposure: SceneViewExposureSettings?
+
+    init(sampler: SamplerStateType? = nil,
+         source: MTLTexture? = nil,
+         bloom: MTLTexture? = nil,
+         outlineMask: MTLTexture? = nil,
+         sceneDepth: MTLTexture? = nil,
+         sceneNormals: MTLTexture? = nil,
+         aoNormals: MTLTexture? = nil,
+         ssaoRaw: MTLTexture? = nil,
+         ssaoFiltered: MTLTexture? = nil,
+         grid: MTLTexture? = nil,
+         worldDebug: MTLTexture? = nil,
+         autoExposure: MTLTexture? = nil,
+         settings: RendererSettings? = nil,
+         viewExposure: SceneViewExposureSettings? = nil) {
+        self.sampler = sampler
+        self.source = source
+        self.bloom = bloom
+        self.outlineMask = outlineMask
+        self.sceneDepth = sceneDepth
+        self.sceneNormals = sceneNormals
+        self.aoNormals = aoNormals
+        self.ssaoRaw = ssaoRaw
+        self.ssaoFiltered = ssaoFiltered
+        self.grid = grid
+        self.worldDebug = worldDebug
+        self.autoExposure = autoExposure
+        self.settings = settings
+        self.viewExposure = viewExposure
+    }
+
+    init(canonical surfaces: CanonicalScreenSpaceTextures,
+         sampler: SamplerStateType? = nil,
+         source: MTLTexture? = nil,
+         bloom: MTLTexture? = nil,
+         outlineMask: MTLTexture? = nil,
+         useSceneDepth: Bool = false,
+         useSceneNormals: Bool = false,
+         useSSAO: Bool = false,
+         grid: MTLTexture? = nil,
+         worldDebug: MTLTexture? = nil,
+         autoExposure: MTLTexture? = nil,
+         settings: RendererSettings? = nil,
+         viewExposure: SceneViewExposureSettings? = nil) {
+        self.init(
+            sampler: sampler,
+            source: source ?? surfaces.sceneColor,
+            bloom: bloom,
+            outlineMask: outlineMask,
+            sceneDepth: useSceneDepth ? surfaces.sceneDepth : nil,
+            sceneNormals: useSceneNormals ? surfaces.sceneNormals : nil,
+            aoNormals: useSSAO ? surfaces.ssaoNormals : nil,
+            ssaoRaw: useSSAO ? surfaces.ssaoRaw : nil,
+            ssaoFiltered: useSSAO ? surfaces.ssaoFiltered : nil,
+            grid: grid,
+            worldDebug: worldDebug,
+            autoExposure: autoExposure,
+            settings: settings,
+            viewExposure: viewExposure
+        )
+    }
+
+    func bind(into encoder: MTLRenderCommandEncoder,
+              frameContext: RendererFrameContext,
+              graphics: Graphics) {
+        let fallback = frameContext.engineContext().fallbackTextures
+        if let sampler {
+            encoder.setFragmentSamplerState(graphics.samplerStates[sampler], index: FragmentSamplerIndex.linearClamp)
+        }
+        if let source {
+            encoder.setFragmentTexture(source, index: PostProcessTextureIndex.source)
+        } else {
+            encoder.setFragmentTexture(fallback.blackRGBA, index: PostProcessTextureIndex.source)
+        }
+        encoder.setFragmentTexture(bloom ?? fallback.blackRGBA, index: PostProcessTextureIndex.bloom)
+        // Optional editor/composite overlays must fall back to transparent black.
+        // Using opaque black here darkens the frame whenever a view intentionally omits an overlay texture.
+        encoder.setFragmentTexture(outlineMask ?? fallback.transparentBlackRGBA, index: PostProcessTextureIndex.outlineMask)
+        encoder.setFragmentTexture(sceneDepth ?? fallback.depth1x1, index: PostProcessTextureIndex.depth)
+        encoder.setFragmentTexture(grid ?? fallback.transparentBlackRGBA, index: PostProcessTextureIndex.grid)
+        encoder.setFragmentTexture(worldDebug ?? fallback.transparentBlackRGBA, index: PostProcessTextureIndex.worldDebug)
+        encoder.setFragmentTexture(autoExposure ?? fallback.blackRGBA, index: PostProcessTextureIndex.autoExposure)
+        encoder.setFragmentTexture(sceneNormals ?? fallback.blackRGBA, index: PostProcessTextureIndex.normals)
+        encoder.setFragmentTexture(aoNormals ?? fallback.blackRGBA, index: PostProcessTextureIndex.aoNormals)
+        encoder.setFragmentTexture(ssaoRaw ?? fallback.blackRGBA, index: PostProcessTextureIndex.ssaoRaw)
+        encoder.setFragmentTexture(ssaoFiltered ?? fallback.blackRGBA, index: PostProcessTextureIndex.ssaoFiltered)
+        let resolvedSettings = settings ?? frameContext.rendererSettings()
+        let settingsBuffer = frameContext.uploadRendererSettings(resolvedSettings)
+        encoder.setFragmentBuffer(settingsBuffer.buffer, offset: settingsBuffer.offset, index: FragmentBufferIndex.rendererSettings)
+        let sceneConstants = frameContext.renderFrameSnapshot()?.sceneConstants ?? SceneConstants()
+        let sceneConstantsBuffer = frameContext.uploadSceneConstants(sceneConstants)
+        encoder.setFragmentBuffer(sceneConstantsBuffer, offset: 0, index: FragmentBufferIndex.postProcessSceneConstants)
+        var resolvedExposure = viewExposure ?? frameContext.viewContext().exposureSettings
+        encoder.setFragmentBytes(&resolvedExposure, length: SceneViewExposureSettings.stride, index: FragmentBufferIndex.viewExposure)
+        var debugFlags = PostProcessDebugFlags()
+        debugFlags.hasSceneNormals = (sceneNormals != nil) ? 1 : 0
+        debugFlags.hasSSAO = (ssaoRaw != nil || ssaoFiltered != nil) ? 1 : 0
+        debugFlags.hasAONormals = (aoNormals != nil) ? 1 : 0
+        encoder.setFragmentBytes(&debugFlags, length: PostProcessDebugFlags.stride, index: FragmentBufferIndex.postProcessDebugFlags)
+    }
+}
+
 struct FullscreenPass {
     var pipeline: RenderPipelineStateType
     var label: String
-    var sampler: SamplerStateType
-    var useSampler: Bool
-    var texture0: MTLTexture?
-    var useTexture0: Bool
-    var texture1: MTLTexture?
-    var useTexture1: Bool
-    var outlineMask: MTLTexture?
-    var useOutlineMask: Bool
-    var depth: MTLTexture?
-    var useDepth: Bool
-    var grid: MTLTexture?
-    var useGrid: Bool
-    var settings: RendererSettings?
+    var inputs: PostProcessInputs
 
     func encode(into encoder: MTLRenderCommandEncoder, quad: MCMesh, frameContext: RendererFrameContext, graphics: Graphics) {
         encoder.setRenderPipelineState(graphics.renderPipelineStates[pipeline])
         encoder.label = label
         encoder.pushDebugGroup(label)
         encoder.setCullMode(.none)
-        if useSampler {
-            encoder.setFragmentSamplerState(graphics.samplerStates[sampler], index: FragmentSamplerIndex.linearClamp)
-        }
-        let fallback = frameContext.engineContext().fallbackTextures
-        if useTexture0 {
-            encoder.setFragmentTexture(texture0 ?? fallback.blackRGBA, index: PostProcessTextureIndex.source)
-        }
-        if useTexture1 {
-            encoder.setFragmentTexture(texture1 ?? fallback.blackRGBA, index: PostProcessTextureIndex.bloom)
-        }
-        if useOutlineMask {
-            encoder.setFragmentTexture(outlineMask ?? fallback.blackRGBA, index: PostProcessTextureIndex.outlineMask)
-        }
-        if useDepth {
-            encoder.setFragmentTexture(depth ?? fallback.depth1x1, index: PostProcessTextureIndex.depth)
-        }
-        if useGrid {
-            encoder.setFragmentTexture(grid ?? fallback.blackRGBA, index: PostProcessTextureIndex.grid)
-        }
-        let resolvedSettings = settings ?? frameContext.rendererSettings()
-        let settingsBuffer = frameContext.uploadRendererSettings(resolvedSettings)
-        encoder.setFragmentBuffer(settingsBuffer.buffer, offset: settingsBuffer.offset, index: FragmentBufferIndex.rendererSettings)
+        inputs.bind(into: encoder, frameContext: frameContext, graphics: graphics)
         quad.drawPrimitives(encoder, frameContext: frameContext)
         encoder.popDebugGroup()
     }
@@ -145,16 +320,16 @@ final class DepthPrepassPass: RenderGraphPass {
     let name = "DepthPrepassPass"
     let gpuPass: RendererProfiler.GpuPass? = .depthPrepass
     let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
-        .texture(RenderTextureHandle(key: .baseDepth)),
+        .namedTexture(RenderNamedResourceKey.sceneDepth),
         .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth)
     ]
     let outputs: [RenderPassResourceUsage] = [
-        .texture(.baseDepth),
+        .namedTexture(RenderNamedResourceKey.sceneDepth),
         .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth, requiredUsage: .shaderRead)
     ]
 
     func execute(frame: RenderGraphFrame) {
-        guard let depth = frame.resourceRegistry.texture(.baseDepth) else { return }
+        guard let depth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) else { return }
         let frameIndex = frame.frameContext.currentFrameIndex()
         let pass = RenderPassBuilder.depth(texture: depth)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -174,22 +349,86 @@ final class DepthPrepassPass: RenderGraphPass {
 final class CullingDepthFallbackPass: RenderGraphPass {
     let name = "CullingDepthFallbackPass"
     let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
-        .texture(RenderTextureHandle(key: .baseDepth)),
+        .namedTexture(RenderNamedResourceKey.sceneDepth),
         .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth)
     ]
     let outputs: [RenderPassResourceUsage] = [
-        .texture(.baseDepth),
+        .namedTexture(RenderNamedResourceKey.sceneDepth),
         .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth, requiredUsage: .shaderRead)
     ]
 
     func execute(frame: RenderGraphFrame) {
-        guard let depth = frame.resourceRegistry.texture(.baseDepth) else { return }
+        guard let depth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) else { return }
         let pass = RenderPassBuilder.depth(texture: depth)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "Culling Depth Fallback"
         encoder.pushDebugGroup("Culling Depth Fallback")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(depth))
         RenderPassHelpers.withRenderPass(.depthPrepass, frameContext: frame.frameContext) {
+            frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
+        }
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+    }
+}
+
+final class SceneNormalsPass: RenderGraphPass {
+    let name = "SceneNormalsPass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneDepth)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneNormals, expectedFormat: .rg16Float)
+    ]
+
+    func execute(frame: RenderGraphFrame) {
+        guard let sceneNormals = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneNormals),
+              let sceneDepth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) else {
+            return
+        }
+
+        let pass = RenderPassBuilder.colorDepth(
+            color: sceneNormals,
+            depth: sceneDepth,
+            depthLoadAction: .load
+        )
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder.label = "Scene Normals Pass"
+        encoder.pushDebugGroup("Scene Normals Pass")
+        RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(sceneNormals))
+        RenderPassHelpers.withRenderPass(.normal, frameContext: frame.frameContext) {
+            frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
+        }
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+    }
+}
+
+final class AONormalsPass: RenderGraphPass {
+    let name = "AONormalsPass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneDepth)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.ssaoNormals, expectedFormat: .rg16Float)
+    ]
+
+    func execute(frame: RenderGraphFrame) {
+        guard let ssaoNormals = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.ssaoNormals),
+              let sceneDepth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) else {
+            return
+        }
+
+        let pass = RenderPassBuilder.colorDepth(
+            color: ssaoNormals,
+            depth: sceneDepth,
+            depthLoadAction: .load
+        )
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder.label = "AO Normals Pass"
+        encoder.pushDebugGroup("AO Normals Pass")
+        RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(ssaoNormals))
+        RenderPassHelpers.withRenderPass(.ssaoNormal, frameContext: frame.frameContext) {
             frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
@@ -238,9 +477,9 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
         MC_ASSERT(MemoryLayout<ForwardPlusTileIndexHeader>.alignment == ForwardPlusTileIndexHeader.expectedMetalAlignment,
                   "ForwardPlusTileIndexHeader ABI mismatch: expected alignment \(ForwardPlusTileIndexHeader.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusTileIndexHeader>.alignment).")
 #endif
-        guard let baseDepth = frame.resourceRegistry.texture(.baseDepth) else {
+        guard let baseDepth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) else {
 #if DEBUG
-            fatalError("ForwardPlusTileBinPass requires baseDepth render target.")
+            fatalError("ForwardPlusTileBinPass requires scene.depth render target.")
 #else
             return
 #endif
@@ -1019,11 +1258,18 @@ final class LightCullingPass: RenderGraphPass {
     }
 }
 
-final class ScenePass: RenderGraphPass {
-    let name = "ScenePass"
+final class OpaqueScenePass: RenderGraphPass {
+    let name = "OpaqueScenePass"
     let gpuPass: RendererProfiler.GpuPass? = .scene
+    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
+        .namedTexture(RenderNamedResourceKey.sceneColorMSAA),
+        .namedTexture(RenderNamedResourceKey.sceneDepthMSAA)
+    ]
     let inputs: [RenderPassResourceUsage] = [
-        .texture(.baseDepth),
+        .namedTexture(RenderNamedResourceKey.sceneDepth),
+        .namedTexture(RenderNamedResourceKey.sceneNormals),
+        .namedTexture(RenderNamedResourceKey.sceneColorMSAA),
+        .namedTexture(RenderNamedResourceKey.sceneDepthMSAA),
         .buffer(RenderNamedResourceKey.forwardPlusLightGrid),
         .buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
         .buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
@@ -1032,24 +1278,33 @@ final class ScenePass: RenderGraphPass {
         .buffer(RenderNamedResourceKey.forwardPlusTileParams)
     ]
     let outputs: [RenderPassResourceUsage] = [
-        .texture(.baseColor)
+        .namedTexture(RenderNamedResourceKey.sceneColorMSAA),
+        .namedTexture(RenderNamedResourceKey.sceneDepthMSAA)
     ]
 
     func execute(frame: RenderGraphFrame) {
         let sceneStart = CACurrentMediaTime()
         guard
-            let baseColor = frame.resourceRegistry.texture(.baseColor),
-            let baseDepth = frame.resourceRegistry.texture(.baseDepth)
+            let sceneColorMSAA = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneColorMSAA),
+            let sceneDepthMSAA = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepthMSAA)
         else { return }
-        let depthLoad = frame.renderPlan.sceneDepthLoadAction
         let frameIndex = frame.frameContext.currentFrameIndex()
-        let pass = RenderPassBuilder.colorDepth(color: baseColor, depth: baseDepth, depthLoadAction: depthLoad)
+        let pass = MTLRenderPassDescriptor()
+        // Single-sample baseDepth remains the authoritative shader-readable depth source.
+        // The MSAA depth target exists only to keep opaque + transparent scene rasterization coherent.
+        pass.colorAttachments[0].texture = sceneColorMSAA
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = ClearColor.Black
+        pass.depthAttachment.texture = sceneDepthMSAA
+        pass.depthAttachment.loadAction = .clear
+        pass.depthAttachment.storeAction = .store
+        pass.depthAttachment.clearDepth = 1.0
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
-        encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates.hdrInstancedPipeline(settings: frame.frameContext.rendererSettings()))
-        encoder.label = "Scene Pass"
-        encoder.pushDebugGroup("Scene Pass")
+        encoder.label = "Opaque Scene Pass"
+        encoder.pushDebugGroup("Opaque Scene Pass")
         frame.profiler.sampleGpuPassBegin(.scene, encoder: encoder, frameIndex: frameIndex)
-        RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(baseColor))
+        RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(sceneColorMSAA))
         RenderPassHelpers.withRenderPass(.main, frameContext: frame.frameContext) {
             frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
@@ -1057,6 +1312,175 @@ final class ScenePass: RenderGraphPass {
         encoder.endEncoding()
         frame.profiler.sampleGpuPassEnd(.scene, encoder: encoder, frameIndex: frameIndex)
         frame.profiler.record(.scene, seconds: CACurrentMediaTime() - sceneStart)
+    }
+}
+
+final class TransparentScenePass: RenderGraphPass {
+    let name = "TransparentScenePass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneColor),
+        .namedTexture(RenderNamedResourceKey.sceneColorMSAA),
+        .namedTexture(RenderNamedResourceKey.sceneDepthMSAA),
+        .buffer(RenderNamedResourceKey.forwardPlusLightGrid),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
+        .buffer(RenderNamedResourceKey.forwardPlusClusterParams),
+        .buffer(RenderNamedResourceKey.forwardPlusTileLightGrid),
+        .buffer(RenderNamedResourceKey.forwardPlusTileParams)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneColorMSAA),
+        .namedTexture(RenderNamedResourceKey.sceneDepthMSAA),
+        .namedTexture(RenderNamedResourceKey.sceneColor)
+    ]
+
+    func execute(frame: RenderGraphFrame) {
+        guard
+            let baseColor = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneColor),
+            let sceneColorMSAA = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneColorMSAA),
+            let sceneDepthMSAA = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepthMSAA)
+        else { return }
+
+        let pass = MTLRenderPassDescriptor()
+        // Resolve scene color once after transparency so post continues from a single-sample HDR scene buffer.
+        pass.colorAttachments[0].texture = sceneColorMSAA
+        pass.colorAttachments[0].loadAction = .load
+        if sceneColorMSAA.sampleCount > 1 {
+            pass.colorAttachments[0].resolveTexture = baseColor
+            pass.colorAttachments[0].storeAction = .multisampleResolve
+        } else {
+            pass.colorAttachments[0].storeAction = .store
+        }
+        pass.depthAttachment.texture = sceneDepthMSAA
+        pass.depthAttachment.loadAction = .load
+        pass.depthAttachment.storeAction = .store
+
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder.label = "Transparent Scene Pass"
+        encoder.pushDebugGroup("Transparent Scene Pass")
+        RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(sceneColorMSAA))
+        RenderPassHelpers.withRenderPass(.transparent, frameContext: frame.frameContext) {
+            frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
+        }
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+
+        if sceneColorMSAA.sampleCount <= 1 {
+            guard let blit = frame.commandBuffer.makeBlitCommandEncoder() else { return }
+            blit.label = "Scene Color Copy"
+            blit.copy(
+                from: sceneColorMSAA,
+                sourceSlice: 0,
+                sourceLevel: 0,
+                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                sourceSize: MTLSize(width: sceneColorMSAA.width, height: sceneColorMSAA.height, depth: 1),
+                to: baseColor,
+                destinationSlice: 0,
+                destinationLevel: 0,
+                destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+            )
+            blit.endEncoding()
+        }
+    }
+}
+
+final class SAOEvaluatePass: RenderGraphPass {
+    let name = "SAOEvaluatePass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneDepth),
+        .namedTexture(RenderNamedResourceKey.ssaoNormals)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.ssaoRaw, expectedFormat: .r16Float)
+    ]
+
+    func execute(frame: RenderGraphFrame) {
+        let surfaces = CanonicalScreenSpaceTextures(registry: frame.resourceRegistry)
+        guard
+            frame.renderPlan.ssaoEnabled,
+            let sceneDepth = surfaces.sceneDepth,
+            let sceneNormals = surfaces.ssaoNormals,
+            let ssaoRaw = surfaces.ssaoRaw,
+            let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
+        else { return }
+
+        // AO targets store visibility, so the neutral clear value is white.
+        let target = FullscreenTarget(texture: ssaoRaw, clearColor: MTLClearColorMake(1.0, 1.0, 1.0, 1.0))
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: target.renderPassDescriptor()) else { return }
+        RenderPassHelpers.setViewport(encoder, target.size)
+        let pass = FullscreenPass(
+            pipeline: .SAOEvaluate,
+            label: "SAO Evaluate",
+            inputs: PostProcessInputs(
+                sampler: .Nearest,
+                sceneDepth: sceneDepth,
+                sceneNormals: sceneNormals,
+                settings: frame.frameContext.rendererSettings()
+            )
+        )
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
+        encoder.endEncoding()
+    }
+}
+
+final class AOBlurPass: RenderGraphPass {
+    let name = "AOBlurPass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.ssaoRaw, expectedFormat: .r16Float),
+        .namedTexture(RenderNamedResourceKey.sceneDepth),
+        .namedTexture(RenderNamedResourceKey.ssaoNormals)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.ssaoFiltered, expectedFormat: .r16Float),
+        .namedTexture(RenderNamedResourceKey.ssaoPing, expectedFormat: .r16Float)
+    ]
+
+    func execute(frame: RenderGraphFrame) {
+        let surfaces = CanonicalScreenSpaceTextures(registry: frame.resourceRegistry)
+        guard
+            frame.renderPlan.ssaoEnabled,
+            let ssaoRaw = surfaces.ssaoRaw,
+            let ssaoFiltered = surfaces.ssaoFiltered,
+            let ssaoPing = surfaces.ssaoPing,
+            let sceneDepth = surfaces.sceneDepth,
+            let aoNormals = surfaces.ssaoNormals,
+            let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
+        else { return }
+
+        // Blur preserves AO visibility semantics through ping/pong.
+        let horizontalTarget = FullscreenTarget(texture: ssaoPing, clearColor: MTLClearColorMake(1.0, 1.0, 1.0, 1.0))
+        guard let horizontalEncoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: horizontalTarget.renderPassDescriptor()) else { return }
+        RenderPassHelpers.setViewport(horizontalEncoder, horizontalTarget.size)
+        let horizontalPass = FullscreenPass(
+            pipeline: .AOBlurH,
+            label: "AO Blur Horizontal",
+            inputs: PostProcessInputs(
+                sampler: .LinearClampToZero,
+                source: ssaoRaw,
+                sceneDepth: sceneDepth,
+                sceneNormals: aoNormals,
+                settings: frame.frameContext.rendererSettings()
+            )
+        )
+        horizontalPass.encode(into: horizontalEncoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
+        horizontalEncoder.endEncoding()
+
+        let verticalTarget = FullscreenTarget(texture: ssaoFiltered, clearColor: MTLClearColorMake(1.0, 1.0, 1.0, 1.0))
+        guard let verticalEncoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: verticalTarget.renderPassDescriptor()) else { return }
+        RenderPassHelpers.setViewport(verticalEncoder, verticalTarget.size)
+        let verticalPass = FullscreenPass(
+            pipeline: .AOBlurV,
+            label: "AO Blur Vertical",
+            inputs: PostProcessInputs(
+                sampler: .LinearClampToZero,
+                source: ssaoPing,
+                sceneDepth: sceneDepth,
+                sceneNormals: aoNormals,
+                settings: frame.frameContext.rendererSettings()
+            )
+        )
+        verticalPass.encode(into: verticalEncoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
+        verticalEncoder.endEncoding()
     }
 }
 
@@ -1114,7 +1538,7 @@ final class GridOverlayPass: RenderGraphPass {
         .texture(RenderTextureHandle(key: .gridColor))
     ]
     let inputs: [RenderPassResourceUsage] = [
-        .texture(.baseDepth)
+        .namedTexture(RenderNamedResourceKey.sceneDepth)
     ]
     let outputs: [RenderPassResourceUsage] = [
         .texture(.gridColor)
@@ -1142,7 +1566,7 @@ final class GridOverlayPass: RenderGraphPass {
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(grid))
         encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates[.GridOverlay])
         encoder.setCullMode(.none)
-        let depthTexture = frame.resourceRegistry.texture(.baseDepth) ?? frame.engineContext.fallbackTextures.depth1x1
+        let depthTexture = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) ?? frame.engineContext.fallbackTextures.depth1x1
         encoder.setFragmentSamplerState(frame.engineContext.graphics.samplerStates[.LinearClampToZero], index: FragmentSamplerIndex.linearClamp)
         encoder.setFragmentTexture(depthTexture, index: PostProcessTextureIndex.depth)
         encoder.setFragmentBytes(&params, length: GridParams.stride, index: FragmentBufferIndex.gridParams)
@@ -1155,26 +1579,21 @@ final class GridOverlayPass: RenderGraphPass {
 final class DebugDrawPass: RenderGraphPass {
     let name = "DebugDrawPass"
     let gpuPass: RendererProfiler.GpuPass? = nil
-    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
-        .texture(RenderTextureHandle(key: .gridColor))
-    ]
     let outputs: [RenderPassResourceUsage] = [
-        .texture(.gridColor)
+        .texture(.worldDebugColor)
     ]
 
     func execute(frame: RenderGraphFrame) {
         guard let snapshot = frame.sceneSnapshot,
-              let grid = frame.resourceRegistry.texture(.gridColor) else { return }
+              let worldDebug = frame.resourceRegistry.texture(.worldDebugColor) else { return }
         let debugDraw = frame.engineContext.debugDraw
         let lines = debugDraw.lines()
         let polylines = debugDraw.polylines()
         if lines.isEmpty && polylines.isEmpty {
-            if !frame.renderPlan.gridEnabled {
-                let pass = RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
-                if let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) {
-                    encoder.label = "Debug Draw Clear"
-                    encoder.endEncoding()
-                }
+            let pass = RenderPassBuilder.color(texture: worldDebug, clearColor: MTLClearColorMake(0, 0, 0, 0))
+            if let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) {
+                encoder.label = "Debug Draw Clear"
+                encoder.endEncoding()
             }
             return
         }
@@ -1332,10 +1751,8 @@ final class DebugDrawPass: RenderGraphPass {
         guard let buffer = frame.engineContext.device.makeBuffer(bytes: vertices,
                                                                  length: DebugLineVertex.stride(vertices.count),
                                                                  options: [.storageModeShared]) else { return }
-        let size = RenderPassHelpers.textureSize(grid)
-        let pass = frame.renderPlan.gridEnabled
-            ? RenderPassBuilder.colorLoad(texture: grid)
-            : RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
+        let size = RenderPassHelpers.textureSize(worldDebug)
+        let pass = RenderPassBuilder.color(texture: worldDebug, clearColor: MTLClearColorMake(0, 0, 0, 0))
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "Debug Draw"
         RenderPassHelpers.setViewport(encoder, size)
@@ -1366,6 +1783,86 @@ final class SelectionOutlinePass: RenderGraphPass {
     }
 }
 
+final class HeightFogPass: RenderGraphPass {
+    let name = "HeightFogPass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneColor),
+        .namedTexture(RenderNamedResourceKey.sceneDepth)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneColorFogged)
+    ]
+
+    func execute(frame: RenderGraphFrame) {
+        let surfaces = CanonicalScreenSpaceTextures(registry: frame.resourceRegistry)
+        guard
+            frame.renderPlan.heightFogEnabled,
+            let sceneTexture = surfaces.sceneColor,
+            let sceneDepth = surfaces.sceneDepth,
+            let foggedSceneTexture = surfaces.sceneColorFogged,
+            let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
+        else { return }
+
+        let target = FullscreenTarget(texture: foggedSceneTexture)
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: target.renderPassDescriptor()) else { return }
+        RenderPassHelpers.setViewport(encoder, target.size)
+        let pass = FullscreenPass(
+            pipeline: .HeightFog,
+            label: "Height Fog",
+            inputs: PostProcessInputs(
+                sampler: .LinearClampToZero,
+                source: sceneTexture,
+                sceneDepth: sceneDepth,
+                settings: frame.frameContext.rendererSettings()
+            )
+        )
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
+        encoder.endEncoding()
+    }
+}
+
+final class AutoExposurePass: RenderGraphPass {
+    let name = "AutoExposurePass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.sceneColor),
+        .namedTexture(RenderNamedResourceKey.sceneColorFogged)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.autoExposure)
+    ]
+
+    func execute(frame: RenderGraphFrame) {
+        let surfaces = CanonicalScreenSpaceTextures(registry: frame.resourceRegistry)
+        let postSceneColor = surfaces.downstreamSceneColor(heightFogEnabled: frame.renderPlan.heightFogEnabled)
+        guard frame.renderPlan.autoExposureEnabled,
+              let sceneTexture = postSceneColor,
+              let autoExposureTexture = frame.resourceRegistry.texture(.autoExposure),
+              let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
+
+        let target = FullscreenTarget(texture: autoExposureTexture)
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: target.renderPassDescriptor()) else { return }
+        RenderPassHelpers.setViewport(encoder, target.size)
+        let pass = FullscreenPass(
+            pipeline: .AutoExposureExtract,
+            label: "Auto Exposure Extract",
+            inputs: PostProcessInputs(
+                sampler: .LinearClampToZero,
+                source: sceneTexture,
+                settings: frame.frameContext.rendererSettings()
+            )
+        )
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
+        encoder.endEncoding()
+
+        if autoExposureTexture.mipmapLevelCount > 1,
+           let blit = frame.commandBuffer.makeBlitCommandEncoder() {
+            blit.label = "Auto Exposure Mipmap Generate"
+            blit.generateMipmaps(for: autoExposureTexture)
+            blit.endEncoding()
+        }
+    }
+}
+
 final class BloomExtractPass: RenderGraphPass {
     let name = "BloomExtractPass"
     let gpuPass: RendererProfiler.GpuPass? = .bloomExtract
@@ -1373,7 +1870,8 @@ final class BloomExtractPass: RenderGraphPass {
         .texture(RenderTextureHandle(key: .bloomPing))
     ]
     let inputs: [RenderPassResourceUsage] = [
-        .texture(.baseColor)
+        .namedTexture(RenderNamedResourceKey.sceneColor),
+        .namedTexture(RenderNamedResourceKey.sceneColorFogged)
     ]
     let outputs: [RenderPassResourceUsage] = [
         .texture(.bloomPing)
@@ -1381,16 +1879,19 @@ final class BloomExtractPass: RenderGraphPass {
 
     func execute(frame: RenderGraphFrame) {
         let settings = frame.frameContext.rendererSettings()
+        let surfaces = CanonicalScreenSpaceTextures(registry: frame.resourceRegistry)
+        let postSceneColor = surfaces.downstreamSceneColor(heightFogEnabled: frame.renderPlan.heightFogEnabled)
         guard
-            let sceneTex = frame.resourceRegistry.texture(.baseColor),
+            let sceneTex = postSceneColor,
             let ping = frame.resourceRegistry.texture(.bloomPing),
             let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
         else { return }
 
         let extractStart = CACurrentMediaTime()
         let frameIndex = frame.frameContext.currentFrameIndex()
-        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: 0)) else { return }
-        let size0 = mipSize(for: ping, mip: 0)
+        let target = FullscreenTarget(texture: ping)
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: target.renderPassDescriptor()) else { return }
+        let size0 = target.size
         var params = settings
         params.bloomTexelSize = SIMD2<Float>(1.0 / size0.x, 1.0 / size0.y)
         params.bloomMipLevel = 0
@@ -1399,30 +1900,16 @@ final class BloomExtractPass: RenderGraphPass {
         let pass = FullscreenPass(
             pipeline: .BloomExtract,
             label: "Bloom Extract",
-            sampler: .LinearClampToZero,
-            useSampler: true,
-            texture0: sceneTex,
-            useTexture0: true,
-            texture1: nil,
-            useTexture1: false,
-            outlineMask: nil,
-            useOutlineMask: false,
-            depth: nil,
-            useDepth: false,
-            grid: nil,
-            useGrid: false,
-            settings: params
+            inputs: PostProcessInputs(
+                sampler: .LinearClampToZero,
+                source: sceneTex,
+                settings: params
+            )
         )
         pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
         encoder.endEncoding()
         frame.profiler.sampleGpuPassEnd(.bloomExtract, encoder: encoder, frameIndex: frameIndex)
         frame.profiler.record(.bloomExtract, seconds: CACurrentMediaTime() - extractStart)
-    }
-
-    private func mipSize(for texture: MTLTexture, mip: Int) -> SIMD2<Float> {
-        let w = max(1, texture.width >> mip)
-        let h = max(1, texture.height >> mip)
-        return SIMD2<Float>(Float(w), Float(h))
     }
 }
 
@@ -1454,12 +1941,6 @@ final class BloomBlurPass: RenderGraphPass {
         let mipCount = min(maxBloomMips, ping.mipmapLevelCount)
         if mipCount == 0 { return }
 
-        func mipSize(_ texture: MTLTexture, _ mip: Int) -> SIMD2<Float> {
-            let w = max(1, texture.width >> mip)
-            let h = max(1, texture.height >> mip)
-            return SIMD2<Float>(Float(w), Float(h))
-        }
-
         var blurTotal: Double = 0
         var downsampleTotal: Double = 0
 
@@ -1471,29 +1952,22 @@ final class BloomBlurPass: RenderGraphPass {
         if mipCount > 1 {
             for mip in 1..<mipCount {
                 let sourceMip = mip - 1
-                let size = mipSize(ping, mip)
+                let target = FullscreenTarget(texture: ping, mipLevel: mip)
+                let size = target.size
                 var params = settings
                 params.bloomMipLevel = Float(sourceMip)
 
                 let downsampleStart = CACurrentMediaTime()
-                guard let enc = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: mip)) else { return }
+                guard let enc = frame.commandBuffer.makeRenderCommandEncoder(descriptor: target.renderPassDescriptor()) else { return }
                 RenderPassHelpers.setViewport(enc, size)
                 let pass = FullscreenPass(
                     pipeline: .BloomDownsample,
                     label: "Bloom Downsample \(mip)",
-                    sampler: .LinearClampToZero,
-                    useSampler: true,
-                    texture0: ping,
-                    useTexture0: true,
-                    texture1: nil,
-                    useTexture1: false,
-                    outlineMask: nil,
-                    useOutlineMask: false,
-                    depth: nil,
-                    useDepth: false,
-                    grid: nil,
-                    useGrid: false,
-                    settings: params
+                    inputs: PostProcessInputs(
+                        sampler: .LinearClampToZero,
+                        source: ping,
+                        settings: params
+                    )
                 )
                 pass.encode(into: enc, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
                 enc.endEncoding()
@@ -1504,11 +1978,12 @@ final class BloomBlurPass: RenderGraphPass {
         // Dual-filter upsample: fold low mips back into higher mips.
         if mipCount > 1 {
             for mip in stride(from: mipCount - 2, through: 0, by: -1) {
-                let size = mipSize(ping, mip)
+                let target = FullscreenTarget(texture: pong, mipLevel: mip)
+                let size = target.size
                 var params = settings
                 let blurStart = CACurrentMediaTime()
                 params.bloomMipLevel = Float(mip)
-                guard let enc = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: pong, level: mip)) else { return }
+                guard let enc = frame.commandBuffer.makeRenderCommandEncoder(descriptor: target.renderPassDescriptor()) else { return }
                 RenderPassHelpers.setViewport(enc, size)
                 if !didSampleBegin {
                     frame.profiler.sampleGpuPassBegin(.bloomBlur, encoder: enc, frameIndex: frameIndex)
@@ -1517,19 +1992,12 @@ final class BloomBlurPass: RenderGraphPass {
                 let upsample = FullscreenPass(
                     pipeline: .BloomBlurH,
                     label: "Bloom Upsample \(mip)",
-                    sampler: .LinearClampToZero,
-                    useSampler: true,
-                    texture0: ping,
-                    useTexture0: true,
-                    texture1: ping,
-                    useTexture1: true,
-                    outlineMask: nil,
-                    useOutlineMask: false,
-                    depth: nil,
-                    useDepth: false,
-                    grid: nil,
-                    useGrid: false,
-                    settings: params
+                    inputs: PostProcessInputs(
+                        sampler: .LinearClampToZero,
+                        source: ping,
+                        bloom: ping,
+                        settings: params
+                    )
                 )
                 upsample.encode(into: enc, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
                 if mip == 0, !didSampleEnd {
@@ -1578,47 +2046,59 @@ final class FinalCompositePass: RenderGraphPass {
     let name = "FinalCompositePass"
     let gpuPass: RendererProfiler.GpuPass? = .finalComposite
     let inputs: [RenderPassResourceUsage] = [
-        .texture(.baseColor),
+        .namedTexture(RenderNamedResourceKey.sceneColor),
+        .namedTexture(RenderNamedResourceKey.sceneColorFogged),
         .texture(.bloomPing),
         .texture(.outlineMask),
-        .texture(.gridColor)
+        .texture(.gridColor),
+        .texture(.worldDebugColor),
+        .namedTexture(RenderNamedResourceKey.ssaoRaw),
+        .namedTexture(RenderNamedResourceKey.ssaoFiltered),
+        .namedTexture(RenderNamedResourceKey.postFinalColor)
     ]
     let outputs: [RenderPassResourceUsage] = [
-        .texture(.finalColor)
+        .namedTexture(RenderNamedResourceKey.postFinalColor)
     ]
 
     func execute(frame: RenderGraphFrame) {
+        let surfaces = CanonicalScreenSpaceTextures(registry: frame.resourceRegistry)
+        let postSceneColor = surfaces.downstreamSceneColor(heightFogEnabled: frame.renderPlan.heightFogEnabled)
         guard
-            let baseColor = frame.resourceRegistry.texture(.baseColor),
+            let baseColor = postSceneColor,
             let bloom = frame.resourceRegistry.texture(.bloomPing),
             let outline = frame.resourceRegistry.texture(.outlineMask),
             let grid = frame.resourceRegistry.texture(.gridColor),
+            let worldDebug = frame.resourceRegistry.texture(.worldDebugColor),
             let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
-            let finalColor = frame.resourceRegistry.texture(.finalColor)
+            let finalColor = surfaces.finalColor
         else { return }
 
         let compositeStart = CACurrentMediaTime()
         let frameIndex = frame.frameContext.currentFrameIndex()
-        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: finalColor)) else { return }
-        RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(finalColor))
+        let target = FullscreenTarget(texture: finalColor)
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: target.renderPassDescriptor()) else { return }
+        RenderPassHelpers.setViewport(encoder, target.size)
         frame.profiler.sampleGpuPassBegin(.finalComposite, encoder: encoder, frameIndex: frameIndex)
         let showEditorOverlays = frame.renderPlan.showEditorOverlays
+        let aoDebugEnabled = frame.frameContext.rendererSettings().ssaoEnabled != 0
         let pass = FullscreenPass(
             pipeline: .Final,
             label: "Final Composite",
-            sampler: .LinearClampToZero,
-            useSampler: true,
-            texture0: baseColor,
-            useTexture0: true,
-            texture1: bloom,
-            useTexture1: true,
-            outlineMask: showEditorOverlays ? outline : nil,
-            useOutlineMask: showEditorOverlays,
-            depth: nil,
-            useDepth: false,
-            grid: showEditorOverlays ? grid : nil,
-            useGrid: showEditorOverlays,
-            settings: frame.frameContext.rendererSettings()
+            inputs: PostProcessInputs(
+                canonical: surfaces,
+                sampler: .LinearClampToZero,
+                source: baseColor,
+                bloom: bloom,
+                outlineMask: showEditorOverlays ? outline : nil,
+                useSceneDepth: true,
+                useSceneNormals: true,
+                useSSAO: aoDebugEnabled,
+                grid: showEditorOverlays ? grid : nil,
+                worldDebug: (showEditorOverlays && frame.renderPlan.worldDebugEnabled) ? worldDebug : nil,
+                autoExposure: frame.renderPlan.autoExposureEnabled ? frame.resourceRegistry.texture(.autoExposure) : nil,
+                settings: frame.frameContext.rendererSettings(),
+                viewExposure: frame.frameContext.viewContext().exposureSettings
+            )
         )
         pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
         encoder.endEncoding()

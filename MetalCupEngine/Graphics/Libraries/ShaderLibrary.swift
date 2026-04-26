@@ -19,9 +19,14 @@ public enum ShaderType {
     case FSQuadVertex
     case BRDFFragment
     case BloomExtractFragment
+    case HeightFogFragment
+    case AutoExposureExtractFragment
     case BloomDownsampleFragment
     case BlurHFragment
     case BlurVFragment
+    case SAOEvaluateFragment
+    case AOBlurHFragment
+    case AOBlurVFragment
     case ProceduralSkyFragment
     case HDRILuminanceFragment
     case PickInstancedVertex
@@ -32,6 +37,10 @@ public enum ShaderType {
     case DebugLineFragment
     case DepthAlphaFragment
     case ShadowAlphaFragment
+    case SceneNormalsFragment
+    case SceneNormalsAlphaFragment
+    case AONormalsFragment
+    case AONormalsAlphaFragment
 }
 
 public class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -70,9 +79,14 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.FSQuadVertex, name: "Fullscreen Quad Vertex", functionName: "vertex_quad")
         register(.BRDFFragment, name: "BRDF Fragment", functionName: "fragment_brdf")
         register(.BloomExtractFragment, name: "Bloom Extract Fragment", functionName: "fragment_bloom_extract")
+        register(.HeightFogFragment, name: "Height Fog Fragment", functionName: "fragment_height_fog")
+        register(.AutoExposureExtractFragment, name: "Auto Exposure Extract Fragment", functionName: "fragment_auto_exposure_extract")
         register(.BloomDownsampleFragment, name: "Bloom Downsample Fragment", functionName: "fragment_bloom_downsample")
         register(.BlurHFragment, name: "Blur Horizontal Fragment", functionName: "fragment_blur_h")
         register(.BlurVFragment, name: "Blur Vertical Fragment", functionName: "fragment_blur_v")
+        register(.SAOEvaluateFragment, name: "SAO Evaluate Fragment", functionName: "fragment_sao_evaluate")
+        register(.AOBlurHFragment, name: "AO Blur Horizontal Fragment", functionName: "fragment_ao_blur_h")
+        register(.AOBlurVFragment, name: "AO Blur Vertical Fragment", functionName: "fragment_ao_blur_v")
         register(.ProceduralSkyFragment, name: "Procedural Sky Fragment", functionName: "fragment_procedural_sky")
         register(.HDRILuminanceFragment, name: "HDRI Luminance Fragment", functionName: "fragment_hdri_luminance")
         register(.PickInstancedVertex, name: "Pick Instanced Vertex", functionName: "vertex_pick_instanced")
@@ -83,6 +97,10 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.DebugLineFragment, name: "Debug Line Fragment", functionName: "fragment_debug_line")
         register(.DepthAlphaFragment, name: "Depth Alpha Fragment", functionName: "fragment_depth_alpha")
         register(.ShadowAlphaFragment, name: "Shadow Alpha Fragment", functionName: "fragment_shadow_alpha")
+        register(.SceneNormalsFragment, name: "Scene Normals Fragment", functionName: "fragment_scene_normals")
+        register(.SceneNormalsAlphaFragment, name: "Scene Normals Alpha Fragment", functionName: "fragment_scene_normals_alpha")
+        register(.AONormalsFragment, name: "AO Normals Fragment", functionName: "fragment_ao_normals")
+        register(.AONormalsAlphaFragment, name: "AO Normals Alpha Fragment", functionName: "fragment_ao_normals_alpha")
     }
 
     override subscript(_ type: ShaderType)->MTLFunction {

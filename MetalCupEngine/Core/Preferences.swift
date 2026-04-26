@@ -17,5 +17,6 @@ public final class Preferences {
     public var sRGBPixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
     public var defaultColorPixelFormat: MTLPixelFormat = .bgra8Unorm
     public var defaultDepthPixelFormat: MTLPixelFormat = .depth32Float
+    public var sceneMSAASampleCount: Int = 4
     public var isWireframeEnabled: Bool = false
 }

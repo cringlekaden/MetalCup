@@ -180,6 +180,20 @@ public final class SceneSerializationService {
                             )
                         }
                         : nil,
+                    reflectionProbe: shouldSerializeOverride(.reflectionProbe, for: entity)
+                        ? scene.ecs.get(ReflectionProbeComponent.self, for: entity).map { component in
+                            ReflectionProbeComponentDTO(
+                                enabled: component.enabled,
+                                intensity: component.intensity,
+                                boxExtents: Vector3DTO(component.boxExtents),
+                                blendDistance: component.blendDistance,
+                                priority: component.priority,
+                                captureResolution: component.captureResolution,
+                                rebuildMode: component.rebuildMode,
+                                includeSky: component.includeSky
+                            )
+                        }
+                        : nil,
                     skyLightTag: shouldSerializeOverride(.skyLightTag, for: entity) && scene.ecs.has(SkyLightTag.self, entity) ? TagComponentDTO() : nil,
                     skySunTag: shouldSerializeOverride(.skySunTag, for: entity) && scene.ecs.has(SkySunTag.self, entity) ? TagComponentDTO() : nil
                 )
@@ -303,6 +317,18 @@ public final class SceneSerializationService {
                         realtimeUpdate: component.realtimeUpdate
                     )
                 },
+                reflectionProbe: scene.ecs.get(ReflectionProbeComponent.self, for: entity).map { component in
+                    ReflectionProbeComponentDTO(
+                        enabled: component.enabled,
+                        intensity: component.intensity,
+                        boxExtents: Vector3DTO(component.boxExtents),
+                        blendDistance: component.blendDistance,
+                        priority: component.priority,
+                        captureResolution: component.captureResolution,
+                        rebuildMode: component.rebuildMode,
+                        includeSky: component.includeSky
+                    )
+                },
                 skyLightTag: scene.ecs.get(SkyLightTag.self, for: entity).map { _ in TagComponentDTO() },
                 skySunTag: scene.ecs.get(SkySunTag.self, for: entity).map { _ in TagComponentDTO() }
             )
@@ -319,6 +345,14 @@ public final class SceneSerializationService {
 
     public func apply(document: SceneDocument, to scene: EngineScene) {
         scene.prepareForSceneDocumentApply()
+        if let engineContext = scene.engineContext {
+            if let rendererSettings = document.rendererSettingsOverride {
+                engineContext.rendererSettings = rendererSettings.makeRendererSettings()
+            }
+            if let physicsSettings = document.physicsSettingsOverride {
+                engineContext.physicsSettings = physicsSettings.makePhysicsSettings()
+            }
+        }
         scene.ecs.clear()
         scene.setSceneName(document.name)
         let physicsDefaults = scene.engineContext?.physicsSettings ?? PhysicsSettings()
@@ -418,6 +452,11 @@ public final class SceneSerializationService {
                 }
                 if let controller = entityDoc.components.characterController {
                     scene.ecs.add(controller.toComponent(), to: entity)
+                    EngineLoggerContext.log(
+                        "Scene load controller refs entity=\(entity.id.uuidString) visualEntity=\(controller.visualEntityId?.uuidString ?? "<none>") animatorEntity=\(controller.animatorEntityId?.uuidString ?? "<none>") cameraPivot=\(controller.cameraPivotEntityId?.uuidString ?? "<none>")",
+                        level: .debug,
+                        category: .scene
+                    )
                 }
                 if let audioSource = entityDoc.components.audioSource {
                     scene.ecs.add(audioSource.toComponent(), to: entity)
@@ -466,6 +505,9 @@ public final class SceneSerializationService {
                         lastRebuildTime: 0.0
                     )
                     scene.ecs.add(component, to: entity)
+                }
+                if let reflectionProbe = entityDoc.components.reflectionProbe {
+                    scene.ecs.add(reflectionProbe.toComponent(), to: entity)
                 }
                 if entityDoc.components.skyLightTag != nil {
                     scene.ecs.add(SkyLightTag(), to: entity)
@@ -543,6 +585,11 @@ public final class SceneSerializationService {
             }
             if let controller = entityDoc.components.characterController {
                 scene.ecs.add(controller.toComponent(), to: entity)
+                EngineLoggerContext.log(
+                    "Scene load controller refs entity=\(entity.id.uuidString) visualEntity=\(controller.visualEntityId?.uuidString ?? "<none>") animatorEntity=\(controller.animatorEntityId?.uuidString ?? "<none>") cameraPivot=\(controller.cameraPivotEntityId?.uuidString ?? "<none>")",
+                    level: .debug,
+                    category: .scene
+                )
             }
             if let audioSource = entityDoc.components.audioSource {
                 scene.ecs.add(audioSource.toComponent(), to: entity)
@@ -592,6 +639,9 @@ public final class SceneSerializationService {
                 )
                 scene.ecs.add(component, to: entity)
             }
+            if let reflectionProbe = entityDoc.components.reflectionProbe {
+                scene.ecs.add(reflectionProbe.toComponent(), to: entity)
+            }
             if entityDoc.components.skyLightTag != nil {
                 scene.ecs.add(SkyLightTag(), to: entity)
             }
@@ -608,6 +658,14 @@ public final class SceneSerializationService {
                 _ = scene.ecs.unparent(entity, keepWorldTransform: false)
             }
         }
+        scene.ecs.viewDeterministic(CharacterControllerComponent.self) { entity, controller in
+            let resolvedAnimator = scene.animatorGraphOwnerEntityID(for: entity.id)?.uuidString ?? "<none>"
+            EngineLoggerContext.log(
+                "Scene load animator binding resolve entity=\(entity.id.uuidString) visualEntity=\(controller.visualEntityId?.uuidString ?? "<none>") animatorEntity=\(controller.animatorEntityId?.uuidString ?? "<none>") resolvedAnimator=\(resolvedAnimator)",
+                level: .debug,
+                category: .scene
+            )
+        }
         if !prefabHandles.isEmpty {
             scene.prefabSystem?.applyPrefabs(handles: prefabHandles, to: scene)
         }
@@ -623,6 +681,7 @@ public final class SceneSerializationService {
         created.reserveCapacity(prefab.entities.count)
         let instanceId = UUID()
         var entityByLocalId: [UUID: Entity] = [:]
+        var pendingControllerByLocalId: [UUID: CharacterControllerComponentDTO] = [:]
 
         for entityDoc in prefab.entities {
             let entityName = entityDoc.components.name?.name ?? "Entity"
@@ -706,6 +765,9 @@ public final class SceneSerializationService {
             if let script = entityDoc.components.script {
                 scene.ecs.add(script.toComponent(), to: entity)
             }
+            if let controller = entityDoc.components.characterController {
+                pendingControllerByLocalId[entityDoc.localId] = controller
+            }
             if let audioSource = entityDoc.components.audioSource {
                 scene.ecs.add(audioSource.toComponent(), to: entity)
             }
@@ -754,6 +816,9 @@ public final class SceneSerializationService {
                 )
                 scene.ecs.add(component, to: entity)
             }
+            if let reflectionProbe = entityDoc.components.reflectionProbe {
+                scene.ecs.add(reflectionProbe.toComponent(), to: entity)
+            }
             if entityDoc.components.skyLightTag != nil {
                 scene.ecs.add(SkyLightTag(), to: entity)
             }
@@ -769,6 +834,26 @@ public final class SceneSerializationService {
                 _ = scene.ecs.setParent(entity, parent, keepWorldTransform: false)
             } else {
                 _ = scene.ecs.unparent(entity, keepWorldTransform: false)
+            }
+        }
+
+        if !pendingControllerByLocalId.isEmpty {
+            for (localId, controllerDTO) in pendingControllerByLocalId {
+                guard let entity = entityByLocalId[localId] else { continue }
+                var controller = controllerDTO.toComponent()
+                let originalVisual = controller.visualEntityId
+                let originalAnimator = controller.animatorEntityId
+                let originalPivot = controller.cameraPivotEntityId
+                controller.visualEntityId = controller.visualEntityId.flatMap { entityByLocalId[$0]?.id ?? $0 }
+                controller.animatorEntityId = controller.animatorEntityId.flatMap { entityByLocalId[$0]?.id ?? $0 }
+                controller.cameraPivotEntityId = controller.cameraPivotEntityId.flatMap { entityByLocalId[$0]?.id ?? $0 }
+                scene.ecs.add(controller, to: entity)
+                let resolvedAnimator = scene.animatorGraphOwnerEntityID(for: entity.id)?.uuidString ?? "<none>"
+                EngineLoggerContext.log(
+                    "Prefab instantiate controller refs entity=\(entity.id.uuidString) visualEntity=\(originalVisual?.uuidString ?? "<none>")->\(controller.visualEntityId?.uuidString ?? "<none>") animatorEntity=\(originalAnimator?.uuidString ?? "<none>")->\(controller.animatorEntityId?.uuidString ?? "<none>") cameraPivot=\(originalPivot?.uuidString ?? "<none>")->\(controller.cameraPivotEntityId?.uuidString ?? "<none>") resolvedAnimator=\(resolvedAnimator)",
+                    level: .debug,
+                    category: .scene
+                )
             }
         }
 

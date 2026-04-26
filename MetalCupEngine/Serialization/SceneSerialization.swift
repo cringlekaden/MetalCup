@@ -67,6 +67,7 @@ public struct ComponentsDocument: Codable {
     public var audioListener: AudioListenerComponentDTO?
     public var sky: SkyComponentDTO?
     public var skyLight: SkyLightComponentDTO?
+    public var reflectionProbe: ReflectionProbeComponentDTO?
     public var skyLightTag: TagComponentDTO?
     public var skySunTag: TagComponentDTO?
 
@@ -91,6 +92,7 @@ public struct ComponentsDocument: Codable {
         audioListener: AudioListenerComponentDTO? = nil,
         sky: SkyComponentDTO? = nil,
         skyLight: SkyLightComponentDTO? = nil,
+        reflectionProbe: ReflectionProbeComponentDTO? = nil,
         skyLightTag: TagComponentDTO? = nil,
         skySunTag: TagComponentDTO? = nil
     ) {
@@ -114,6 +116,7 @@ public struct ComponentsDocument: Codable {
         self.audioListener = audioListener
         self.sky = sky
         self.skyLight = skyLight
+        self.reflectionProbe = reflectionProbe
         self.skyLightTag = skyLightTag
         self.skySunTag = skySunTag
     }
@@ -824,8 +827,14 @@ public struct CameraComponentDTO: Codable {
     public var projectionType: UInt32
     public var isPrimary: Bool
     public var isEditor: Bool
+    public var autoExposureEnabled: Bool
+    public var manualExposure: Float
+    public var exposureCompensation: Float
+    public var autoExposureMin: Float
+    public var autoExposureMax: Float
+    public var adaptationSpeed: Float
 
-    public init(schemaVersion: Int = 2, component: CameraComponent) {
+    public init(schemaVersion: Int = 3, component: CameraComponent) {
         self.schemaVersion = schemaVersion
         self.fovDegrees = component.fovDegrees
         self.orthoSize = component.orthoSize
@@ -834,6 +843,12 @@ public struct CameraComponentDTO: Codable {
         self.projectionType = component.projectionType.rawValue
         self.isPrimary = component.isPrimary
         self.isEditor = component.isEditor
+        self.autoExposureEnabled = component.autoExposureEnabled
+        self.manualExposure = component.manualExposure
+        self.exposureCompensation = component.exposureCompensation
+        self.autoExposureMin = component.autoExposureMin
+        self.autoExposureMax = component.autoExposureMax
+        self.adaptationSpeed = component.adaptationSpeed
     }
 
     public init(from decoder: Decoder) throws {
@@ -846,6 +861,12 @@ public struct CameraComponentDTO: Codable {
         projectionType = try container.decodeIfPresent(UInt32.self, forKey: .projectionType) ?? ProjectionType.perspective.rawValue
         isPrimary = try container.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? true
         isEditor = try container.decodeIfPresent(Bool.self, forKey: .isEditor) ?? false
+        autoExposureEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoExposureEnabled) ?? true
+        manualExposure = try container.decodeIfPresent(Float.self, forKey: .manualExposure) ?? 1.0
+        exposureCompensation = try container.decodeIfPresent(Float.self, forKey: .exposureCompensation) ?? 0.0
+        autoExposureMin = try container.decodeIfPresent(Float.self, forKey: .autoExposureMin) ?? 0.03
+        autoExposureMax = try container.decodeIfPresent(Float.self, forKey: .autoExposureMax) ?? 8.0
+        adaptationSpeed = try container.decodeIfPresent(Float.self, forKey: .adaptationSpeed) ?? 2.0
     }
 
     public func toComponent() -> CameraComponent {
@@ -856,7 +877,13 @@ public struct CameraComponentDTO: Codable {
             farPlane: farPlane,
             projectionType: ProjectionType(rawValue: projectionType) ?? .perspective,
             isPrimary: isPrimary,
-            isEditor: isEditor
+            isEditor: isEditor,
+            autoExposureEnabled: autoExposureEnabled,
+            manualExposure: manualExposure,
+            exposureCompensation: exposureCompensation,
+            autoExposureMin: autoExposureMin,
+            autoExposureMax: autoExposureMax,
+            adaptationSpeed: adaptationSpeed
         )
     }
 }
@@ -957,6 +984,7 @@ public struct CharacterControllerComponentDTO: Codable {
     public var minPitchDegrees: Float
     public var maxPitchDegrees: Float
     public var visualEntityId: UUID?
+    public var animatorEntityId: UUID?
     public var cameraPivotEntityId: UUID?
 
     private enum CodingKeys: String, CodingKey {
@@ -983,6 +1011,7 @@ public struct CharacterControllerComponentDTO: Codable {
         // Deprecated in runtime since CharacterVirtual ground velocity coupling was removed.
         case groundVelocityFollowThreshold
         case visualEntityId
+        case animatorEntityId
         case cameraPivotEntityId
         case debugDraw
     }
@@ -1004,6 +1033,7 @@ public struct CharacterControllerComponentDTO: Codable {
                 minPitchDegrees: Float = -80.0,
                 maxPitchDegrees: Float = 80.0,
                 visualEntityId: UUID? = nil,
+                animatorEntityId: UUID? = nil,
                 cameraPivotEntityId: UUID? = nil) {
         self.schemaVersion = schemaVersion
         self.enabled = enabled
@@ -1022,6 +1052,7 @@ public struct CharacterControllerComponentDTO: Codable {
         self.minPitchDegrees = minPitchDegrees
         self.maxPitchDegrees = maxPitchDegrees
         self.visualEntityId = visualEntityId
+        self.animatorEntityId = animatorEntityId
         self.cameraPivotEntityId = cameraPivotEntityId
     }
 
@@ -1050,6 +1081,7 @@ public struct CharacterControllerComponentDTO: Codable {
         self.pushStrength = try container.decodeIfPresent(Float.self, forKey: .pushStrength) ?? 100.0
         _ = try container.decodeIfPresent(Float.self, forKey: .groundVelocityFollowThreshold)
         self.visualEntityId = try container.decodeIfPresent(UUID.self, forKey: .visualEntityId)
+        self.animatorEntityId = try container.decodeIfPresent(UUID.self, forKey: .animatorEntityId)
         self.cameraPivotEntityId = try container.decodeIfPresent(UUID.self, forKey: .cameraPivotEntityId)
         _ = try container.decodeIfPresent(Bool.self, forKey: .debugDraw)
     }
@@ -1073,6 +1105,7 @@ public struct CharacterControllerComponentDTO: Codable {
         try container.encode(minPitchDegrees, forKey: .minPitchDegrees)
         try container.encode(maxPitchDegrees, forKey: .maxPitchDegrees)
         try container.encodeIfPresent(visualEntityId, forKey: .visualEntityId)
+        try container.encodeIfPresent(animatorEntityId, forKey: .animatorEntityId)
         try container.encodeIfPresent(cameraPivotEntityId, forKey: .cameraPivotEntityId)
     }
 
@@ -1094,6 +1127,7 @@ public struct CharacterControllerComponentDTO: Codable {
         self.minPitchDegrees = component.minPitchDegrees
         self.maxPitchDegrees = component.maxPitchDegrees
         self.visualEntityId = component.visualEntityId
+        self.animatorEntityId = component.animatorEntityId
         self.cameraPivotEntityId = component.cameraPivotEntityId
     }
 
@@ -1114,6 +1148,7 @@ public struct CharacterControllerComponentDTO: Codable {
                                      minPitchDegrees: minPitchDegrees,
                                      maxPitchDegrees: maxPitchDegrees,
                                      visualEntityId: visualEntityId,
+                                     animatorEntityId: animatorEntityId,
                                      cameraPivotEntityId: cameraPivotEntityId)
     }
 }
@@ -1125,6 +1160,95 @@ public struct SkyComponentDTO: Codable {
     public init(schemaVersion: Int = 1, environmentMapHandle: AssetHandle?) {
         self.schemaVersion = schemaVersion
         self.environmentMapHandle = environmentMapHandle
+    }
+}
+
+public struct ReflectionProbeComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var intensity: Float
+    public var boxExtents: Vector3DTO
+    public var blendDistance: Float
+    public var priority: Int32
+    public var captureResolution: Int32
+    public var rebuildMode: ReflectionProbeRebuildMode
+    public var includeSky: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case enabled
+        case intensity
+        case boxExtents
+        case blendDistance
+        case priority
+        case captureResolution
+        case rebuildMode
+        case includeSky
+        case sourceEnvironmentHandle
+    }
+
+    public init(
+        schemaVersion: Int = 2,
+        enabled: Bool,
+        intensity: Float,
+        boxExtents: Vector3DTO,
+        blendDistance: Float,
+        priority: Int32,
+        captureResolution: Int32,
+        rebuildMode: ReflectionProbeRebuildMode,
+        includeSky: Bool
+    ) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.intensity = intensity
+        self.boxExtents = boxExtents
+        self.blendDistance = blendDistance
+        self.priority = priority
+        self.captureResolution = captureResolution
+        self.rebuildMode = rebuildMode
+        self.includeSky = includeSky
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        intensity = try container.decodeIfPresent(Float.self, forKey: .intensity) ?? 1.0
+        boxExtents = try container.decodeIfPresent(Vector3DTO.self, forKey: .boxExtents) ?? Vector3DTO(SIMD3<Float>(5.0, 5.0, 5.0))
+        blendDistance = try container.decodeIfPresent(Float.self, forKey: .blendDistance) ?? 1.0
+        priority = try container.decodeIfPresent(Int32.self, forKey: .priority) ?? 0
+        captureResolution = try container.decodeIfPresent(Int32.self, forKey: .captureResolution) ?? 128
+        rebuildMode = try container.decodeIfPresent(ReflectionProbeRebuildMode.self, forKey: .rebuildMode) ?? .onPlay
+        includeSky = try container.decodeIfPresent(Bool.self, forKey: .includeSky) ?? true
+
+        // Decode and ignore legacy authored-HDRI data so older scenes still load cleanly.
+        _ = try container.decodeIfPresent(AssetHandle.self, forKey: .sourceEnvironmentHandle)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(intensity, forKey: .intensity)
+        try container.encode(boxExtents, forKey: .boxExtents)
+        try container.encode(blendDistance, forKey: .blendDistance)
+        try container.encode(priority, forKey: .priority)
+        try container.encode(captureResolution, forKey: .captureResolution)
+        try container.encode(rebuildMode, forKey: .rebuildMode)
+        try container.encode(includeSky, forKey: .includeSky)
+    }
+
+    public func toComponent() -> ReflectionProbeComponent {
+        ReflectionProbeComponent(
+            enabled: enabled,
+            intensity: intensity,
+            boxExtents: boxExtents.toSIMD(),
+            blendDistance: blendDistance,
+            priority: priority,
+            captureResolution: captureResolution,
+            rebuildMode: rebuildMode,
+            includeSky: includeSky
+        )
     }
 }
 
@@ -1350,19 +1474,14 @@ public struct RendererSettingsDTO: Codable {
     public var bloomThreshold: Float
     public var bloomKnee: Float
     public var bloomIntensity: Float
-    public var bloomUpsampleScale: Float
-    public var bloomDirtIntensity: Float
     public var bloomEnabled: UInt32
     public var bloomMaxMips: UInt32
     public var bloomQualityPreset: UInt32
     public var bloomResolutionScale: UInt32
-    public var blurPasses: UInt32
     public var tonemap: UInt32
-    public var exposure: Float
     public var gamma: Float
     public var iblEnabled: UInt32
     public var iblIntensity: Float
-    public var iblResolutionOverride: UInt32
     public var perfFlags: UInt32
     public var iblFireflyClamp: Float
     public var iblFireflyClampEnabled: UInt32
@@ -1377,6 +1496,24 @@ public struct RendererSettingsDTO: Codable {
     public var normalMapMipBiasGrazing: Float
     public var shadingDebugMode: UInt32
     public var iblQualityPreset: UInt32
+    // AO fields below are the persisted public SAO model.
+    public var ssaoEnabled: UInt32
+    public var aoMethod: UInt32
+    public var aoQuality: UInt32
+    public var ssaoRadius: Float
+    public var ssaoIntensity: Float
+    public var ssaoPower: Float
+    public var ssaoBias: Float
+    // Deprecated/internal legacy field preserved only for compatibility with older scene files.
+    public var ssaoThickness: Float
+    public var ssaoBlurSharpness: Float
+    public var heightFogEnabled: UInt32
+    public var heightFogColor: Vector3DTO
+    public var heightFogBaseHeight: Float
+    public var heightFogDensity: Float
+    public var heightFogHeightFalloff: Float
+    public var heightFogStartDistance: Float
+    public var heightFogDistanceDensity: Float
     public var outlineEnabled: UInt32
     public var outlineThickness: UInt32
     public var outlineOpacity: Float
@@ -1387,24 +1524,19 @@ public struct RendererSettingsDTO: Codable {
     public var gridMajorLineEvery: Float
     public var shadows: ShadowsSettingsDTO
 
-    public init(schemaVersion: Int = 1, settings: RendererSettings) {
+    public init(schemaVersion: Int = 3, settings: RendererSettings) {
         self.schemaVersion = schemaVersion
         self.bloomThreshold = settings.bloomThreshold
         self.bloomKnee = settings.bloomKnee
         self.bloomIntensity = settings.bloomIntensity
-        self.bloomUpsampleScale = settings.bloomUpsampleScale
-        self.bloomDirtIntensity = settings.bloomDirtIntensity
         self.bloomEnabled = settings.bloomEnabled
         self.bloomMaxMips = settings.bloomMaxMips
         self.bloomQualityPreset = settings.bloomQualityPreset
         self.bloomResolutionScale = settings.bloomResolutionScale
-        self.blurPasses = settings.blurPasses
         self.tonemap = settings.tonemap
-        self.exposure = settings.exposure
         self.gamma = settings.gamma
         self.iblEnabled = settings.iblEnabled
         self.iblIntensity = settings.iblIntensity
-        self.iblResolutionOverride = settings.iblResolutionOverride
         self.perfFlags = settings.perfFlags
         self.iblFireflyClamp = settings.iblFireflyClamp
         self.iblFireflyClampEnabled = settings.iblFireflyClampEnabled
@@ -1419,6 +1551,22 @@ public struct RendererSettingsDTO: Codable {
         self.normalMapMipBiasGrazing = settings.normalMapMipBiasGrazing
         self.shadingDebugMode = settings.shadingDebugMode
         self.iblQualityPreset = settings.iblQualityPreset
+        self.ssaoEnabled = settings.ssaoEnabled
+        self.aoMethod = settings.aoMethod.rawValue
+        self.aoQuality = settings.aoQuality.rawValue
+        self.ssaoRadius = settings.ssaoRadius
+        self.ssaoIntensity = settings.ssaoIntensity
+        self.ssaoPower = settings.ssaoPower
+        self.ssaoBias = settings.ssaoBias
+        self.ssaoThickness = settings.ssaoThickness
+        self.ssaoBlurSharpness = settings.ssaoBlurSharpness
+        self.heightFogEnabled = settings.heightFogEnabled
+        self.heightFogColor = Vector3DTO(settings.heightFogColor)
+        self.heightFogBaseHeight = settings.heightFogBaseHeight
+        self.heightFogDensity = settings.heightFogDensity
+        self.heightFogHeightFalloff = settings.heightFogHeightFalloff
+        self.heightFogStartDistance = settings.heightFogStartDistance
+        self.heightFogDistanceDensity = settings.heightFogDistanceDensity
         self.outlineEnabled = settings.outlineEnabled
         self.outlineThickness = settings.outlineThickness
         self.outlineOpacity = settings.outlineOpacity
@@ -1437,19 +1585,14 @@ public struct RendererSettingsDTO: Codable {
         bloomThreshold = try container.decodeIfPresent(Float.self, forKey: .bloomThreshold) ?? defaults.bloomThreshold
         bloomKnee = try container.decodeIfPresent(Float.self, forKey: .bloomKnee) ?? defaults.bloomKnee
         bloomIntensity = try container.decodeIfPresent(Float.self, forKey: .bloomIntensity) ?? defaults.bloomIntensity
-        bloomUpsampleScale = try container.decodeIfPresent(Float.self, forKey: .bloomUpsampleScale) ?? defaults.bloomUpsampleScale
-        bloomDirtIntensity = try container.decodeIfPresent(Float.self, forKey: .bloomDirtIntensity) ?? defaults.bloomDirtIntensity
         bloomEnabled = try container.decodeIfPresent(UInt32.self, forKey: .bloomEnabled) ?? defaults.bloomEnabled
         bloomMaxMips = try container.decodeIfPresent(UInt32.self, forKey: .bloomMaxMips) ?? defaults.bloomMaxMips
         bloomQualityPreset = try container.decodeIfPresent(UInt32.self, forKey: .bloomQualityPreset) ?? defaults.bloomQualityPreset
         bloomResolutionScale = try container.decodeIfPresent(UInt32.self, forKey: .bloomResolutionScale) ?? defaults.bloomResolutionScale
-        blurPasses = try container.decodeIfPresent(UInt32.self, forKey: .blurPasses) ?? defaults.blurPasses
         tonemap = try container.decodeIfPresent(UInt32.self, forKey: .tonemap) ?? defaults.tonemap
-        exposure = try container.decodeIfPresent(Float.self, forKey: .exposure) ?? defaults.exposure
         gamma = try container.decodeIfPresent(Float.self, forKey: .gamma) ?? defaults.gamma
         iblEnabled = try container.decodeIfPresent(UInt32.self, forKey: .iblEnabled) ?? defaults.iblEnabled
         iblIntensity = try container.decodeIfPresent(Float.self, forKey: .iblIntensity) ?? defaults.iblIntensity
-        iblResolutionOverride = try container.decodeIfPresent(UInt32.self, forKey: .iblResolutionOverride) ?? defaults.iblResolutionOverride
         perfFlags = try container.decodeIfPresent(UInt32.self, forKey: .perfFlags) ?? defaults.perfFlags
         iblFireflyClamp = try container.decodeIfPresent(Float.self, forKey: .iblFireflyClamp) ?? defaults.iblFireflyClamp
         iblFireflyClampEnabled = try container.decodeIfPresent(UInt32.self, forKey: .iblFireflyClampEnabled) ?? defaults.iblFireflyClampEnabled
@@ -1464,6 +1607,22 @@ public struct RendererSettingsDTO: Codable {
         normalMapMipBiasGrazing = try container.decodeIfPresent(Float.self, forKey: .normalMapMipBiasGrazing) ?? defaults.normalMapMipBiasGrazing
         shadingDebugMode = try container.decodeIfPresent(UInt32.self, forKey: .shadingDebugMode) ?? defaults.shadingDebugMode
         iblQualityPreset = try container.decodeIfPresent(UInt32.self, forKey: .iblQualityPreset) ?? defaults.iblQualityPreset
+        ssaoEnabled = try container.decodeIfPresent(UInt32.self, forKey: .ssaoEnabled) ?? defaults.ssaoEnabled
+        aoMethod = try container.decodeIfPresent(UInt32.self, forKey: .aoMethod) ?? defaults.aoMethod.rawValue
+        aoQuality = try container.decodeIfPresent(UInt32.self, forKey: .aoQuality) ?? defaults.aoQuality.rawValue
+        ssaoRadius = try container.decodeIfPresent(Float.self, forKey: .ssaoRadius) ?? defaults.ssaoRadius
+        ssaoIntensity = try container.decodeIfPresent(Float.self, forKey: .ssaoIntensity) ?? defaults.ssaoIntensity
+        ssaoPower = try container.decodeIfPresent(Float.self, forKey: .ssaoPower) ?? defaults.ssaoPower
+        ssaoBias = try container.decodeIfPresent(Float.self, forKey: .ssaoBias) ?? defaults.ssaoBias
+        ssaoThickness = try container.decodeIfPresent(Float.self, forKey: .ssaoThickness) ?? defaults.ssaoThickness
+        ssaoBlurSharpness = try container.decodeIfPresent(Float.self, forKey: .ssaoBlurSharpness) ?? defaults.ssaoBlurSharpness
+        heightFogEnabled = try container.decodeIfPresent(UInt32.self, forKey: .heightFogEnabled) ?? defaults.heightFogEnabled
+        heightFogColor = try container.decodeIfPresent(Vector3DTO.self, forKey: .heightFogColor) ?? Vector3DTO(defaults.heightFogColor)
+        heightFogBaseHeight = try container.decodeIfPresent(Float.self, forKey: .heightFogBaseHeight) ?? defaults.heightFogBaseHeight
+        heightFogDensity = try container.decodeIfPresent(Float.self, forKey: .heightFogDensity) ?? defaults.heightFogDensity
+        heightFogHeightFalloff = try container.decodeIfPresent(Float.self, forKey: .heightFogHeightFalloff) ?? defaults.heightFogHeightFalloff
+        heightFogStartDistance = try container.decodeIfPresent(Float.self, forKey: .heightFogStartDistance) ?? defaults.heightFogStartDistance
+        heightFogDistanceDensity = try container.decodeIfPresent(Float.self, forKey: .heightFogDistanceDensity) ?? defaults.heightFogDistanceDensity
         outlineEnabled = try container.decodeIfPresent(UInt32.self, forKey: .outlineEnabled) ?? defaults.outlineEnabled
         outlineThickness = try container.decodeIfPresent(UInt32.self, forKey: .outlineThickness) ?? defaults.outlineThickness
         outlineOpacity = try container.decodeIfPresent(Float.self, forKey: .outlineOpacity) ?? defaults.outlineOpacity
@@ -1481,19 +1640,14 @@ public struct RendererSettingsDTO: Codable {
         try container.encode(bloomThreshold, forKey: .bloomThreshold)
         try container.encode(bloomKnee, forKey: .bloomKnee)
         try container.encode(bloomIntensity, forKey: .bloomIntensity)
-        try container.encode(bloomUpsampleScale, forKey: .bloomUpsampleScale)
-        try container.encode(bloomDirtIntensity, forKey: .bloomDirtIntensity)
         try container.encode(bloomEnabled, forKey: .bloomEnabled)
         try container.encode(bloomMaxMips, forKey: .bloomMaxMips)
         try container.encode(bloomQualityPreset, forKey: .bloomQualityPreset)
         try container.encode(bloomResolutionScale, forKey: .bloomResolutionScale)
-        try container.encode(blurPasses, forKey: .blurPasses)
         try container.encode(tonemap, forKey: .tonemap)
-        try container.encode(exposure, forKey: .exposure)
         try container.encode(gamma, forKey: .gamma)
         try container.encode(iblEnabled, forKey: .iblEnabled)
         try container.encode(iblIntensity, forKey: .iblIntensity)
-        try container.encode(iblResolutionOverride, forKey: .iblResolutionOverride)
         try container.encode(perfFlags, forKey: .perfFlags)
         try container.encode(iblFireflyClamp, forKey: .iblFireflyClamp)
         try container.encode(iblFireflyClampEnabled, forKey: .iblFireflyClampEnabled)
@@ -1508,6 +1662,22 @@ public struct RendererSettingsDTO: Codable {
         try container.encode(normalMapMipBiasGrazing, forKey: .normalMapMipBiasGrazing)
         try container.encode(shadingDebugMode, forKey: .shadingDebugMode)
         try container.encode(iblQualityPreset, forKey: .iblQualityPreset)
+        try container.encode(ssaoEnabled, forKey: .ssaoEnabled)
+        try container.encode(aoMethod, forKey: .aoMethod)
+        try container.encode(aoQuality, forKey: .aoQuality)
+        try container.encode(ssaoRadius, forKey: .ssaoRadius)
+        try container.encode(ssaoIntensity, forKey: .ssaoIntensity)
+        try container.encode(ssaoPower, forKey: .ssaoPower)
+        try container.encode(ssaoBias, forKey: .ssaoBias)
+        try container.encode(ssaoThickness, forKey: .ssaoThickness)
+        try container.encode(ssaoBlurSharpness, forKey: .ssaoBlurSharpness)
+        try container.encode(heightFogEnabled, forKey: .heightFogEnabled)
+        try container.encode(heightFogColor, forKey: .heightFogColor)
+        try container.encode(heightFogBaseHeight, forKey: .heightFogBaseHeight)
+        try container.encode(heightFogDensity, forKey: .heightFogDensity)
+        try container.encode(heightFogHeightFalloff, forKey: .heightFogHeightFalloff)
+        try container.encode(heightFogStartDistance, forKey: .heightFogStartDistance)
+        try container.encode(heightFogDistanceDensity, forKey: .heightFogDistanceDensity)
         try container.encode(outlineEnabled, forKey: .outlineEnabled)
         try container.encode(outlineThickness, forKey: .outlineThickness)
         try container.encode(outlineOpacity, forKey: .outlineOpacity)
@@ -1524,19 +1694,14 @@ public struct RendererSettingsDTO: Codable {
         case bloomThreshold
         case bloomKnee
         case bloomIntensity
-        case bloomUpsampleScale
-        case bloomDirtIntensity
         case bloomEnabled
         case bloomMaxMips
         case bloomQualityPreset
         case bloomResolutionScale
-        case blurPasses
         case tonemap
-        case exposure
         case gamma
         case iblEnabled
         case iblIntensity
-        case iblResolutionOverride
         case perfFlags
         case iblFireflyClamp
         case iblFireflyClampEnabled
@@ -1551,6 +1716,22 @@ public struct RendererSettingsDTO: Codable {
         case normalMapMipBiasGrazing
         case shadingDebugMode
         case iblQualityPreset
+        case ssaoEnabled
+        case aoMethod
+        case aoQuality
+        case ssaoRadius
+        case ssaoIntensity
+        case ssaoPower
+        case ssaoBias
+        case ssaoThickness
+        case ssaoBlurSharpness
+        case heightFogEnabled
+        case heightFogColor
+        case heightFogBaseHeight
+        case heightFogDensity
+        case heightFogHeightFalloff
+        case heightFogStartDistance
+        case heightFogDistanceDensity
         case outlineEnabled
         case outlineThickness
         case outlineOpacity
@@ -1567,19 +1748,14 @@ public struct RendererSettingsDTO: Codable {
         settings.bloomThreshold = bloomThreshold
         settings.bloomKnee = bloomKnee
         settings.bloomIntensity = bloomIntensity
-        settings.bloomUpsampleScale = bloomUpsampleScale
-        settings.bloomDirtIntensity = bloomDirtIntensity
         settings.bloomEnabled = bloomEnabled
         settings.bloomMaxMips = bloomMaxMips
         settings.bloomQualityPreset = bloomQualityPreset
         settings.bloomResolutionScale = bloomResolutionScale
-        settings.blurPasses = blurPasses
         settings.tonemap = tonemap
-        settings.exposure = exposure
         settings.gamma = gamma
         settings.iblEnabled = iblEnabled
         settings.iblIntensity = iblIntensity
-        settings.iblResolutionOverride = iblResolutionOverride
         settings.perfFlags = perfFlags
         settings.iblFireflyClamp = iblFireflyClamp
         settings.iblFireflyClampEnabled = iblFireflyClampEnabled
@@ -1594,6 +1770,22 @@ public struct RendererSettingsDTO: Codable {
         settings.normalMapMipBiasGrazing = normalMapMipBiasGrazing
         settings.shadingDebugMode = shadingDebugMode
         settings.iblQualityPreset = iblQualityPreset
+        settings.setAOEnabled(ssaoEnabled != 0)
+        settings.aoMethod = AOMethod(rawValue: aoMethod) ?? .sao
+        settings.applyAOQuality(AOQualityPreset(rawValue: aoQuality) ?? .high)
+        settings.setAORadius(ssaoRadius)
+        settings.setAOIntensity(ssaoIntensity)
+        settings.setAOPower(ssaoPower)
+        settings.setAOBias(ssaoBias)
+        settings.ssaoThickness = ssaoThickness
+        settings.setAOSharpness(ssaoBlurSharpness)
+        settings.setHeightFogEnabled(heightFogEnabled != 0)
+        settings.heightFogColor = heightFogColor.toSIMD()
+        settings.heightFogBaseHeight = heightFogBaseHeight
+        settings.heightFogDensity = max(0.0, heightFogDensity)
+        settings.heightFogHeightFalloff = max(0.0, heightFogHeightFalloff)
+        settings.heightFogStartDistance = max(0.0, heightFogStartDistance)
+        settings.heightFogDistanceDensity = max(0.0, heightFogDistanceDensity)
         settings.outlineEnabled = outlineEnabled
         settings.outlineThickness = outlineThickness
         settings.outlineOpacity = outlineOpacity

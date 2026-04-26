@@ -463,6 +463,18 @@ public final class AssetManager {
         cacheLock.unlock()
     }
 
+    public func unregisterRuntimeTexture(handle: AssetHandle) {
+        cacheLock.lock()
+        guard runtimeTextureHandles.contains(handle) else {
+            cacheLock.unlock()
+            return
+        }
+        textureCache.removeValue(forKey: handle)
+        runtimeTextureHandles.remove(handle)
+        cacheRevision &+= 1
+        cacheLock.unlock()
+    }
+
     public func registerRuntimeMesh(handle: AssetHandle, mesh: MCMesh) {
         cacheLock.lock()
         meshCache[handle] = mesh

@@ -195,6 +195,7 @@ public class MCMesh {
 
     var boundsCenter: SIMD3<Float> { localBoundsCenter }
     var boundsRadius: Float { localBoundsRadius }
+    var submeshCount: Int { _submeshes.count }
     public var editorBoundsCenter: SIMD3<Float> { localBoundsCenter }
     public var editorBoundsRadius: Float { localBoundsRadius }
     public var vertexCount: Int { _vertexCount }
@@ -577,6 +578,8 @@ public class MCMesh {
                         ormMapHandle: AssetHandle? = nil,
                         aoMapHandle: AssetHandle? = nil,
                         emissiveMapHandle: AssetHandle? = nil,
+                        localReflectionProbe: LocalReflectionProbeUniform? = nil,
+                        localReflectionPrefilteredHandle: AssetHandle? = nil,
                         useEmbeddedMaterial: Bool = true) {
         if(_vertexBuffer != nil) {
             renderCommandEncoder.setVertexBuffer(_vertexBuffer, offset: 0, index: VertexBufferIndex.vertices)
@@ -603,6 +606,8 @@ public class MCMesh {
                             ormMapHandle: bindings.ormMapHandle,
                             aoMapHandle: bindings.aoMapHandle,
                             emissiveMapHandle: bindings.emissiveMapHandle,
+                            localReflectionProbe: localReflectionProbe,
+                            localReflectionPrefilteredHandle: localReflectionPrefilteredHandle,
                             useEmbeddedTextures: false
                         )
                         submesh.applyMaterials(
@@ -624,6 +629,8 @@ public class MCMesh {
                             ormMapHandle: ormMapHandle,
                             aoMapHandle: aoMapHandle,
                             emissiveMapHandle: emissiveMapHandle,
+                            localReflectionProbe: localReflectionProbe,
+                            localReflectionPrefilteredHandle: localReflectionPrefilteredHandle,
                             useEmbeddedTextures: useEmbeddedMaterial
                         )
                         let materialFallback = !useEmbeddedMaterial && material == nil
@@ -659,7 +666,9 @@ public class MCMesh {
                         roughnessMapHandle: roughnessMapHandle,
                         mrMapHandle: mrMapHandle,
                         aoMapHandle: aoMapHandle,
-                        emissiveMapHandle: emissiveMapHandle
+                        emissiveMapHandle: emissiveMapHandle,
+                        localReflectionProbe: localReflectionProbe,
+                        localReflectionPrefilteredHandle: localReflectionPrefilteredHandle
                     )
                     resolvedMaterial = applyTextureFlags(
                         resolvedMaterial,
@@ -678,7 +687,9 @@ public class MCMesh {
                         roughnessMapHandle: nil,
                         mrMapHandle: nil,
                         aoMapHandle: nil,
-                        emissiveMapHandle: nil
+                        emissiveMapHandle: nil,
+                        localReflectionProbe: localReflectionProbe,
+                        localReflectionPrefilteredHandle: localReflectionPrefilteredHandle
                     )
                     resolvedMaterial = applyTextureFlags(
                         resolvedMaterial,
@@ -695,6 +706,118 @@ public class MCMesh {
         }
     }
 
+    func drawSubmeshPrimitives(_ renderCommandEncoder: MTLRenderCommandEncoder,
+                               submeshIndex: Int,
+                               frameContext: RendererFrameContext,
+                               material: MetalCupMaterial? = nil,
+                               submeshMaterialHandles: [AssetHandle?]? = nil,
+                               albedoMapHandle: AssetHandle? = nil,
+                               normalMapHandle: AssetHandle? = nil,
+                               metallicMapHandle: AssetHandle? = nil,
+                               roughnessMapHandle: AssetHandle? = nil,
+                               mrMapHandle: AssetHandle? = nil,
+                               ormMapHandle: AssetHandle? = nil,
+                               aoMapHandle: AssetHandle? = nil,
+                               emissiveMapHandle: AssetHandle? = nil,
+                               localReflectionProbe: LocalReflectionProbeUniform? = nil,
+                               localReflectionPrefilteredHandle: AssetHandle? = nil,
+                               useEmbeddedMaterial: Bool = true) {
+        guard _vertexBuffer != nil else {
+            if _simpleVertexBuffer != nil && _submeshes.isEmpty && submeshIndex == 0 {
+                drawPrimitives(
+                    renderCommandEncoder,
+                    frameContext: frameContext,
+                    material: material,
+                    submeshMaterialHandles: submeshMaterialHandles,
+                    albedoMapHandle: albedoMapHandle,
+                    normalMapHandle: normalMapHandle,
+                    metallicMapHandle: metallicMapHandle,
+                    roughnessMapHandle: roughnessMapHandle,
+                    mrMapHandle: mrMapHandle,
+                    ormMapHandle: ormMapHandle,
+                    aoMapHandle: aoMapHandle,
+                    emissiveMapHandle: emissiveMapHandle,
+                    localReflectionProbe: localReflectionProbe,
+                    localReflectionPrefilteredHandle: localReflectionPrefilteredHandle,
+                    useEmbeddedMaterial: useEmbeddedMaterial
+                )
+            }
+            return
+        }
+
+        guard submeshIndex >= 0, submeshIndex < _submeshes.count else { return }
+        renderCommandEncoder.setVertexBuffer(_vertexBuffer, offset: 0, index: VertexBufferIndex.vertices)
+        let submesh = _submeshes[submeshIndex]
+        let hasOverrides = material != nil
+            || albedoMapHandle != nil
+            || normalMapHandle != nil
+            || metallicMapHandle != nil
+            || roughnessMapHandle != nil
+            || mrMapHandle != nil
+            || ormMapHandle != nil
+            || aoMapHandle != nil
+            || emissiveMapHandle != nil
+
+        if !hasOverrides,
+           let bindings = resolveSubmeshMaterialBindings(at: submeshIndex, handles: submeshMaterialHandles) {
+            let textureFlags = submesh.applyTextures(
+                renderCommandEncoder: renderCommandEncoder,
+                frameContext: frameContext,
+                albedoMapHandle: bindings.albedoMapHandle,
+                normalMapHandle: bindings.normalMapHandle,
+                metallicMapHandle: bindings.metallicMapHandle,
+                roughnessMapHandle: bindings.roughnessMapHandle,
+                mrMapHandle: bindings.mrMapHandle,
+                ormMapHandle: bindings.ormMapHandle,
+                aoMapHandle: bindings.aoMapHandle,
+                emissiveMapHandle: bindings.emissiveMapHandle,
+                localReflectionProbe: localReflectionProbe,
+                localReflectionPrefilteredHandle: localReflectionPrefilteredHandle,
+                useEmbeddedTextures: false
+            )
+            submesh.applyMaterials(
+                renderCommandEncoder: renderCommandEncoder,
+                customMaterial: bindings.material,
+                useEmbeddedMaterial: false,
+                textureFlags: textureFlags,
+                materialFallback: false
+            )
+        } else {
+            let textureFlags = submesh.applyTextures(
+                renderCommandEncoder: renderCommandEncoder,
+                frameContext: frameContext,
+                albedoMapHandle: albedoMapHandle,
+                normalMapHandle: normalMapHandle,
+                metallicMapHandle: metallicMapHandle,
+                roughnessMapHandle: roughnessMapHandle,
+                mrMapHandle: mrMapHandle,
+                ormMapHandle: ormMapHandle,
+                aoMapHandle: aoMapHandle,
+                emissiveMapHandle: emissiveMapHandle,
+                localReflectionProbe: localReflectionProbe,
+                localReflectionPrefilteredHandle: localReflectionPrefilteredHandle,
+                useEmbeddedTextures: useEmbeddedMaterial
+            )
+            let materialFallback = !useEmbeddedMaterial && material == nil
+            submesh.applyMaterials(
+                renderCommandEncoder: renderCommandEncoder,
+                customMaterial: material,
+                useEmbeddedMaterial: useEmbeddedMaterial,
+                textureFlags: textureFlags,
+                materialFallback: materialFallback
+            )
+        }
+
+        renderCommandEncoder.drawIndexedPrimitives(
+            type: submesh.primitiveType,
+            indexCount: submesh.indexCount,
+            indexType: submesh.indexType,
+            indexBuffer: submesh.indexBuffer,
+            indexBufferOffset: submesh.indexBufferOffset,
+            instanceCount: _instanceCount
+        )
+    }
+
     private func applyTextureOverrides(renderCommandEncoder: MTLRenderCommandEncoder,
                                        frameContext: RendererFrameContext,
                                        albedoMapHandle: AssetHandle?,
@@ -703,7 +826,9 @@ public class MCMesh {
                                        roughnessMapHandle: AssetHandle?,
                                        mrMapHandle: AssetHandle?,
                                        aoMapHandle: AssetHandle?,
-                                       emissiveMapHandle: AssetHandle?) -> MetalCupMaterialFlags {
+                                       emissiveMapHandle: AssetHandle?,
+                                       localReflectionProbe: LocalReflectionProbeUniform?,
+                                       localReflectionPrefilteredHandle: AssetHandle?) -> MetalCupMaterialFlags {
         let fallback = frameContext.engineContext().fallbackTextures
         renderCommandEncoder.setFragmentSamplerState(graphics.samplerStates[.Linear], index: FragmentSamplerIndex.linear)
         renderCommandEncoder.setFragmentSamplerState(graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
@@ -744,10 +869,20 @@ public class MCMesh {
         renderCommandEncoder.setFragmentTexture(resolved.clearcoatRoughness, index: FragmentTextureIndex.clearcoatRoughness)
         renderCommandEncoder.setFragmentTexture(resolved.sheenColor, index: FragmentTextureIndex.sheenColor)
         renderCommandEncoder.setFragmentTexture(resolved.sheenIntensity, index: FragmentTextureIndex.sheenIntensity)
+        let sceneAO = frameContext.rendererSettings().isAOEnabled
+            ? (frameContext.renderResourceRegistry()?.namedTexture(RenderNamedResourceKey.ssaoFiltered) ?? fallback.whiteRGBA)
+            : fallback.whiteRGBA
+        renderCommandEncoder.setFragmentTexture(sceneAO, index: FragmentTextureIndex.sceneAO)
         let ibl = frameContext.iblTextures()
         renderCommandEncoder.setFragmentTexture(ibl.irradiance ?? fallback.blackCubemap, index: FragmentTextureIndex.irradiance)
         renderCommandEncoder.setFragmentTexture(ibl.prefiltered ?? fallback.blackCubemap, index: FragmentTextureIndex.prefiltered)
         renderCommandEncoder.setFragmentTexture(ibl.brdfLut ?? fallback.brdfLut, index: FragmentTextureIndex.brdfLut)
+        var resolvedLocalReflectionProbe = localReflectionProbe ?? LocalReflectionProbeUniform()
+        renderCommandEncoder.setFragmentBytes(&resolvedLocalReflectionProbe,
+                                              length: LocalReflectionProbeUniform.stride,
+                                              index: FragmentBufferIndex.localReflectionProbe)
+        let localReflectionTexture = localReflectionPrefilteredHandle.flatMap { assetManager?.texture(handle: $0) } ?? fallback.blackCubemap
+        renderCommandEncoder.setFragmentTexture(localReflectionTexture, index: FragmentTextureIndex.localReflectionPrefiltered)
         return resolved.flags
     }
 
@@ -870,6 +1005,8 @@ class Submesh {
                        ormMapHandle: AssetHandle?,
                        aoMapHandle: AssetHandle?,
                        emissiveMapHandle: AssetHandle?,
+                       localReflectionProbe: LocalReflectionProbeUniform?,
+                       localReflectionPrefilteredHandle: AssetHandle?,
                        useEmbeddedTextures: Bool) -> MetalCupMaterialFlags {
         let fallback = frameContext.engineContext().fallbackTextures
         renderCommandEncoder.setFragmentSamplerState(graphics.samplerStates[.Linear], index: FragmentSamplerIndex.linear)
@@ -911,10 +1048,20 @@ class Submesh {
         renderCommandEncoder.setFragmentTexture(resolved.clearcoatRoughness, index: FragmentTextureIndex.clearcoatRoughness)
         renderCommandEncoder.setFragmentTexture(resolved.sheenColor, index: FragmentTextureIndex.sheenColor)
         renderCommandEncoder.setFragmentTexture(resolved.sheenIntensity, index: FragmentTextureIndex.sheenIntensity)
+        let sceneAO = frameContext.rendererSettings().isAOEnabled
+            ? (frameContext.renderResourceRegistry()?.namedTexture(RenderNamedResourceKey.ssaoFiltered) ?? fallback.whiteRGBA)
+            : fallback.whiteRGBA
+        renderCommandEncoder.setFragmentTexture(sceneAO, index: FragmentTextureIndex.sceneAO)
         let ibl = frameContext.iblTextures()
         renderCommandEncoder.setFragmentTexture(ibl.irradiance ?? fallback.blackCubemap, index: FragmentTextureIndex.irradiance)
         renderCommandEncoder.setFragmentTexture(ibl.prefiltered ?? fallback.blackCubemap, index: FragmentTextureIndex.prefiltered)
         renderCommandEncoder.setFragmentTexture(ibl.brdfLut ?? fallback.brdfLut, index: FragmentTextureIndex.brdfLut)
+        var resolvedLocalReflectionProbe = localReflectionProbe ?? LocalReflectionProbeUniform()
+        renderCommandEncoder.setFragmentBytes(&resolvedLocalReflectionProbe,
+                                              length: LocalReflectionProbeUniform.stride,
+                                              index: FragmentBufferIndex.localReflectionProbe)
+        let localReflectionTexture = localReflectionPrefilteredHandle.flatMap { assetManager?.texture(handle: $0) } ?? fallback.blackCubemap
+        renderCommandEncoder.setFragmentTexture(localReflectionTexture, index: FragmentTextureIndex.localReflectionPrefiltered)
         return resolved.flags
     }
     

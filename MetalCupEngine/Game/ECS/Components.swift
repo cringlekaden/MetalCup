@@ -444,6 +444,7 @@ public struct CharacterControllerComponent {
     public var minPitchDegrees: Float
     public var maxPitchDegrees: Float
     public var visualEntityId: UUID?
+    public var animatorEntityId: UUID?
     public var cameraPivotEntityId: UUID?
     public var interpolateSubtree: Bool
 
@@ -485,6 +486,7 @@ public struct CharacterControllerComponent {
                 minPitchDegrees: Float = -80.0,
                 maxPitchDegrees: Float = 80.0,
                 visualEntityId: UUID? = nil,
+                animatorEntityId: UUID? = nil,
                 cameraPivotEntityId: UUID? = nil,
                 interpolateSubtree: Bool = true,
                 moveInput: SIMD2<Float> = .zero,
@@ -523,6 +525,7 @@ public struct CharacterControllerComponent {
         self.minPitchDegrees = minPitchDegrees
         self.maxPitchDegrees = maxPitchDegrees
         self.visualEntityId = visualEntityId
+        self.animatorEntityId = animatorEntityId
         self.cameraPivotEntityId = cameraPivotEntityId
         self.interpolateSubtree = interpolateSubtree
         self.moveInput = moveInput
@@ -562,6 +565,7 @@ public enum PrefabOverrideType: String, Codable, CaseIterable {
     case script
     case sky
     case skyLight
+    case reflectionProbe
     case skyLightTag
     case skySunTag
     case skinnedMesh
@@ -647,6 +651,240 @@ public struct SkinnedMeshComponent {
     }
 }
 
+public typealias EntityID = UUID
+public typealias AssetID = AssetHandle
+
+/// Canonical runtime contracts for animation output.
+/// Producer-owned by `AnimationSystem`; consumers must treat these values as read-only tick truth.
+public enum LocomotionAuthorityMode: UInt8 {
+    case none
+    case animationRootMotion
+    case controllerDriven
+    case hybridReserved
+}
+
+public enum RootMotionSource: UInt8 {
+    case none
+    case state
+    case transitionBlend
+}
+
+public enum TransitionTickPhase: UInt8 {
+    case entering
+    case active
+    case exiting
+}
+
+public struct TransitionTickInfo {
+    public var sourceStateId: String
+    public var targetStateId: String
+    public var normalizedTime: Float
+    public var duration: Float
+    public var phase: TransitionTickPhase
+
+    public init(sourceStateId: String = "",
+                targetStateId: String = "",
+                normalizedTime: Float = 0.0,
+                duration: Float = 0.0,
+                phase: TransitionTickPhase = .active) {
+        self.sourceStateId = sourceStateId
+        self.targetStateId = targetStateId
+        self.normalizedTime = normalizedTime
+        self.duration = duration
+        self.phase = phase
+    }
+}
+
+public struct StateMachineTickResult {
+    public var graphId: AssetID
+    public var activeStateId: String
+    public var activeStateName: String
+    public var isInTransition: Bool
+    public var transition: TransitionTickInfo?
+    public var stateTime: Float
+    public var normalizedStateTime: Float
+
+    public init(graphId: AssetID = AssetID(),
+                activeStateId: String = "",
+                activeStateName: String = "",
+                isInTransition: Bool = false,
+                transition: TransitionTickInfo? = nil,
+                stateTime: Float = 0.0,
+                normalizedStateTime: Float = 0.0) {
+        self.graphId = graphId
+        self.activeStateId = activeStateId
+        self.activeStateName = activeStateName
+        self.isInTransition = isInTransition
+        self.transition = transition
+        self.stateTime = stateTime
+        self.normalizedStateTime = normalizedStateTime
+    }
+}
+
+public struct RootMotionFrame {
+    public var mode: LocomotionAuthorityMode
+    public var authoredDeltaLocal: SIMD3<Float>
+    public var authoredDeltaRotationLocal: simd_quatf
+    public var effectiveDeltaLocal: SIMD3<Float>
+    public var effectiveDeltaRotationLocal: simd_quatf
+    /// State-level authored semantic: whether the active state is configured to author root motion.
+    public var stateHasAuthoredRootMotion: Bool
+    /// Frame-level contribution semantic: whether this tick had authored root motion contribution.
+    public var hasAuthoredMotion: Bool
+    public var isActive: Bool
+    public var source: RootMotionSource
+
+    public init(mode: LocomotionAuthorityMode = .none,
+                authoredDeltaLocal: SIMD3<Float> = .zero,
+                authoredDeltaRotationLocal: simd_quatf = simd_quatf(vector: TransformMath.identityQuaternion),
+                effectiveDeltaLocal: SIMD3<Float> = .zero,
+                effectiveDeltaRotationLocal: simd_quatf = simd_quatf(vector: TransformMath.identityQuaternion),
+                stateHasAuthoredRootMotion: Bool = false,
+                hasAuthoredMotion: Bool = false,
+                isActive: Bool = false,
+                source: RootMotionSource = .none) {
+        self.mode = mode
+        self.authoredDeltaLocal = authoredDeltaLocal
+        self.authoredDeltaRotationLocal = authoredDeltaRotationLocal.normalized
+        self.effectiveDeltaLocal = effectiveDeltaLocal
+        self.effectiveDeltaRotationLocal = effectiveDeltaRotationLocal.normalized
+        self.stateHasAuthoredRootMotion = stateHasAuthoredRootMotion
+        self.hasAuthoredMotion = hasAuthoredMotion
+        self.isActive = isActive
+        self.source = source
+    }
+}
+
+public struct AnimatorParameterWriteSet {
+    public var bools: [String: Bool]
+    public var floats: [String: Float]
+    public var ints: [String: Int32]
+    public var triggersSet: Set<String>
+    public var triggersReset: Set<String>
+
+    public init(bools: [String: Bool] = [:],
+                floats: [String: Float] = [:],
+                ints: [String: Int32] = [:],
+                triggersSet: Set<String> = [],
+                triggersReset: Set<String> = []) {
+        self.bools = bools
+        self.floats = floats
+        self.ints = ints
+        self.triggersSet = triggersSet
+        self.triggersReset = triggersReset
+    }
+}
+
+/// Optional animation debug contract payload for per-tick diagnostics.
+/// Producer-owned by `AnimationSystem`; consumers should not derive authority from this data.
+public struct AnimationTickDebug {
+    public var notes: [String: String]
+
+    public init(notes: [String: String] = [:]) {
+        self.notes = notes
+    }
+}
+
+public struct AnimationTickResult {
+    public var entity: EntityID
+    public var tickIndex: UInt64
+    public var dt: Float
+    public var stateMachine: StateMachineTickResult
+    public var rootMotion: RootMotionFrame
+    public var animatorWrites: AnimatorParameterWriteSet
+    public var debug: AnimationTickDebug?
+
+    public init(entity: EntityID = UUID(),
+                tickIndex: UInt64 = 0,
+                dt: Float = 0.0,
+                stateMachine: StateMachineTickResult = StateMachineTickResult(),
+                rootMotion: RootMotionFrame = RootMotionFrame(),
+                animatorWrites: AnimatorParameterWriteSet = AnimatorParameterWriteSet(),
+                debug: AnimationTickDebug? = nil) {
+        self.entity = entity
+        self.tickIndex = tickIndex
+        self.dt = dt
+        self.stateMachine = stateMachine
+        self.rootMotion = rootMotion
+        self.animatorWrites = animatorWrites
+        self.debug = debug
+    }
+}
+
+/// Temporary phase-1 compatibility adapter that projects canonical animation tick contracts
+/// back into legacy runtime fields consumed by unrefactored systems.
+/// One-way only: canonical -> legacy.
+public struct AnimationRuntimeCompatibilityView {
+    public let canonical: AnimationTickResult
+
+    public init(canonical: AnimationTickResult) {
+        self.canonical = canonical
+    }
+
+    public var usesRootMotion: Bool {
+        canonical.rootMotion.isActive
+    }
+
+    public func rootMotionDelta(fallback: RootMotionDelta = .zero) -> RootMotionDelta {
+        _ = fallback
+        return RootMotionDelta(deltaPos: canonical.rootMotion.effectiveDeltaLocal,
+                               deltaRot: canonical.rootMotion.effectiveDeltaRotationLocal.vector)
+    }
+
+    public func rootMotionSample(fallback: RootMotionRuntimeSample? = nil) -> RootMotionRuntimeSample? {
+        if canonical.tickIndex == 0 {
+            return fallback
+        }
+        let rotation = canonical.rootMotion.effectiveDeltaRotationLocal.vector
+        return RootMotionRuntimeSample(
+            tickID: canonical.tickIndex,
+            deltaTranslationLocal: canonical.rootMotion.effectiveDeltaLocal,
+            deltaRotationLocal: rotation,
+            sourceStateName: canonical.stateMachine.activeStateName,
+            sourceNodeID: fallback?.sourceNodeID,
+            sampleStartTime: max(canonical.stateMachine.stateTime - canonical.dt, 0.0),
+            sampleEndTime: canonical.stateMachine.stateTime,
+            isValid: canonical.rootMotion.hasAuthoredMotion
+        )
+    }
+
+    public func fixedTickRuntimeSnapshot(fallback: AnimationFixedTickRuntimeSnapshot? = nil) -> AnimationFixedTickRuntimeSnapshot {
+        let effectiveRotation = canonical.rootMotion.effectiveDeltaRotationLocal.vector
+        let sampleHasNonZeroDelta: Bool = {
+            let delta = canonical.rootMotion.effectiveDeltaLocal
+            let rotation = canonical.rootMotion.effectiveDeltaRotationLocal
+            let rotationRadians = 2.0 * acos(simd_clamp(abs(rotation.real), 0.0, 1.0))
+            return simd_length(delta) > 1.0e-6 || rotationRadians > 1.0e-5
+        }()
+        let currentStateID = UUID(uuidString: canonical.stateMachine.activeStateId)
+        let nextStateID = canonical.stateMachine.transition.flatMap { UUID(uuidString: $0.targetStateId) }
+        return AnimationFixedTickRuntimeSnapshot(
+            tickID: canonical.tickIndex,
+            currentStateID: currentStateID ?? fallback?.currentStateID,
+            currentStateName: canonical.stateMachine.activeStateName,
+            nextStateID: nextStateID ?? fallback?.nextStateID,
+            nextStateName: fallback?.nextStateName ?? "",
+            authoredUsesRootMotion: canonical.rootMotion.stateHasAuthoredRootMotion,
+            stateWantsRootMotion: fallback?.stateWantsRootMotion ?? canonical.rootMotion.isActive,
+            effectiveUsesRootMotion: canonical.rootMotion.isActive,
+            sampleHasNonZeroDelta: sampleHasNonZeroDelta,
+            rootMotionSampleValid: canonical.rootMotion.hasAuthoredMotion,
+            rootMotionTrackConsumed: fallback?.rootMotionTrackConsumed ?? canonical.rootMotion.isActive,
+            translationSourceJointIndex: fallback?.translationSourceJointIndex ?? -1,
+            translationSourceJointName: fallback?.translationSourceJointName ?? "",
+            rotationSourceJointIndex: fallback?.rotationSourceJointIndex ?? -1,
+            rotationSourceJointName: fallback?.rotationSourceJointName ?? "",
+            localRootDeltaTranslation: canonical.rootMotion.effectiveDeltaLocal,
+            worldRootDeltaTranslation: canonical.rootMotion.effectiveDeltaLocal,
+            rootDeltaRotation: effectiveRotation,
+            sampleTime: canonical.stateMachine.stateTime,
+            sampleDuration: max(canonical.dt, fallback?.sampleDuration ?? 0.0),
+            isTransitionBlend: canonical.stateMachine.isInTransition
+        )
+    }
+}
+
+// TODO(phase-2): Deprecate overlapping snapshot/root-motion flags once all consumers read AnimationTickResult.
 public struct RootMotionDelta {
     public var deltaPos: SIMD3<Float>
     public var deltaRot: SIMD4<Float>
@@ -660,11 +898,110 @@ public struct RootMotionDelta {
     public static let zero = RootMotionDelta()
 }
 
+public struct RootMotionRuntimeSample {
+    public var tickID: UInt64
+    public var deltaTranslationLocal: SIMD3<Float>
+    public var deltaRotationLocal: SIMD4<Float>
+    public var sourceStateName: String
+    public var sourceNodeID: UUID?
+    public var sampleStartTime: Float
+    public var sampleEndTime: Float
+    public var isValid: Bool
+
+    public init(tickID: UInt64 = 0,
+                deltaTranslationLocal: SIMD3<Float> = .zero,
+                deltaRotationLocal: SIMD4<Float> = TransformMath.identityQuaternion,
+                sourceStateName: String = "",
+                sourceNodeID: UUID? = nil,
+                sampleStartTime: Float = 0.0,
+                sampleEndTime: Float = 0.0,
+                isValid: Bool = false) {
+        self.tickID = tickID
+        self.deltaTranslationLocal = deltaTranslationLocal
+        self.deltaRotationLocal = TransformMath.normalizedQuaternion(deltaRotationLocal)
+        self.sourceStateName = sourceStateName
+        self.sourceNodeID = sourceNodeID
+        self.sampleStartTime = sampleStartTime
+        self.sampleEndTime = sampleEndTime
+        self.isValid = isValid
+    }
+}
+
+public struct AnimationFixedTickRuntimeSnapshot {
+    public var tickID: UInt64
+    public var currentStateID: UUID?
+    public var currentStateName: String
+    public var nextStateID: UUID?
+    public var nextStateName: String
+    public var authoredUsesRootMotion: Bool
+    public var stateWantsRootMotion: Bool
+    public var effectiveUsesRootMotion: Bool
+    public var sampleHasNonZeroDelta: Bool
+    public var rootMotionSampleValid: Bool
+    public var rootMotionTrackConsumed: Bool
+    public var translationSourceJointIndex: Int
+    public var translationSourceJointName: String
+    public var rotationSourceJointIndex: Int
+    public var rotationSourceJointName: String
+    public var localRootDeltaTranslation: SIMD3<Float>
+    public var worldRootDeltaTranslation: SIMD3<Float>
+    public var rootDeltaRotation: SIMD4<Float>
+    public var sampleTime: Float
+    public var sampleDuration: Float
+    public var isTransitionBlend: Bool
+
+    public init(tickID: UInt64 = 0,
+                currentStateID: UUID? = nil,
+                currentStateName: String = "",
+                nextStateID: UUID? = nil,
+                nextStateName: String = "",
+                authoredUsesRootMotion: Bool = false,
+                stateWantsRootMotion: Bool = false,
+                effectiveUsesRootMotion: Bool = false,
+                sampleHasNonZeroDelta: Bool = false,
+                rootMotionSampleValid: Bool = false,
+                rootMotionTrackConsumed: Bool = false,
+                translationSourceJointIndex: Int = -1,
+                translationSourceJointName: String = "",
+                rotationSourceJointIndex: Int = -1,
+                rotationSourceJointName: String = "",
+                localRootDeltaTranslation: SIMD3<Float> = .zero,
+                worldRootDeltaTranslation: SIMD3<Float> = .zero,
+                rootDeltaRotation: SIMD4<Float> = TransformMath.identityQuaternion,
+                sampleTime: Float = 0.0,
+                sampleDuration: Float = 0.0,
+                isTransitionBlend: Bool = false) {
+        self.tickID = tickID
+        self.currentStateID = currentStateID
+        self.currentStateName = currentStateName
+        self.nextStateID = nextStateID
+        self.nextStateName = nextStateName
+        self.authoredUsesRootMotion = authoredUsesRootMotion
+        self.stateWantsRootMotion = stateWantsRootMotion
+        self.effectiveUsesRootMotion = effectiveUsesRootMotion
+        self.sampleHasNonZeroDelta = sampleHasNonZeroDelta
+        self.rootMotionSampleValid = rootMotionSampleValid
+        self.rootMotionTrackConsumed = rootMotionTrackConsumed
+        self.translationSourceJointIndex = translationSourceJointIndex
+        self.translationSourceJointName = translationSourceJointName
+        self.rotationSourceJointIndex = rotationSourceJointIndex
+        self.rotationSourceJointName = rotationSourceJointName
+        self.localRootDeltaTranslation = localRootDeltaTranslation
+        self.worldRootDeltaTranslation = worldRootDeltaTranslation
+        self.rootDeltaRotation = TransformMath.normalizedQuaternion(rootDeltaRotation)
+        self.sampleTime = sampleTime
+        self.sampleDuration = sampleDuration
+        self.isTransitionBlend = isTransitionBlend
+    }
+}
+
 public struct AnimationPoseRuntimeState {
     public var sampleTime: Float
+    public var sampleDuration: Float
     public var localPose: [TransformComponent]
     public var globalPose: [TransformComponent]
     public var rootMotionDelta: RootMotionDelta
+    public var rootMotionSample: RootMotionRuntimeSample?
     public var usesRootMotion: Bool
     public var currentStateName: String
     public var rootMotionBoneName: String
@@ -676,11 +1013,14 @@ public struct AnimationPoseRuntimeState {
     public var rootMotionRotationJointIndex: Int
     public var rootMotionConsumeBoneName: String
     public var rootMotionConsumeJointIndex: Int
+    public var fixedTickRuntimeSnapshot: AnimationFixedTickRuntimeSnapshot?
 
     public init(sampleTime: Float = 0.0,
+                sampleDuration: Float = 0.0,
                 localPose: [TransformComponent] = [],
                 globalPose: [TransformComponent] = [],
                 rootMotionDelta: RootMotionDelta = .zero,
+                rootMotionSample: RootMotionRuntimeSample? = nil,
                 usesRootMotion: Bool = false,
                 currentStateName: String = "",
                 rootMotionBoneName: String = "",
@@ -691,11 +1031,14 @@ public struct AnimationPoseRuntimeState {
                 rootMotionRotationBoneName: String = "",
                 rootMotionRotationJointIndex: Int = -1,
                 rootMotionConsumeBoneName: String = "",
-                rootMotionConsumeJointIndex: Int = -1) {
+                rootMotionConsumeJointIndex: Int = -1,
+                fixedTickRuntimeSnapshot: AnimationFixedTickRuntimeSnapshot? = nil) {
         self.sampleTime = sampleTime
+        self.sampleDuration = sampleDuration
         self.localPose = localPose
         self.globalPose = globalPose
         self.rootMotionDelta = rootMotionDelta
+        self.rootMotionSample = rootMotionSample
         self.usesRootMotion = usesRootMotion
         self.currentStateName = currentStateName
         self.rootMotionBoneName = rootMotionBoneName
@@ -707,6 +1050,7 @@ public struct AnimationPoseRuntimeState {
         self.rootMotionRotationJointIndex = rootMotionRotationJointIndex
         self.rootMotionConsumeBoneName = rootMotionConsumeBoneName
         self.rootMotionConsumeJointIndex = rootMotionConsumeJointIndex
+        self.fixedTickRuntimeSnapshot = fixedTickRuntimeSnapshot
     }
 }
 
@@ -715,12 +1059,32 @@ public enum AnimatorEvaluationMode: UInt32, Codable {
     case graph = 1
 }
 
+public struct AnimationGraphDebugTraceEntry {
+    public var nodeID: UUID
+    public var nodeType: String
+    public var nodeTitle: String
+    public var outputSummary: String
+
+    public init(nodeID: UUID,
+                nodeType: String,
+                nodeTitle: String,
+                outputSummary: String) {
+        self.nodeID = nodeID
+        self.nodeType = nodeType
+        self.nodeTitle = nodeTitle
+        self.outputSummary = outputSummary
+    }
+}
+
 public struct AnimationGraphRuntimeInstanceState {
     public var graphHandle: AnimationGraphHandle?
     public var floatParameterValues: [Float]
     public var boolParameterValues: [Bool]
     public var intParameterValues: [Int]
     public var triggerParameterValues: [Bool]
+    public var floatLocalVariableValues: [Float]
+    public var boolLocalVariableValues: [Bool]
+    public var intLocalVariableValues: [Int]
     public var currentStateNodeID: UUID?
     public var nextStateNodeID: UUID?
     public var transitionElapsedSeconds: Float
@@ -731,13 +1095,19 @@ public struct AnimationGraphRuntimeInstanceState {
     public var stateMachineNextStateByNodeID: [UUID: UUID]
     public var stateMachineTransitionElapsedByNodeID: [UUID: Float]
     public var stateMachineTransitionDurationByNodeID: [UUID: Float]
+    public var stateMachineTransitionSynchronizeByNodeID: [UUID: Bool]
     public var stateMachineStateElapsedByNodeID: [UUID: Float]
+    public var captureDebugTrace: Bool
+    public var debugTraceEntries: [AnimationGraphDebugTraceEntry]
 
     public init(graphHandle: AnimationGraphHandle? = nil,
                 floatParameterValues: [Float] = [],
                 boolParameterValues: [Bool] = [],
                 intParameterValues: [Int] = [],
                 triggerParameterValues: [Bool] = [],
+                floatLocalVariableValues: [Float] = [],
+                boolLocalVariableValues: [Bool] = [],
+                intLocalVariableValues: [Int] = [],
                 currentStateNodeID: UUID? = nil,
                 nextStateNodeID: UUID? = nil,
                 transitionElapsedSeconds: Float = 0.0,
@@ -748,12 +1118,18 @@ public struct AnimationGraphRuntimeInstanceState {
                 stateMachineNextStateByNodeID: [UUID: UUID] = [:],
                 stateMachineTransitionElapsedByNodeID: [UUID: Float] = [:],
                 stateMachineTransitionDurationByNodeID: [UUID: Float] = [:],
-                stateMachineStateElapsedByNodeID: [UUID: Float] = [:]) {
+                stateMachineTransitionSynchronizeByNodeID: [UUID: Bool] = [:],
+                stateMachineStateElapsedByNodeID: [UUID: Float] = [:],
+                captureDebugTrace: Bool = false,
+                debugTraceEntries: [AnimationGraphDebugTraceEntry] = []) {
         self.graphHandle = graphHandle
         self.floatParameterValues = floatParameterValues
         self.boolParameterValues = boolParameterValues
         self.intParameterValues = intParameterValues
         self.triggerParameterValues = triggerParameterValues
+        self.floatLocalVariableValues = floatLocalVariableValues
+        self.boolLocalVariableValues = boolLocalVariableValues
+        self.intLocalVariableValues = intLocalVariableValues
         self.currentStateNodeID = currentStateNodeID
         self.nextStateNodeID = nextStateNodeID
         self.transitionElapsedSeconds = transitionElapsedSeconds
@@ -764,19 +1140,26 @@ public struct AnimationGraphRuntimeInstanceState {
         self.stateMachineNextStateByNodeID = stateMachineNextStateByNodeID
         self.stateMachineTransitionElapsedByNodeID = stateMachineTransitionElapsedByNodeID
         self.stateMachineTransitionDurationByNodeID = stateMachineTransitionDurationByNodeID
+        self.stateMachineTransitionSynchronizeByNodeID = stateMachineTransitionSynchronizeByNodeID
         self.stateMachineStateElapsedByNodeID = stateMachineStateElapsedByNodeID
+        self.captureDebugTrace = captureDebugTrace
+        self.debugTraceEntries = debugTraceEntries
     }
 
     public mutating func resetDefaults(from compiledGraph: CompiledAnimationGraph, graphHandle: AnimationGraphHandle) {
         self.graphHandle = graphHandle
-        let count = compiledGraph.parameters.count
-        self.floatParameterValues = Array(repeating: 0.0, count: count)
-        self.boolParameterValues = Array(repeating: false, count: count)
-        self.intParameterValues = Array(repeating: 0, count: count)
-        self.triggerParameterValues = Array(repeating: false, count: count)
+        let parameterCount = compiledGraph.parameters.count
+        let localVariableCount = compiledGraph.localVariables.count
+        self.floatParameterValues = Array(repeating: 0.0, count: parameterCount)
+        self.boolParameterValues = Array(repeating: false, count: parameterCount)
+        self.intParameterValues = Array(repeating: 0, count: parameterCount)
+        self.triggerParameterValues = Array(repeating: false, count: parameterCount)
+        self.floatLocalVariableValues = Array(repeating: 0.0, count: localVariableCount)
+        self.boolLocalVariableValues = Array(repeating: false, count: localVariableCount)
+        self.intLocalVariableValues = Array(repeating: 0, count: localVariableCount)
         for parameter in compiledGraph.parameters {
             let index = parameter.index
-            guard index >= 0, index < count else { continue }
+            guard index >= 0, index < parameterCount else { continue }
             switch parameter.type {
             case .float:
                 self.floatParameterValues[index] = parameter.defaultFloat
@@ -786,6 +1169,18 @@ public struct AnimationGraphRuntimeInstanceState {
                 self.intParameterValues[index] = parameter.defaultInt
             case .trigger:
                 self.triggerParameterValues[index] = false
+            }
+        }
+        for localVariable in compiledGraph.localVariables {
+            let index = localVariable.index
+            guard index >= 0, index < localVariableCount else { continue }
+            switch localVariable.type {
+            case .float:
+                self.floatLocalVariableValues[index] = localVariable.defaultFloat
+            case .bool:
+                self.boolLocalVariableValues[index] = localVariable.defaultBool
+            case .int:
+                self.intLocalVariableValues[index] = localVariable.defaultInt
             }
         }
         self.currentStateNodeID = nil
@@ -798,14 +1193,23 @@ public struct AnimationGraphRuntimeInstanceState {
         self.stateMachineNextStateByNodeID = [:]
         self.stateMachineTransitionElapsedByNodeID = [:]
         self.stateMachineTransitionDurationByNodeID = [:]
+        self.stateMachineTransitionSynchronizeByNodeID = [:]
         self.stateMachineStateElapsedByNodeID = [:]
+        self.debugTraceEntries = []
     }
 
     public func hasParameterStorage(count: Int) -> Bool {
-        return floatParameterValues.count == count &&
-            boolParameterValues.count == count &&
-            intParameterValues.count == count &&
-            triggerParameterValues.count == count
+        return hasStorage(parameterCount: count, localVariableCount: floatLocalVariableValues.count)
+    }
+
+    public func hasStorage(parameterCount: Int, localVariableCount: Int) -> Bool {
+        return floatParameterValues.count == parameterCount &&
+            boolParameterValues.count == parameterCount &&
+            intParameterValues.count == parameterCount &&
+            triggerParameterValues.count == parameterCount &&
+            floatLocalVariableValues.count == localVariableCount &&
+            boolLocalVariableValues.count == localVariableCount &&
+            intLocalVariableValues.count == localVariableCount
     }
 
     public mutating func setFloat(index: Int, value: Float) {
@@ -834,6 +1238,21 @@ public struct AnimationGraphRuntimeInstanceState {
         triggerParameterValues[index] = false
         triggerLatchedParameterIndices.remove(index)
     }
+
+    public mutating func setLocalFloat(index: Int, value: Float) {
+        guard index >= 0, index < floatLocalVariableValues.count else { return }
+        floatLocalVariableValues[index] = value
+    }
+
+    public mutating func setLocalBool(index: Int, value: Bool) {
+        guard index >= 0, index < boolLocalVariableValues.count else { return }
+        boolLocalVariableValues[index] = value
+    }
+
+    public mutating func setLocalInt(index: Int, value: Int) {
+        guard index >= 0, index < intLocalVariableValues.count else { return }
+        intLocalVariableValues[index] = value
+    }
 }
 
 public struct AnimatorComponent {
@@ -844,9 +1263,13 @@ public struct AnimatorComponent {
     public var playbackSpeed: Float
     public var isPlaying: Bool
     public var isLooping: Bool
+    public var isControllerDriven: Bool
     public var enableRootMotion: Bool
     public var graphRuntimeState: AnimationGraphRuntimeInstanceState?
     public var poseRuntimeState: AnimationPoseRuntimeState?
+    /// Canonical latest fixed/variable animation tick output for this animator.
+    /// Producer-owned by `AnimationSystem`; consumer systems must not recompute or mutate.
+    public var latestAnimationTickResult: AnimationTickResult?
 
     public init(evaluationMode: AnimatorEvaluationMode = .clip,
                 clipHandle: AssetHandle? = nil,
@@ -855,9 +1278,11 @@ public struct AnimatorComponent {
                 playbackSpeed: Float = 1.0,
                 isPlaying: Bool = true,
                 isLooping: Bool = true,
+                isControllerDriven: Bool = false,
                 enableRootMotion: Bool = true,
                 graphRuntimeState: AnimationGraphRuntimeInstanceState? = nil,
-                poseRuntimeState: AnimationPoseRuntimeState? = nil) {
+                poseRuntimeState: AnimationPoseRuntimeState? = nil,
+                latestAnimationTickResult: AnimationTickResult? = nil) {
         self.evaluationMode = evaluationMode
         self.clipHandle = clipHandle
         self.graphHandle = graphHandle
@@ -865,9 +1290,11 @@ public struct AnimatorComponent {
         self.playbackSpeed = playbackSpeed
         self.isPlaying = isPlaying
         self.isLooping = isLooping
+        self.isControllerDriven = isControllerDriven
         self.enableRootMotion = enableRootMotion
         self.graphRuntimeState = graphRuntimeState
         self.poseRuntimeState = poseRuntimeState
+        self.latestAnimationTickResult = latestAnimationTickResult
     }
 }
 
@@ -935,6 +1362,12 @@ public struct CameraComponent {
     public var projectionType: ProjectionType
     public var isPrimary: Bool
     public var isEditor: Bool
+    public var autoExposureEnabled: Bool
+    public var manualExposure: Float
+    public var exposureCompensation: Float
+    public var autoExposureMin: Float
+    public var autoExposureMax: Float
+    public var adaptationSpeed: Float
 
     public init(
         fovDegrees: Float = 45.0,
@@ -943,7 +1376,13 @@ public struct CameraComponent {
         farPlane: Float = 1000.0,
         projectionType: ProjectionType = .perspective,
         isPrimary: Bool = true,
-        isEditor: Bool = true
+        isEditor: Bool = true,
+        autoExposureEnabled: Bool = true,
+        manualExposure: Float = 1.0,
+        exposureCompensation: Float = 0.0,
+        autoExposureMin: Float = 0.03,
+        autoExposureMax: Float = 8.0,
+        adaptationSpeed: Float = 2.0
     ) {
         self.fovDegrees = fovDegrees
         self.orthoSize = orthoSize
@@ -952,6 +1391,12 @@ public struct CameraComponent {
         self.projectionType = projectionType
         self.isPrimary = isPrimary
         self.isEditor = isEditor
+        self.autoExposureEnabled = autoExposureEnabled
+        self.manualExposure = manualExposure
+        self.exposureCompensation = exposureCompensation
+        self.autoExposureMin = autoExposureMin
+        self.autoExposureMax = autoExposureMax
+        self.adaptationSpeed = adaptationSpeed
     }
 }
 
@@ -1022,6 +1467,57 @@ public struct SkyComponent {
 
     public init(environmentMapHandle: AssetHandle? = nil) {
         self.environmentMapHandle = environmentMapHandle
+    }
+}
+
+public enum ReflectionProbeRebuildMode: UInt32, Codable {
+    case manual = 0
+    case onPlay = 1
+}
+
+public enum ReflectionProbeRuntimeStatus: Int32, CaseIterable {
+    case idle = 0
+    case queued = 1
+    case capturing = 2
+    case filtering = 3
+    case ready = 4
+    case failed = 5
+}
+
+public struct ReflectionProbeComponent: Equatable {
+    public var enabled: Bool
+    public var intensity: Float
+    /// Probe-local half extents for the authored influence box, reused later for box projection.
+    public var boxExtents: SIMD3<Float>
+    /// Soft edge distance used to fade from this probe back to the global reflection fallback.
+    public var blendDistance: Float
+    /// Higher priority wins when multiple authored probes overlap the same region.
+    public var priority: Int32
+    /// Requested cubemap face resolution for scene capture.
+    public var captureResolution: Int32
+    /// Controls whether the probe rebuilds only on demand or when play mode starts.
+    public var rebuildMode: ReflectionProbeRebuildMode
+    /// Whether the scene sky contributes to the captured probe.
+    public var includeSky: Bool
+
+    public init(
+        enabled: Bool = true,
+        intensity: Float = 1.0,
+        boxExtents: SIMD3<Float> = SIMD3<Float>(5.0, 5.0, 5.0),
+        blendDistance: Float = 1.0,
+        priority: Int32 = 0,
+        captureResolution: Int32 = 128,
+        rebuildMode: ReflectionProbeRebuildMode = .onPlay,
+        includeSky: Bool = true
+    ) {
+        self.enabled = enabled
+        self.intensity = intensity
+        self.boxExtents = boxExtents
+        self.blendDistance = blendDistance
+        self.priority = priority
+        self.captureResolution = captureResolution
+        self.rebuildMode = rebuildMode
+        self.includeSky = includeSky
     }
 }
 

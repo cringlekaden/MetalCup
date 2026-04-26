@@ -352,6 +352,14 @@ public final class PrefabSystem {
             }
         }
 
+        if !isOverridden(.reflectionProbe) {
+            if let reflectionProbe = prefabEntity.components.reflectionProbe {
+                ecs.add(reflectionProbe.toComponent(), to: entity)
+            } else {
+                ecs.remove(ReflectionProbeComponent.self, from: entity)
+            }
+        }
+
         if !isOverridden(.skyLightTag) {
             if prefabEntity.components.skyLightTag != nil {
                 ecs.add(SkyLightTag(), to: entity)

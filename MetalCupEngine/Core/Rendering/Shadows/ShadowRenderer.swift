@@ -9,6 +9,8 @@ final class ShadowRenderer {
     private let engineContext: EngineContext
     private let resources: ShadowResources
     private let cascadeEpsilon: Float = 0.001
+    private let extentQuantizationTexels: Float = 8.0
+    private let cascadeDepthExtensionScale: Float = 1.25
     private let minOrthoExtent: Float = 0.5
     private let minNearFarSpan: Float = 0.5
     private let minLightDistance: Float = 1.0
@@ -101,16 +103,15 @@ final class ShadowRenderer {
         for cascadeIndex in 0..<cascadeCount {
             let splitFar = stabilizedSplits[cascadeIndex]
             let splitNear = (cascadeIndex == 0) ? distanceNear : stabilizedSplits[cascadeIndex - 1]
-            let corners = frustumCornersWorld(
+            let sphere = stableFrustumSliceBoundingSphere(
                 near: splitNear,
                 far: splitFar,
                 projection: cameraState.projection,
                 viewMatrix: cameraState.viewMatrix
             )
-            let sphere = ritterBoundingSphere(points: corners)
             let centerWS = sphere.center
             let radius = max(sphere.radius, minSphereRadius)
-            let extent = max(radius, minOrthoExtent * 0.5)
+            let extent = quantizedCascadeExtent(radius: radius, resolution: resolution)
             let lightView = lightViewMatrix(lightDirection: lightDirection, center: centerWS, radius: extent)
             let stabilizedView = stabilizeLightView(
                 lightView: lightView,
@@ -121,7 +122,8 @@ final class ShadowRenderer {
             cascadeWorldUnitsPerTexel[cascadeIndex] = (2.0 * extent) / max(Float(resolution), 1.0)
             cascadeHalfExtents[cascadeIndex] = extent
             let centerLS = stabilizedView * SIMD4<Float>(centerWS, 1.0)
-            let casterDepthExtension = farDistance
+            let cascadeDepthSpan = max(splitFar - splitNear, 0.0)
+            let casterDepthExtension = max(cascadeDepthSpan * cascadeDepthExtensionScale, extent)
             let (nearZ, farZ) = computeLightNearFar(centerZ: centerLS.z, radius: extent, extraDepth: casterDepthExtension)
             cascadeNearZ[cascadeIndex] = nearZ
             cascadeFarZ[cascadeIndex] = farZ
@@ -346,24 +348,55 @@ final class ShadowRenderer {
         return stabilized
     }
 
+    private func stableFrustumSliceBoundingSphere(
+        near: Float,
+        far: Float,
+        projection: CameraProjection,
+        viewMatrix: matrix_float4x4
+    ) -> BoundingSphere {
+        let localCorners = frustumCornersCameraSpace(near: near, far: far, projection: projection)
+        let localCenter = SIMD3<Float>(0.0, 0.0, -0.5 * (near + far))
+        let radiusSquared = localCorners.reduce(Float.zero) { partialResult, corner in
+            max(partialResult, simd_length_squared(corner - localCenter))
+        }
+        let invView = simd_inverse(viewMatrix)
+        let worldCenter4 = invView * SIMD4<Float>(localCenter, 1.0)
+        let worldCenter = SIMD3<Float>(worldCenter4.x, worldCenter4.y, worldCenter4.z)
+        if !isFinite(worldCenter) || !radiusSquared.isFinite {
+            return BoundingSphere(center: .zero, radius: minSphereRadius)
+        }
+        return BoundingSphere(center: worldCenter, radius: max(sqrt(radiusSquared), minSphereRadius))
+    }
+
     private func frustumCornersWorld(
         near: Float,
         far: Float,
         projection: CameraProjection,
         viewMatrix: matrix_float4x4
     ) -> [SIMD3<Float>] {
+        let localCorners = frustumCornersCameraSpace(near: near, far: far, projection: projection)
         let invView = simd_inverse(viewMatrix)
+        return localCorners.compactMap { corner in
+            let world = invView * SIMD4<Float>(corner, 1.0)
+            let worldPoint = SIMD3<Float>(world.x, world.y, world.z)
+            return isFinite(worldPoint) ? worldPoint : nil
+        }
+    }
+
+    private func frustumCornersCameraSpace(
+        near: Float,
+        far: Float,
+        projection: CameraProjection
+    ) -> [SIMD3<Float>] {
         let nearZ = -near
         let farZ = -far
-        var corners: [SIMD3<Float>] = []
-        corners.reserveCapacity(8)
         switch projection {
         case .perspective(let tanHalfFov, let aspect):
             let nearHeight = tanHalfFov * near
             let nearWidth = nearHeight * aspect
             let farHeight = tanHalfFov * far
             let farWidth = farHeight * aspect
-            corners = [
+            return [
                 SIMD3<Float>(-nearWidth, -nearHeight, nearZ),
                 SIMD3<Float>(nearWidth, -nearHeight, nearZ),
                 SIMD3<Float>(nearWidth, nearHeight, nearZ),
@@ -374,7 +407,7 @@ final class ShadowRenderer {
                 SIMD3<Float>(-farWidth, farHeight, farZ)
             ]
         case .orthographic(let halfWidth, let halfHeight):
-            corners = [
+            return [
                 SIMD3<Float>(-halfWidth, -halfHeight, nearZ),
                 SIMD3<Float>(halfWidth, -halfHeight, nearZ),
                 SIMD3<Float>(halfWidth, halfHeight, nearZ),
@@ -384,11 +417,6 @@ final class ShadowRenderer {
                 SIMD3<Float>(halfWidth, halfHeight, farZ),
                 SIMD3<Float>(-halfWidth, halfHeight, farZ)
             ]
-        }
-        return corners.compactMap { corner in
-            let world = invView * SIMD4<Float>(corner, 1.0)
-            let worldPoint = SIMD3<Float>(world.x, world.y, world.z)
-            return isFinite(worldPoint) ? worldPoint : nil
         }
     }
 
@@ -430,6 +458,22 @@ final class ShadowRenderer {
         stabilized.columns.3.x += snappedX - centerLS.x
         stabilized.columns.3.y += snappedY - centerLS.y
         return stabilized
+    }
+
+    private func quantizedCascadeExtent(radius: Float, resolution: Int) -> Float {
+        let baseExtent = max(radius, minOrthoExtent * 0.5)
+        let safeResolution = max(Float(resolution), 1.0)
+        let rawWorldUnitsPerTexel = (2.0 * baseExtent) / safeResolution
+        guard rawWorldUnitsPerTexel.isFinite, rawWorldUnitsPerTexel > 0.0 else {
+            return baseExtent
+        }
+
+        let quantizationStep = max(rawWorldUnitsPerTexel * extentQuantizationTexels, rawWorldUnitsPerTexel)
+        let quantizedExtent = ceil(baseExtent / quantizationStep) * quantizationStep
+        if quantizedExtent.isFinite {
+            return max(quantizedExtent, minOrthoExtent * 0.5)
+        }
+        return baseExtent
     }
 
     private func computeLightNearFar(centerZ: Float, radius: Float, extraDepth: Float) -> (Float, Float) {
@@ -568,9 +612,11 @@ final class ShadowRenderer {
         var constants = SceneConstants()
         constants.totalGameTime = totalTime
         constants.viewMatrix = viewMatrix
+        constants.inverseViewMatrix = simd_inverse(viewMatrix)
         constants.skyViewMatrix = viewMatrix
         constants.projectionMatrix = projectionMatrix
         constants.inverseProjectionMatrix = simd_inverse(projectionMatrix)
+        constants.inverseViewProjectionMatrix = simd_inverse(projectionMatrix * viewMatrix)
         constants.cameraPositionAndIBL = SIMD4<Float>(0, 0, 0, 0)
         return constants
     }

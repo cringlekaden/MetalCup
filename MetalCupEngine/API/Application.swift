@@ -110,7 +110,15 @@ open class Application: NSObject, EventHandler {
         let viewport = (renderer.viewportSize.x > 1 && renderer.viewportSize.y > 1)
             ? renderer.viewportSize
             : renderer.drawableSize
-        return SceneView(viewportSize: viewport)
+        let scene = activeScene()
+        let matrices = scene.map { SceneRenderer.cameraMatrices(scene: $0) }
+        let cameraPosition = scene.map { SceneRenderer.cameraPosition(scene: $0) } ?? .zero
+        let exposureSettings = scene.map { SceneRenderer.cameraExposure(scene: $0) } ?? SceneViewExposureSettings()
+        return SceneView(viewMatrix: matrices?.view ?? matrix_identity_float4x4,
+                         projectionMatrix: matrices?.projection ?? matrix_identity_float4x4,
+                         cameraPosition: cameraPosition,
+                         viewportSize: viewport,
+                         exposureSettings: exposureSettings)
     }
 
     open func handlePickResult(_ result: PickResult) {}

@@ -29,23 +29,32 @@ public struct RenderViewContext {
     public var viewportSize: SIMD2<Float>
     public var layerFilterMask: LayerMask
     public var depthPrepassEnabled: Bool
+    public var updatesPickingMapping: Bool
+    public var updatesBatchStats: Bool
     public var debugFlags: UInt32
     public var showEditorOverlays: Bool
+    public var exposureSettings: SceneViewExposureSettings
 
     public init(
         viewId: UInt64 = 0,
         viewportSize: SIMD2<Float> = .zero,
         layerFilterMask: LayerMask = .all,
         depthPrepassEnabled: Bool = true,
+        updatesPickingMapping: Bool = true,
+        updatesBatchStats: Bool = true,
         debugFlags: UInt32 = 0,
-        showEditorOverlays: Bool = false
+        showEditorOverlays: Bool = false,
+        exposureSettings: SceneViewExposureSettings = SceneViewExposureSettings()
     ) {
         self.viewId = viewId
         self.viewportSize = viewportSize
         self.layerFilterMask = layerFilterMask
         self.depthPrepassEnabled = depthPrepassEnabled
+        self.updatesPickingMapping = updatesPickingMapping
+        self.updatesBatchStats = updatesBatchStats
         self.debugFlags = debugFlags
         self.showEditorOverlays = showEditorOverlays
+        self.exposureSettings = exposureSettings
     }
 
     public func cacheSignature() -> UInt64 {
@@ -55,8 +64,16 @@ public struct RenderViewContext {
         hasher.combine(viewportSize.y.bitPattern)
         hasher.combine(layerFilterMask.rawValue)
         hasher.combine(depthPrepassEnabled)
+        hasher.combine(updatesPickingMapping)
+        hasher.combine(updatesBatchStats)
         hasher.combine(debugFlags)
         hasher.combine(showEditorOverlays)
+        hasher.combine(exposureSettings.autoExposureEnabled)
+        hasher.combine(exposureSettings.manualExposure.bitPattern)
+        hasher.combine(exposureSettings.exposureCompensation.bitPattern)
+        hasher.combine(exposureSettings.autoExposureMin.bitPattern)
+        hasher.combine(exposureSettings.autoExposureMax.bitPattern)
+        hasher.combine(exposureSettings.adaptationSpeed.bitPattern)
         return UInt64(bitPattern: Int64(hasher.finalize()))
     }
 
@@ -171,16 +188,24 @@ public struct RendererFrameContext {
         storage.iblReadyValue()
     }
 
-    public func uploadInstanceData(_ data: [InstanceData]) -> MTLBuffer? {
-        storage.uploadInstanceData(data)
+    public func uploadOpaqueInstanceData(_ data: [InstanceData]) -> MTLBuffer? {
+        storage.uploadInstanceData(data, stream: .opaque)
+    }
+
+    public func uploadTransparentInstanceData(_ data: [InstanceData]) -> MTLBuffer? {
+        storage.uploadInstanceData(data, stream: .transparent)
     }
 
     public func uploadBonePaletteData(_ data: [matrix_float4x4]) -> MTLBuffer? {
         storage.uploadBonePaletteData(data)
     }
 
-    public func instanceBuffer() -> MTLBuffer? {
-        storage.instanceBuffer()
+    func makeDedicatedInstanceBuffer(_ data: [InstanceData], label: String) -> MTLBuffer? {
+        storage.makeDedicatedInstanceBuffer(data, label: label)
+    }
+
+    func makeDedicatedBonePaletteBuffer(_ data: [matrix_float4x4], label: String) -> MTLBuffer? {
+        storage.makeDedicatedBonePaletteBuffer(data, label: label)
     }
 
     public func bonePaletteBuffer() -> MTLBuffer? {
@@ -335,6 +360,30 @@ public struct RendererFrameContext {
         storage.engineContextValue()
     }
 
+    public func fallbackForwardPlusLightGridBuffer() -> MTLBuffer {
+        storage.forwardPlusFallbackLightGridBuffer()
+    }
+
+    public func fallbackForwardPlusLightIndexListBuffer() -> MTLBuffer {
+        storage.forwardPlusFallbackLightIndexListBuffer()
+    }
+
+    public func fallbackForwardPlusLightIndexCountBuffer() -> MTLBuffer {
+        storage.forwardPlusFallbackLightIndexCountBuffer()
+    }
+
+    public func fallbackForwardPlusClusterParamsBuffer() -> MTLBuffer {
+        storage.forwardPlusFallbackClusterParamsBuffer()
+    }
+
+    public func fallbackForwardPlusTileLightGridBuffer() -> MTLBuffer {
+        storage.forwardPlusFallbackTileLightGridBuffer()
+    }
+
+    public func fallbackForwardPlusTileParamsBuffer() -> MTLBuffer {
+        storage.forwardPlusFallbackTileParamsBuffer()
+    }
+
     public func assetStateRevision() -> UInt64 {
         storage.assetStateRevisionValue()
     }
@@ -372,8 +421,24 @@ public final class RendererFrameContextStorage {
     private var currentIBLTextures = IBLTextures(environment: nil, irradiance: nil, prefiltered: nil, brdfLut: nil)
     private var iblReady: Bool = false
 
-    private var instanceBuffers: [MTLBuffer?] = []
-    private var instanceBufferCapacities: [Int] = []
+    fileprivate enum InstanceStream {
+        case opaque
+        case transparent
+
+        var label: String {
+            switch self {
+            case .opaque:
+                return "Opaque"
+            case .transparent:
+                return "Transparent"
+            }
+        }
+    }
+
+    private var opaqueInstanceBuffers: [MTLBuffer?] = []
+    private var opaqueInstanceBufferCapacities: [Int] = []
+    private var transparentInstanceBuffers: [MTLBuffer?] = []
+    private var transparentInstanceBufferCapacities: [Int] = []
     private var bonePaletteBuffers: [MTLBuffer?] = []
     private var bonePaletteBufferCapacities: [Int] = []
     private var pickReadbackBuffers: [MTLBuffer?] = []
@@ -388,6 +453,12 @@ public final class RendererFrameContextStorage {
     private var directionalLightCountBuffers: [MTLBuffer?] = []
     private var directionalLightDataBuffers: [MTLBuffer?] = []
     private var directionalLightDataBufferCapacities: [Int] = []
+    private var forwardPlusFallbackLightGrid: MTLBuffer?
+    private var forwardPlusFallbackLightIndexList: MTLBuffer?
+    private var forwardPlusFallbackLightIndexCount: MTLBuffer?
+    private var forwardPlusFallbackClusterParams: MTLBuffer?
+    private var forwardPlusFallbackTileLightGrid: MTLBuffer?
+    private var forwardPlusFallbackTileParams: MTLBuffer?
     private var shadowConstants = ShadowConstants()
     private var shadowConstantsBuffers: [MTLBuffer?] = []
     private var shadowMap: MTLTexture? = nil
@@ -460,13 +531,13 @@ public final class RendererFrameContextStorage {
         iblReady
     }
 
-    fileprivate func uploadInstanceData(_ data: [InstanceData]) -> MTLBuffer? {
+    fileprivate func uploadInstanceData(_ data: [InstanceData], stream: InstanceStream) -> MTLBuffer? {
         guard !data.isEmpty else { return nil }
         MC_ASSERT(InstanceData.stride == InstanceData.expectedMetalStride,
                   "InstanceData stride mismatch. Keep Swift and Metal layouts in sync.")
         let requiredBytes = InstanceData.stride(data.count)
-        ensureInstanceBufferCapacity(requiredBytes)
-        guard let buffer = instanceBuffers[frameIndex] else { return nil }
+        ensureInstanceBufferCapacity(requiredBytes, stream: stream)
+        guard let buffer = instanceBuffer(for: stream) else { return nil }
         MC_ASSERT(requiredBytes <= buffer.length, "Instance buffer too small for upload.")
         _ = data.withUnsafeBytes { bytes in
             memcpy(buffer.contents(), bytes.baseAddress, bytes.count)
@@ -486,8 +557,41 @@ public final class RendererFrameContextStorage {
         return buffer
     }
 
-    fileprivate func instanceBuffer() -> MTLBuffer? {
-        instanceBuffers[frameIndex] ?? nil
+    fileprivate func makeDedicatedInstanceBuffer(_ data: [InstanceData], label: String) -> MTLBuffer? {
+        guard !data.isEmpty else { return nil }
+        MC_ASSERT(InstanceData.stride == InstanceData.expectedMetalStride,
+                  "InstanceData stride mismatch. Keep Swift and Metal layouts in sync.")
+        let requiredBytes = InstanceData.stride(data.count)
+        guard let buffer = device.makeBuffer(length: requiredBytes, options: [.storageModeShared]) else {
+            return nil
+        }
+        buffer.label = label
+        _ = data.withUnsafeBytes { bytes in
+            memcpy(buffer.contents(), bytes.baseAddress, bytes.count)
+        }
+        return buffer
+    }
+
+    fileprivate func makeDedicatedBonePaletteBuffer(_ data: [matrix_float4x4], label: String) -> MTLBuffer? {
+        guard !data.isEmpty else { return nil }
+        let requiredBytes = MemoryLayout<matrix_float4x4>.stride * data.count
+        guard let buffer = device.makeBuffer(length: requiredBytes, options: [.storageModeShared]) else {
+            return nil
+        }
+        buffer.label = label
+        _ = data.withUnsafeBytes { bytes in
+            memcpy(buffer.contents(), bytes.baseAddress, bytes.count)
+        }
+        return buffer
+    }
+
+    fileprivate func instanceBuffer(for stream: InstanceStream) -> MTLBuffer? {
+        switch stream {
+        case .opaque:
+            return opaqueInstanceBuffers[frameIndex] ?? nil
+        case .transparent:
+            return transparentInstanceBuffers[frameIndex] ?? nil
+        }
     }
 
     fileprivate func bonePaletteBuffer() -> MTLBuffer? {
@@ -669,6 +773,84 @@ public final class RendererFrameContextStorage {
         lightingInputs
     }
 
+    fileprivate func forwardPlusFallbackLightGridBuffer() -> MTLBuffer {
+        if let buffer = forwardPlusFallbackLightGrid {
+            return buffer
+        }
+        let entry = SIMD2<UInt32>(0, 0)
+        guard let buffer = device.makeBuffer(bytes: [entry], length: MemoryLayout<SIMD2<UInt32>>.stride, options: [.storageModeShared]) else {
+            fatalError("Forward+ fallback light grid buffer creation failed.")
+        }
+        buffer.label = "ForwardPlus.FallbackLightGrid"
+        forwardPlusFallbackLightGrid = buffer
+        return buffer
+    }
+
+    fileprivate func forwardPlusFallbackLightIndexListBuffer() -> MTLBuffer {
+        if let buffer = forwardPlusFallbackLightIndexList {
+            return buffer
+        }
+        var zero: UInt32 = 0
+        guard let buffer = device.makeBuffer(bytes: &zero, length: UInt32.stride, options: [.storageModeShared]) else {
+            fatalError("Forward+ fallback light index list buffer creation failed.")
+        }
+        buffer.label = "ForwardPlus.FallbackLightIndexList"
+        forwardPlusFallbackLightIndexList = buffer
+        return buffer
+    }
+
+    fileprivate func forwardPlusFallbackLightIndexCountBuffer() -> MTLBuffer {
+        if let buffer = forwardPlusFallbackLightIndexCount {
+            return buffer
+        }
+        var header = ForwardPlusIndexHeader()
+        guard let buffer = device.makeBuffer(bytes: &header, length: ForwardPlusIndexHeader.stride, options: [.storageModeShared]) else {
+            fatalError("Forward+ fallback light index header buffer creation failed.")
+        }
+        buffer.label = "ForwardPlus.FallbackLightIndexHeader"
+        forwardPlusFallbackLightIndexCount = buffer
+        return buffer
+    }
+
+    fileprivate func forwardPlusFallbackClusterParamsBuffer() -> MTLBuffer {
+        if let buffer = forwardPlusFallbackClusterParams {
+            return buffer
+        }
+        var params = ForwardPlusClusterParams()
+        guard let buffer = device.makeBuffer(bytes: &params, length: ForwardPlusClusterParams.stride, options: [.storageModeShared]) else {
+            fatalError("Forward+ fallback cluster params buffer creation failed.")
+        }
+        buffer.label = "ForwardPlus.FallbackClusterParams"
+        forwardPlusFallbackClusterParams = buffer
+        return buffer
+    }
+
+    fileprivate func forwardPlusFallbackTileLightGridBuffer() -> MTLBuffer {
+        if let buffer = forwardPlusFallbackTileLightGrid {
+            return buffer
+        }
+        let entry = SIMD2<UInt32>(0, 0)
+        guard let buffer = device.makeBuffer(bytes: [entry], length: MemoryLayout<SIMD2<UInt32>>.stride, options: [.storageModeShared]) else {
+            fatalError("Forward+ fallback tile light grid buffer creation failed.")
+        }
+        buffer.label = "ForwardPlus.FallbackTileLightGrid"
+        forwardPlusFallbackTileLightGrid = buffer
+        return buffer
+    }
+
+    fileprivate func forwardPlusFallbackTileParamsBuffer() -> MTLBuffer {
+        if let buffer = forwardPlusFallbackTileParams {
+            return buffer
+        }
+        var params = ForwardPlusTileParams()
+        guard let buffer = device.makeBuffer(bytes: &params, length: ForwardPlusTileParams.stride, options: [.storageModeShared]) else {
+            fatalError("Forward+ fallback tile params buffer creation failed.")
+        }
+        buffer.label = "ForwardPlus.FallbackTileParams"
+        forwardPlusFallbackTileParams = buffer
+        return buffer
+    }
+
     fileprivate func setShadowConstants(_ constants: ShadowConstants) {
         shadowConstants = constants
         if shadowConstantsBuffers.count > frameIndex {
@@ -761,9 +943,13 @@ public final class RendererFrameContextStorage {
     }
 
     private func ensureFrameStorage() {
-        if instanceBuffers.count < maxFramesInFlight {
-            instanceBuffers = Array(repeating: nil, count: maxFramesInFlight)
-            instanceBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
+        if opaqueInstanceBuffers.count < maxFramesInFlight {
+            opaqueInstanceBuffers = Array(repeating: nil, count: maxFramesInFlight)
+            opaqueInstanceBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
+        }
+        if transparentInstanceBuffers.count < maxFramesInFlight {
+            transparentInstanceBuffers = Array(repeating: nil, count: maxFramesInFlight)
+            transparentInstanceBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
         }
         if bonePaletteBuffers.count < maxFramesInFlight {
             bonePaletteBuffers = Array(repeating: nil, count: maxFramesInFlight)
@@ -798,16 +984,28 @@ public final class RendererFrameContextStorage {
         }
     }
 
-    private func ensureInstanceBufferCapacity(_ requiredBytes: Int) {
+    private func ensureInstanceBufferCapacity(_ requiredBytes: Int, stream: InstanceStream) {
         ensureFrameStorage()
-        let currentCapacity = instanceBufferCapacities[frameIndex]
-        if let _ = instanceBuffers[frameIndex], currentCapacity >= requiredBytes {
-            return
+        switch stream {
+        case .opaque:
+            let currentCapacity = opaqueInstanceBufferCapacities[frameIndex]
+            if let _ = opaqueInstanceBuffers[frameIndex], currentCapacity >= requiredBytes {
+                return
+            }
+            let newCapacity = max(requiredBytes, max(currentCapacity, 1) * 2)
+            opaqueInstanceBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
+            opaqueInstanceBuffers[frameIndex]?.label = "OpaqueInstanceBuffer.Frame\(frameIndex)"
+            opaqueInstanceBufferCapacities[frameIndex] = newCapacity
+        case .transparent:
+            let currentCapacity = transparentInstanceBufferCapacities[frameIndex]
+            if let _ = transparentInstanceBuffers[frameIndex], currentCapacity >= requiredBytes {
+                return
+            }
+            let newCapacity = max(requiredBytes, max(currentCapacity, 1) * 2)
+            transparentInstanceBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
+            transparentInstanceBuffers[frameIndex]?.label = "TransparentInstanceBuffer.Frame\(frameIndex)"
+            transparentInstanceBufferCapacities[frameIndex] = newCapacity
         }
-        let newCapacity = max(requiredBytes, max(currentCapacity, 1) * 2)
-        instanceBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
-        instanceBuffers[frameIndex]?.label = "InstanceBuffer.Frame\(frameIndex)"
-        instanceBufferCapacities[frameIndex] = newCapacity
     }
 
     private func ensureBonePaletteBufferCapacity(_ requiredBytes: Int) {

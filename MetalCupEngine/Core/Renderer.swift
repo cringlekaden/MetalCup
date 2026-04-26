@@ -10,6 +10,9 @@ import Foundation
 
 public enum RenderPassType {
     case main
+    case normal
+    case ssaoNormal
+    case transparent
     case picking
     case depthPrepass
     case shadow
@@ -31,6 +34,7 @@ public final class Renderer: NSObject {
     private let _renderGraph = RenderGraph()
     private let _frameContextStorage: RendererFrameContextStorage
     private let _skyRebuildFrameContextStorage: RendererFrameContextStorage
+    private let _reflectionProbeCaptureFrameContextStorage: RendererFrameContextStorage
     let shadowRenderer: ShadowRenderer
     private var _lastFrameTimestamp: TimeInterval?
     private var _frameCount: UInt64 = 0
@@ -41,8 +45,9 @@ public final class Renderer: NSObject {
     private var _timeScale: Float = 1.0
     private var _fixedDeltaTime: Float = 1.0 / 60.0
     private let _maxFrameDelta: Float = 0.25
-    // MARK: - Views for capturing cubemap faces (canonical orientation, no axis flips)
-    // +X right, -X left, +Y up, -Y down, +Z forward, -Z backward (Y-up, right-handed).
+    // MARK: - Shared cubemap views
+    // These are the renderer's long-standing views used by the procedural sky / shared
+    // IBL generation path. Keep them stable so skybox/IBL behavior does not change.
     private let _views: [float4x4] = [
         float4x4(lookAt: .zero, center: [ 1, 0, 0], up: [0, 1, 0]),
         float4x4(lookAt: .zero, center: [-1, 0, 0], up: [0, 1, 0]),
@@ -77,11 +82,35 @@ public final class Renderer: NSObject {
         let brdf: AssetHandle
     }
 
-
     private var _iblHandleSets: [IBLTextureHandles] = []
     private var _iblFastHandles: IBLTextureHandles?
     private var _activeIBLHandleIndex = 0
     private var _brdfPipelineStateByFormat: [MTLPixelFormat: MTLRenderPipelineState] = [:]
+    // Runtime-only probe capture state lives in a dedicated manager so authored ECS data stays separate.
+    private lazy var _reflectionProbeRuntimeManager = ReflectionProbeRuntimeManager(
+        engineContext: engineContext,
+        projection: _projection,
+        captureViews: _views,
+        captureFrameContextStorage: _reflectionProbeCaptureFrameContextStorage,
+        renderResourceRegistryBuilder: { [unowned self] in
+            self._renderResources.buildRegistry()
+        },
+        rendererSettingsProvider: { [unowned self] in
+            self.settings
+        },
+        assetStateRevisionProvider: { [unowned self] in
+            self.engineContext.assets.cacheRevisionToken()
+        },
+        prefilterRenderer: { [unowned self] sourceEnvironment, targetPrefiltered, frameContext, commandBuffer in
+            self.renderPrefilteredSpecularMap(
+                sourceEnvironment: sourceEnvironment,
+                targetPrefiltered: targetPrefiltered,
+                config: self.iblConfig(mode: .final),
+                frameContext: frameContext,
+                commandBuffer: commandBuffer
+            )
+        }
+    )
 
     // MARK: - Static sizes
 
@@ -106,6 +135,7 @@ public final class Renderer: NSObject {
         )
         self._frameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
         self._skyRebuildFrameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
+        self._reflectionProbeCaptureFrameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
         self.shadowRenderer = ShadowRenderer(engineContext: engineContext)
         super.init()
         self._lastPerfFlags = settings.perfFlags
@@ -316,6 +346,20 @@ public final class Renderer: NSObject {
         return texture
     }
 
+    private func makeDepthTexture(size: Int, label: String) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: engineContext.preferences.defaultDepthPixelFormat,
+            width: size,
+            height: size,
+            mipmapped: false
+        )
+        descriptor.usage = [.renderTarget]
+        descriptor.storageMode = .private
+        guard let texture = engineContext.device.makeTexture(descriptor: descriptor) else { return nil }
+        texture.label = label
+        return texture
+    }
+
     private func ensureIBLTextureSet(handles: IBLTextureHandles) {
         ensureIBLTextureSet(
             handles: handles,
@@ -345,6 +389,27 @@ public final class Renderer: NSObject {
            let pre = makeCubemapTexture(size: prefilteredSize, mipmapped: true, label: "IBL.PrefilteredCubemap.\(labelSuffix)") {
             engineContext.assets.registerRuntimeTexture(handle: handles.prefiltered, texture: pre)
         }
+    }
+
+    public func queueReflectionProbeRebuilds(scene: EngineScene, entities: [Entity]? = nil, force: Bool = false) {
+        _reflectionProbeRuntimeManager.queueReflectionProbeRebuilds(scene: scene, entities: entities, force: force)
+    }
+
+    public func reflectionProbeBakeStatus(scene: EngineScene, entityID: UUID) -> ReflectionProbeRuntimeStatus? {
+        _reflectionProbeRuntimeManager.reflectionProbeBakeStatus(scene: scene, entityID: entityID)
+    }
+
+    public func debugReflectionProbeSelection(scene: EngineScene, entityID: UUID) -> ReflectionProbeDebugSelection? {
+        _reflectionProbeRuntimeManager.debugReflectionProbeSelection(scene: scene, entityID: entityID)
+    }
+
+    private func updateReflectionProbesIfNeeded(scene: EngineScene) {
+        _reflectionProbeRuntimeManager.updateReflectionProbesIfNeeded(scene: scene)
+    }
+
+    private func applyReflectionProbeRuntimeState(to snapshot: RenderFrameSnapshot,
+                                                  scene: EngineScene) -> RenderFrameSnapshot {
+        _reflectionProbeRuntimeManager.applyRuntimeState(to: snapshot, scene: scene)
     }
 
     private func prewarmIBLPipelinesWithTiming() {
@@ -947,19 +1012,12 @@ extension Renderer: MTKViewDelegate {
         let pass = FullscreenPass(
             pipeline: renderPipelineState,
             label: "Final Composite -> Drawable",
-            sampler: .LinearClampToZero,
-            useSampler: true,
-            texture0: engineContext.assets.texture(handle: BuiltinAssets.baseColorRender),
-            useTexture0: true,
-            texture1: engineContext.assets.texture(handle: BuiltinAssets.bloomPing),
-            useTexture1: true,
-            outlineMask: nil,
-            useOutlineMask: false,
-            depth: nil,
-            useDepth: false,
-            grid: nil,
-            useGrid: false,
-            settings: settings
+            inputs: PostProcessInputs(
+                sampler: .LinearClampToZero,
+                source: engineContext.assets.texture(handle: BuiltinAssets.baseColorRender),
+                bloom: engineContext.assets.texture(handle: BuiltinAssets.bloomPing),
+                settings: settings
+            )
         )
         pass.encode(into: encoder, quad: quadMesh, frameContext: frameContext, graphics: engineContext.graphics)
         encoder.endEncoding()
@@ -982,8 +1040,11 @@ extension Renderer: MTKViewDelegate {
             viewportSize: resolvedViewport,
             layerFilterMask: sceneView.layerMask,
             depthPrepassEnabled: sceneView.depthPrepassEnabled,
+            updatesPickingMapping: true,
+            updatesBatchStats: true,
             debugFlags: sceneView.debugFlags,
-            showEditorOverlays: sceneView.isEditorView
+            showEditorOverlays: sceneView.isEditorView,
+            exposureSettings: sceneView.exposureSettings
         )
     }
 
@@ -1017,7 +1078,7 @@ extension Renderer: MTKViewDelegate {
         profiler.record(.update, seconds: CACurrentMediaTime() - updateStart)
         let frameContext = _frameContextStorage.beginFrame()
         let renderStart = CACurrentMediaTime()
-        // Scene Pass -> Bloom -> Final Composite -> ImGui overlays
+        // Render graph executes scene passes, editor overlays, picking/outline, post-processing, then ImGui overlays.
         let sceneView = delegate?.buildSceneView(renderer: self) ?? SceneView(viewportSize: viewportSize)
         _frameContextStorage.updateRendererState(
             settings: settings,
@@ -1030,6 +1091,9 @@ extension Renderer: MTKViewDelegate {
         let snapshotStart = CACurrentMediaTime()
         if let activeScene {
             SceneRenderer.prepareRenderFrameSnapshot(scene: activeScene, frameContext: frameContext)
+            if let snapshot = frameContext.renderFrameSnapshot() {
+                frameContext.setRenderFrameSnapshot(applyReflectionProbeRuntimeState(to: snapshot, scene: activeScene))
+            }
         } else {
             frameContext.setRenderFrameSnapshot(nil)
         }
@@ -1102,6 +1166,7 @@ extension Renderer: MTKViewDelegate {
 
         if let scene = activeScene {
             updateSkyIfNeeded(scene: scene)
+            updateReflectionProbesIfNeeded(scene: scene)
         }
 
         let presentStart = CACurrentMediaTime()

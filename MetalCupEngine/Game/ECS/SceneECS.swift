@@ -40,13 +40,14 @@ public enum SceneECSComponentType: Int32 {
     case lightOrbit = 14
     case sky = 15
     case skyLight = 16
-    case skyLightTag = 17
-    case skySunTag = 18
-    case characterController = 19
-    case skinnedMesh = 20
-    case animator = 21
-    case audioSource = 22
-    case audioListener = 23
+    case reflectionProbe = 17
+    case skyLightTag = 18
+    case skySunTag = 19
+    case characterController = 20
+    case skinnedMesh = 21
+    case animator = 22
+    case audioSource = 23
+    case audioListener = 24
 }
 
 public struct SceneECSChange {
@@ -81,6 +82,7 @@ public final class SceneECS {
     private var lightOrbitComponents: [Entity: LightOrbitComponent] = [:]
     private var skyComponents: [Entity: SkyComponent] = [:]
     private var skyLightComponents: [Entity: SkyLightComponent] = [:]
+    private var reflectionProbeComponents: [Entity: ReflectionProbeComponent] = [:]
     private var skyLightTags: [Entity: SkyLightTag] = [:]
     private var skySunTags: [Entity: SkySunTag] = [:]
     private var characterControllerComponents: [Entity: CharacterControllerComponent] = [:]
@@ -165,6 +167,7 @@ public final class SceneECS {
         lightOrbitComponents.removeAll()
         skyComponents.removeAll()
         skyLightComponents.removeAll()
+        reflectionProbeComponents.removeAll()
         skyLightTags.removeAll()
         skySunTags.removeAll()
         characterControllerComponents.removeAll()
@@ -380,6 +383,14 @@ public final class SceneECS {
                 enqueueChange(.componentAdded, entity: entity, componentType: .skyLight)
             }
             enqueueEnabledChangedIfNeeded(previous: previousEnabled, current: value.enabled, entity: entity, componentType: .skyLight)
+        case let value as ReflectionProbeComponent:
+            let previousEnabled = reflectionProbeComponents[entity]?.enabled
+            let existed = reflectionProbeComponents[entity] != nil
+            reflectionProbeComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .reflectionProbe)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled, current: value.enabled, entity: entity, componentType: .reflectionProbe)
         case let value as SkyLightTag:
             let existed = skyLightTags[entity] != nil
             skyLightTags[entity] = value
@@ -508,6 +519,10 @@ public final class SceneECS {
             if skyLightComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .skyLight)
             }
+        case is ReflectionProbeComponent.Type:
+            if reflectionProbeComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .reflectionProbe)
+            }
         case is SkyLightTag.Type:
             if skyLightTags.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .skyLightTag)
@@ -574,6 +589,8 @@ public final class SceneECS {
             return skyComponents[entity] as? T
         case is SkyLightComponent.Type:
             return skyLightComponents[entity] as? T
+        case is ReflectionProbeComponent.Type:
+            return reflectionProbeComponents[entity] as? T
         case is SkyLightTag.Type:
             return skyLightTags[entity] as? T
         case is SkySunTag.Type:
@@ -800,6 +817,13 @@ public final class SceneECS {
         }
     }
 
+    public func viewReflectionProbes(_ body: (Entity, ReflectionProbeComponent) -> Void) {
+        for entity in deterministicOrderedEntities() {
+            guard let probe = reflectionProbeComponents[entity] else { continue }
+            body(entity, probe)
+        }
+    }
+
     public func firstEntity(with type: SkySunTag.Type) -> Entity? {
         return deterministicOrderedEntities().first { skySunTags[$0] != nil }
     }
@@ -983,6 +1007,9 @@ public final class SceneECS {
         }
         if skyLightComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .skyLight)
+        }
+        if reflectionProbeComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .reflectionProbe)
         }
         if skyLightTags.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .skyLightTag)

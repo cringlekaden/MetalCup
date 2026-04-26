@@ -32,6 +32,11 @@ enum ShaderBindings {
         static let tileParams = 13
         static let directionalLightCount = 14
         static let directionalLightData = 15
+        static let viewExposure = 16
+        static let postProcessDebugFlags = 17
+        static let postProcessSceneConstants = 18
+        static let postProcessParams = 19
+        static let localReflectionProbe = 20
     }
 
     enum FragmentTexture {
@@ -53,6 +58,8 @@ enum ShaderBindings {
         static let shadowMap = 15
         static let shadowMapSample = 16
         static let orm = 17
+        static let sceneAO = 18
+        static let localReflectionPrefiltered = 19
     }
 
     enum FragmentSampler {
@@ -68,6 +75,13 @@ enum ShaderBindings {
         static let outlineMask = 2
         static let depth = 3
         static let grid = 4
+        static let autoExposure = 5
+        static let normals = 6
+        static let ssaoRaw = 7
+        static let ssaoFiltered = 8
+        static let depthHierarchy = 9
+        static let aoNormals = 10
+        static let worldDebug = 11
     }
 
     enum IBLTexture {

@@ -10,9 +10,23 @@ public enum TonemapType: UInt32 {
     case reinhard = 1
     case aces = 2
     case metalCupCustom = 3
+    case agx = 4
+    case filmic = 5
 }
 
 public enum IBLQualityPreset: UInt32 {
+    case low = 0
+    case medium = 1
+    case high = 2
+    case ultra = 3
+    case custom = 4
+}
+
+public enum AOMethod: UInt32 {
+    case sao = 0
+}
+
+public enum AOQualityPreset: UInt32 {
     case low = 0
     case medium = 1
     case high = 2
@@ -55,7 +69,7 @@ public struct ShadowsSettings {
     public var cascadeSplitLambda: Float = 0.65
     public var depthBias: Float = 0.0005
     public var normalBias: Float = 0.01
-    public var pcfRadius: Float = 1.5
+    public var pcfRadius: Float = 1.0
     public var pcfTapPreset: UInt32 = ShadowPCFQualityPreset.high.rawValue
     public var pcfTapsCascade0: UInt32 = 16
     public var pcfTapsCascade1: UInt32 = 9
@@ -66,11 +80,11 @@ public struct ShadowsSettings {
     public var fadeOutDistance: Float = 10.0
     public var pcssLightWorldSize: Float = 1.0
     public var pcssMinFilterRadiusTexels: Float = 1.0
-    public var pcssMaxFilterRadiusTexels: Float = 8.0
-    public var pcssBlockerSearchRadiusTexels: Float = 4.0
-    public var pcssBlockerSamples: UInt32 = 12
-    public var pcssPCFSamples: UInt32 = 16
-    public var pcssNoiseEnabled: UInt32 = 1
+    public var pcssMaxFilterRadiusTexels: Float = 6.0
+    public var pcssBlockerSearchRadiusTexels: Float = 3.0
+    public var pcssBlockerSamples: UInt32 = 8
+    public var pcssPCFSamples: UInt32 = 12
+    public var pcssNoiseEnabled: UInt32 = 0
     public var pcssPadding: UInt32 = 0
 
     public init() {}
@@ -125,31 +139,34 @@ public typealias BloomUniforms = RendererSettings
 public typealias RendererUniforms = RendererSettings
 
 public struct RendererSettings: sizeable {
-    public static let expectedMetalStride: Int = 336
+    public static let expectedMetalStride: Int = 416
 
     public init() {}
 
-    public var bloomThreshold: Float = 1.2
-    public var bloomKnee: Float = 0.2
-    public var bloomIntensity: Float = 0.15
-    public var bloomUpsampleScale: Float = 1.0
-    public var bloomDirtIntensity: Float = 0.0
+    public var bloomThreshold: Float = 1.65
+    public var bloomKnee: Float = 0.16
+    public var bloomIntensity: Float = 0.12
+    // Reserved to preserve Swift/Metal uniform ABI for legacy bloom fields that are no longer consumed.
+    public var reservedBloom0: Float = 1.0
+    public var reservedBloom1: Float = 0.0
     public var bloomEnabled: UInt32 = 1
 
     public var bloomTexelSize: SIMD2<Float> = .zero
     public var bloomMipLevel: Float = 0
-    public var bloomMaxMips: UInt32 = 5
+    public var bloomMaxMips: UInt32 = 4
     public var bloomQualityPreset: UInt32 = BloomQualityPreset.high.rawValue
-    public var bloomResolutionScale: UInt32 = BloomResolutionScale.quarter.rawValue
+    public var bloomResolutionScale: UInt32 = BloomResolutionScale.half.rawValue
 
-    public var blurPasses: UInt32 = 6
-    public var tonemap: UInt32 = TonemapType.metalCupCustom.rawValue
-    public var exposure: Float = 1.0
+    public var reservedBloom2: UInt32 = 6
+    public var tonemap: UInt32 = TonemapType.filmic.rawValue
+    // Reserved to preserve Swift/Metal uniform ABI after removing renderer-global exposure ownership.
+    public var reservedExposure0: Float = 1.0
     public var gamma: Float = 2.2
 
     public var iblEnabled: UInt32 = 1
     public var iblIntensity: Float = 1.0
-    public var iblResolutionOverride: UInt32 = 0
+    // Reserved to preserve Swift/Metal uniform ABI for an unused IBL override slot.
+    public var reservedIBL0: UInt32 = 0
 
 
     public var perfFlags: UInt32 = 0
@@ -167,6 +184,33 @@ public struct RendererSettings: sizeable {
     public var normalMapMipBiasGrazing: Float = 0.6
     public var shadingDebugMode: UInt32 = 0
     public var iblQualityPreset: UInt32 = IBLQualityPreset.high.rawValue
+    public var ssaoEnabled: UInt32 = 1
+    public var ssaoReserved0: UInt32 = 0
+    public var ssaoRadius: Float = 0.35
+    public var ssaoIntensity: Float = 1.25
+    public var ssaoPower: Float = 1.0
+    public var ssaoBias: Float = 0.008
+    // Stored only for scene compatibility with older SSAO/GTAO-era settings payloads.
+    // The active SAO path ignores this, and normal editor/bridge surfaces should not expose it.
+    public var ssaoThickness: Float = 0.22
+    public var ssaoBlurSharpness: Float = 24.0
+
+    // Enables fullscreen height fog evaluation in later post passes.
+    public var heightFogEnabled: UInt32 = 0
+    // World-space Y level where fog density is anchored before falloff is applied.
+    public var heightFogBaseHeight: Float = 0.0
+    // Base extinction density for the height fog volume.
+    public var heightFogDensity: Float = 0.03
+    // Exponential falloff controlling how quickly fog thins out above the base height.
+    public var heightFogHeightFalloff: Float = 0.15
+    // Linear HDR fog scattering/albedo color.
+    public var heightFogColor: SIMD3<Float> = SIMD3<Float>(0.62, 0.68, 0.74)
+    // Camera-relative distance before fog starts accumulating along the view ray.
+    public var heightFogStartDistance: Float = 3.0
+    // Optional uniform distance extinction layered on top of the height term.
+    public var heightFogDistanceDensity: Float = 0.0
+    // Explicit padding keeps the Swift/Metal ABI for the fog block easy to mirror.
+    public var heightFogPadding: SIMD2<Float> = .zero
 
     public var outlineEnabled: UInt32 = 1
     public var outlineThickness: UInt32 = 1
@@ -178,7 +222,8 @@ public struct RendererSettings: sizeable {
     public var gridOpacity: Float = 0.85
     public var gridFadeDistance: Float = 120.0
     public var gridMajorLineEvery: Float = 10.0
-    public var uvDebug: SIMD2<UInt32> = .zero
+    // Reserved to preserve Swift/Metal uniform ABI for removed UV debug controls.
+    public var reservedDebug0: SIMD2<UInt32> = .zero
     public var shadows: ShadowsSettings = ShadowsSettings()
     public var padding0: SIMD4<Float> = .zero
     public var padding1: SIMD4<Float> = .zero
@@ -208,10 +253,39 @@ public enum ForwardPlusConfig {
 }
 
 public extension RendererSettings {
+    private static let aoQualityMask: UInt32 = 0x00000F00
+    private static let aoQualityShift: UInt32 = 8
+    private static let aoMethodMask: UInt32 = 0x000F0000
+    private static let aoMethodShift: UInt32 = 16
+
     var isBloomEnabled: Bool { bloomEnabled != 0 }
     var isIBLEnabled: Bool { iblEnabled != 0 }
     var isShadowsEnabled: Bool { shadows.enabled != 0 }
     var isDirectionalShadowsEnabled: Bool { shadows.directionalEnabled != 0 }
+    var isAOEnabled: Bool { ssaoEnabled != 0 }
+    // Deprecated alias retained for legacy call sites still using SSAO terminology.
+    var isSSAOEnabled: Bool { ssaoEnabled != 0 }
+    var isHeightFogEnabled: Bool { heightFogEnabled != 0 }
+    var aoMethod: AOMethod {
+        get {
+            let rawValue = (ssaoReserved0 & Self.aoMethodMask) >> Self.aoMethodShift
+            return AOMethod(rawValue: rawValue) ?? .sao
+        }
+        set {
+            let cleared = ssaoReserved0 & ~Self.aoMethodMask
+            ssaoReserved0 = cleared | ((newValue.rawValue << Self.aoMethodShift) & Self.aoMethodMask)
+        }
+    }
+    var aoQuality: AOQualityPreset {
+        get {
+            let rawValue = (ssaoReserved0 & Self.aoQualityMask) >> Self.aoQualityShift
+            return AOQualityPreset(rawValue: rawValue) ?? .high
+        }
+        set {
+            let cleared = ssaoReserved0 & ~Self.aoQualityMask
+            ssaoReserved0 = cleared | ((newValue.rawValue << Self.aoQualityShift) & Self.aoQualityMask)
+        }
+    }
 
     mutating func setPerfFlag(_ flag: RendererPerfFlags, enabled: Bool) {
         if enabled {
@@ -223,6 +297,60 @@ public extension RendererSettings {
 
     func hasPerfFlag(_ flag: RendererPerfFlags) -> Bool {
         (perfFlags & flag.rawValue) != 0
+    }
+
+    static func clampAORadius(_ value: Float) -> Float {
+        min(max(value, 0.10), 1.00)
+    }
+
+    static func clampAOIntensity(_ value: Float) -> Float {
+        min(max(value, 0.0), 3.0)
+    }
+
+    static func clampAOBias(_ value: Float) -> Float {
+        min(max(value, 0.0), 0.05)
+    }
+
+    static func clampAOSharpness(_ value: Float) -> Float {
+        min(max(value, 4.0), 40.0)
+    }
+
+    static func clampAOPower(_ value: Float) -> Float {
+        min(max(value, 0.5), 2.0)
+    }
+
+    mutating func setAOEnabled(_ enabled: Bool) {
+        ssaoEnabled = enabled ? 1 : 0
+    }
+
+    mutating func setHeightFogEnabled(_ enabled: Bool) {
+        heightFogEnabled = enabled ? 1 : 0
+    }
+
+    mutating func setAORadius(_ value: Float) {
+        ssaoRadius = Self.clampAORadius(value)
+    }
+
+    mutating func setAOIntensity(_ value: Float) {
+        ssaoIntensity = Self.clampAOIntensity(value)
+    }
+
+    mutating func setAOBias(_ value: Float) {
+        ssaoBias = Self.clampAOBias(value)
+    }
+
+    mutating func setAOSharpness(_ value: Float) {
+        ssaoBlurSharpness = Self.clampAOSharpness(value)
+    }
+
+    mutating func setAOPower(_ value: Float) {
+        ssaoPower = Self.clampAOPower(value)
+    }
+
+    mutating func applyAOQuality(_ preset: AOQualityPreset) {
+        // This is currently stored project metadata only.
+        // SAO v1 does not materially switch shader/sample quality based on this preset yet.
+        aoQuality = preset
     }
 }
 
