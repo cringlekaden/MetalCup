@@ -124,6 +124,27 @@ inline float shadowReceiverDepthBiasScale(float3 normal, float3 surfaceToLight) 
     return mix(1.0, 1.6, slopeFactor * slopeFactor);
 }
 
+inline float analyticRangeFade(float distance, float range) {
+    if (range <= 0.0) {
+        return 1.0;
+    }
+    return 1.0 - smoothstep(0.8 * range, range, distance);
+}
+
+inline float analyticInverseSquareAttenuation(float distance, float range) {
+    return analyticRangeFade(distance, range) / max(distance * distance, 1e-4);
+}
+
+inline float analyticSpotAngularFalloff(float spotCos,
+                                        float innerConeCos,
+                                        float outerConeCos) {
+    float width = innerConeCos - outerConeCos;
+    float smooth = width > 1e-6
+        ? smoothstep(outerConeCos, innerConeCos, spotCos)
+        : float(spotCos >= innerConeCos);
+    return smooth * smooth;
+}
+
 inline float cascadeFarZ(constant ShadowConstants &shadows, int index) {
     switch (index) {
     case 0: return shadows.cascadeFarZ.x;
@@ -968,18 +989,15 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
             float3 toLight = light.position - rd.worldPosition;
             float distance = length(toLight);
             L = toLight / max(distance, 1e-4);
-            attenuation = 1.0 / max(distance * distance, 1e-4);
-            if (light.range > 0.0) {
-                float rangeAtt = clamp(1.0 - (distance / light.range), 0.0, 1.0);
-                attenuation *= rangeAtt * rangeAtt;
-            }
+            attenuation = analyticInverseSquareAttenuation(distance, light.range);
             if (light.type == LightTypeSpot) {
                 float3 lightDir = normalize(light.direction);
                 float spotCos = dot(normalize(-toLight), lightDir);
-                float spotAtt = smoothstep(light.outerConeCos, light.innerConeCos, spotCos);
-                // Softer edge falloff for spots.
-                spotAtt = pow(spotAtt, 2.0);
-                attenuation *= spotAtt;
+                attenuation *= analyticSpotAngularFalloff(
+                    spotCos,
+                    light.innerConeCos,
+                    light.outerConeCos
+                );
             }
         }
 
@@ -1600,4 +1618,21 @@ kernel void phase2_shadow_bias_and_cascade_samples(
     float biasScale = shadowReceiverDepthBiasScale(normal, surfaceToLight);
     int cascade = selectShadowCascadeByMetric(max(viewDepths[sampleIndex], 0.001), shadows);
     results[sampleIndex] = float4(facing, biasScale, float(cascade), 1.0);
+}
+
+kernel void phase2_analytic_light_contract_samples(
+    const device float4 *samples [[ buffer(0) ]],
+    const device float2 *coneCosines [[ buffer(1) ]],
+    device float4 *results [[ buffer(2) ]],
+    uint sampleIndex [[ thread_position_in_grid ]]) {
+    float distance = samples[sampleIndex].x;
+    float range = samples[sampleIndex].y;
+    float spotCos = samples[sampleIndex].z;
+    float illuminance = samples[sampleIndex].w;
+    float2 cone = coneCosines[sampleIndex];
+    float rangeFade = analyticRangeFade(distance, range);
+    float attenuation = analyticInverseSquareAttenuation(distance, range);
+    float spot = analyticSpotAngularFalloff(spotCos, cone.y, cone.x);
+    float lambertian = max(illuminance, 0.0) / PBR::PI;
+    results[sampleIndex] = float4(attenuation, rangeFade, spot, lambertian);
 }

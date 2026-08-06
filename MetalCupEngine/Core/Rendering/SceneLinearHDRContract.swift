@@ -8,6 +8,17 @@ public enum SceneLinearHDRContract {
     public static let workingRGBDescription = "linear sRGB/Rec.709, D65"
     public static let filmicWhitePoint: Float = 16.0
 
+    // Phase 2 analytic-light convention:
+    // - Directional LightData.brightness is scene-relative incident illuminance.
+    //   A value of pi produces radiance 1 from a white Lambertian at NdotL=1,
+    //   before dielectric Fresnel redistribution.
+    // - Point/spot brightness is the numerator of inverse-square irradiance.
+    // - Range is only a smooth cutoff over the final 20% of finite support.
+    // - LightData diffuse/specular intensity fields remain serialized advanced
+    //   compatibility controls. Normal authored values are both 1.
+    // These units are exposure-relative, not calibrated lux/candela. The accepted
+    // dark procedural-sky observation is deferred to Phase 4 without compensation.
+
     public static func exposureMultiplier(forEV exposureEV: Float) -> Float {
         Float(Foundation.pow(2.0, Double(exposureEV)))
     }
