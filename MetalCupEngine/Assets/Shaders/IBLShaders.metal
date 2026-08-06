@@ -61,15 +61,8 @@ fragment float4 fragment_cubemap(CubemapRasterizerData rd [[ stage_in ]],
     uint face = uint(cubemapParams.y + 0.5);
     float intensity = cubemapParams.x;
     float3 dir = cubeDirectionFromFaceUV(face, uv);
-    // Canonical mapping: treat -Z as forward for lat-long conversion.
-    dir.z = -dir.z;
-    // φ in [0, 2π), +X at φ=0 (u=0), -Z at φ=3π/2 (u=0.75)
-    float phi = atan2(-dir.z, dir.x);
-    if (phi < 0.0) phi += 2.0 * PBR::PI;
-    float u = phi / (2.0 * PBR::PI);
-    // Map +Y to top of the HDRI (v = 0) for consistent cubemap orientation.
-    float v = 0.5 - (asin(dir.y) / PBR::PI);
-    float3 color = hdri.sample(samp, float2(u, v)).rgb * max(intensity, 0.0);
+    float2 equirectUV = equirectangularUVFromWorldDirection(dir);
+    float3 color = hdri.sample(samp, equirectUV).rgb * max(intensity, 0.0);
     return float4(color, 1.0);
 }
 
@@ -78,6 +71,17 @@ fragment float4 fragment_cubemap_orientation_diagnostic(CubemapRasterizerData rd
     float2 uv = rd.localPosition.xy * float2(0.5, -0.5) + 0.5;
     uint face = uint(cubemapParams.y + 0.5);
     return float4(cubemapOrientationDiagnosticColor(face, uv), 1.0);
+}
+
+/// Continuous world-direction diagnostic used by the production-path seam and
+/// handedness tests. Unlike the face-identity diagnostic, adjacent faces encode
+/// the same color at their shared direction.
+fragment float4 fragment_cubemap_direction_reference(CubemapRasterizerData rd [[ stage_in ]],
+                                                      constant float2 &cubemapParams [[ buffer(FragmentBufferIndexSkyIntensity) ]]) {
+    float2 uv = rd.localPosition.xy * float2(0.5, -0.5) + 0.5;
+    uint face = uint(cubemapParams.y + 0.5);
+    float3 direction = cubeDirectionFromFaceUV(face, uv);
+    return float4(direction * 0.5 + 0.5, 1.0);
 }
 
 fragment float4 fragment_irradiance(CubemapRasterizerData rd [[ stage_in ]],
@@ -178,4 +182,42 @@ fragment float2 fragment_brdf(SimpleRasterizerData rd [[ stage_in ]]) {
     float roughness = clamp(texCoord.y, 0.0, 1.0);
     const uint SAMPLE_COUNT = 2048;
     return PBR::integrateBRDF(NdotV, roughness, SAMPLE_COUNT);
+}
+
+// Production-reference entry points. They call the same cube, equirectangular,
+// and split-sum helpers used by the render pipelines so offscreen tests can
+// compare GPU values with independent CPU references.
+kernel void phase3_cubemap_direction_samples(
+    const device float4 *faceUV [[ buffer(0) ]],
+    device float4 *results [[ buffer(1) ]],
+    uint index [[ thread_position_in_grid ]]) {
+    uint face = uint(clamp(faceUV[index].x, 0.0, 5.0));
+    float3 direction = cubeDirectionFromFaceUV(face, faceUV[index].yz);
+    results[index] = float4(direction, 1.0);
+}
+
+kernel void phase3_equirectangular_uv_samples(
+    const device float4 *directions [[ buffer(0) ]],
+    device float4 *results [[ buffer(1) ]],
+    uint index [[ thread_position_in_grid ]]) {
+    results[index] = float4(equirectangularUVFromWorldDirection(directions[index].xyz), 0.0, 1.0);
+}
+
+kernel void phase3_sample_cubemap_directions(
+    const device float4 *directionsAndMip [[ buffer(0) ]],
+    device float4 *results [[ buffer(1) ]],
+    texturecube<float> source [[ texture(0) ]],
+    sampler sourceSampler [[ sampler(0) ]],
+    uint index [[ thread_position_in_grid ]]) {
+    float3 direction = normalize(directionsAndMip[index].xyz);
+    results[index] = source.sample(sourceSampler, direction, level(directionsAndMip[index].w));
+}
+
+kernel void phase3_brdf_lut_reference_samples(
+    const device float2 *samples [[ buffer(0) ]],
+    device float2 *results [[ buffer(1) ]],
+    uint index [[ thread_position_in_grid ]]) {
+    results[index] = PBR::integrateBRDF(clamp(samples[index].x, 0.0, 1.0),
+                                        clamp(samples[index].y, 0.0, 1.0),
+                                        2048u);
 }

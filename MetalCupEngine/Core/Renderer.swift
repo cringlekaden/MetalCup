@@ -28,7 +28,7 @@ public final class Renderer: NSObject {
     }
     public let profiler = RendererProfiler()
 
-    private let _projection = float4x4(perspectiveFov: .pi / 2, aspect: 1.0, nearZ: 0.1, farZ: 10.0)
+    private let _projection = CubemapConvention.captureProjection(nearZ: 0.1, farZ: 10.0)
     private var _lastPerfFlags: UInt32 = 0
     private let _renderResources: RenderResources
     private let _renderGraph = RenderGraph()
@@ -45,26 +45,8 @@ public final class Renderer: NSObject {
     private var _timeScale: Float = 1.0
     private var _fixedDeltaTime: Float = 1.0 / 60.0
     private let _maxFrameDelta: Float = 0.25
-    // MARK: - Shared cubemap views
-    // Engine convention reference:
-    // - World space uses +Y as up. Scene cameras look down their local -Z axis through the Metal
-    //   right-handed clip path. Directional light direction is the ray direction from light to scene.
-    // - Runtime texturecube sampling expects reflection vectors in world space; global IBL samples R
-    //   directly, while local reflection probes currently compensate their scene-capture convention
-    //   with a Z flip in the PBR shader.
-    // - Metal cube slices are intended as +X, -X, +Y, -Y, +Z, -Z. The shader-side
-    //   cubeDirectionFromFaceUV helper documents that canonical order. These long-standing capture
-    //   views are intentionally left unchanged for diagnostics; any future convention fix must make
-    //   Renderer._views, cubeDirectionFromFaceUV, skybox sampling, probe capture, and PBR reflection
-    //   sampling agree explicitly.
-    private let _views: [float4x4] = [
-        float4x4(lookAt: .zero, center: [ 1, 0, 0], up: [0, 1, 0]),
-        float4x4(lookAt: .zero, center: [-1, 0, 0], up: [0, 1, 0]),
-        float4x4(lookAt: .zero, center: [ 0, 1, 0], up: [0, 0, 1]),
-        float4x4(lookAt: .zero, center: [ 0,-1, 0], up: [0, 0,-1]),
-        float4x4(lookAt: .zero, center: [ 0, 0,-1], up: [0, 1, 0]),
-        float4x4(lookAt: .zero, center: [ 0, 0, 1], up: [0, 1, 0])
-    ]
+    // Global and local captures share the authoritative world-space convention.
+    private let _views = CubemapConvention.captureViewMatrices
     private var _viewProjections: [float4x4]!
     private let _environmentSize = 2048
     private let _irradianceSize = 64
@@ -97,6 +79,7 @@ public final class Renderer: NSObject {
     private struct EnvironmentIBLRebuildRequest {
         let entity: Entity
         let signature: EnvironmentIBLSignature
+        let generation: UInt64
         let sourceMode: EnvironmentSourceMode
         let hdriTexture: MTLTexture?
         let moonAlbedoTexture: MTLTexture?
@@ -116,6 +99,7 @@ public final class Renderer: NSObject {
     private struct EnvironmentIBLRebuildResult {
         let entity: Entity
         let signature: EnvironmentIBLSignature
+        let generation: UInt64
         let handles: IBLTextureHandles
         let quality: EnvironmentIBLRebuildQuality
         let completedAt: Double
@@ -124,6 +108,7 @@ public final class Renderer: NSObject {
     private struct EnvironmentIBLRebuildFailure {
         let entity: Entity
         let signature: EnvironmentIBLSignature
+        let generation: UInt64
         let message: String
     }
 
@@ -377,8 +362,8 @@ public final class Renderer: NSObject {
             irradianceSamples: irradianceSamples,
             prefilterSamplesMin: minSamples,
             prefilterSamplesMax: maxSamples,
-            fireflyClamp: settings.iblFireflyClamp,
-            fireflyClampEnabled: settings.iblFireflyClampEnabled != 0,
+            fireflyClamp: 0.0,
+            fireflyClampEnabled: false,
             samplingStrategy: mode == .interactive
                 ? "interactive reduced-sample cosine + GGX"
                 : "cosine + GGX importance sampling"
@@ -506,8 +491,8 @@ public final class Renderer: NSObject {
             irradianceSamples: 256,
             prefilterSamplesMin: 64,
             prefilterSamplesMax: 256,
-            fireflyClamp: settings.iblFireflyClamp,
-            fireflyClampEnabled: settings.iblFireflyClampEnabled != 0,
+            fireflyClamp: 0.0,
+            fireflyClampEnabled: false,
             samplingStrategy: "diagnostic orientation"
         )
         renderDiagnosticOrientationCubemap(targetEnvironment: environment, frameContext: frameContext, commandBuffer: commandBuffer)
@@ -959,9 +944,15 @@ public final class Renderer: NSObject {
         )
         var state = scene.ecs.get(EnvironmentIBLStateComponent.self, for: entity)
             ?? EnvironmentIBLStateComponent.defaultNeedsRebuild
-        let keepManualFinalRequest = state.rebuildRequested && result.quality == .interactive
+        let resultIsCurrent = EnvironmentIBLRebuildLifecycle.completionIsCurrent(
+            activeEnvironmentMatches: activeEnvironmentEntity == entity,
+            desiredSignature: currentRenderState.iblSignature,
+            state: state,
+            completedSignature: result.signature,
+            completedGeneration: result.generation
+        )
 
-        if activeEnvironmentEntity == entity, currentRenderState.iblSignature == result.signature {
+        if resultIsCurrent {
             if let appliedIndex = _iblHandleSets.firstIndex(where: {
                 $0.environment == result.handles.environment
                     && $0.irradiance == result.handles.irradiance
@@ -978,20 +969,26 @@ public final class Renderer: NSObject {
             state.rebuildRequested = false
             state.isRebuilding = false
             state.lastBuiltSignature = result.signature
+            state.lastBuiltGeneration = result.generation
+            state.inFlightGeneration = nil
             state.currentRebuildQuality = nil
             state.lastBuiltQuality = result.quality
-            state.pendingSignature = nil
             state.lastFailureMessage = nil
-            if keepManualFinalRequest {
-                state.dirty = true
-                state.needsRebuild = true
-                state.rebuildRequested = true
-                state.pendingSignature = currentRenderState.iblSignature
+            if result.quality == .interactive {
+                state.phase = .interactiveReady
+                // Keep the exact desired signature pending until the automatic
+                // final-quality pass publishes matching resources.
+                state.pendingSignature = result.signature
+            } else {
+                state.phase = .finalReady
+                state.pendingSignature = nil
             }
         } else {
             state.dirty = true
             state.needsRebuild = false
             state.isRebuilding = false
+            state.inFlightGeneration = nil
+            state.phase = .dirty
             state.currentRebuildQuality = nil
             state.pendingSignature = currentRenderState.iblSignature
             _pendingEnvironmentRenderState = currentRenderState
@@ -999,7 +996,7 @@ public final class Renderer: NSObject {
 
         scene.ecs.add(state, to: entity)
         EngineLoggerContext.log(
-            "Environment IBL rebuild result applied (stale=\(currentRenderState.iblSignature != result.signature), t=\(String(format: "%.3f", result.completedAt)))",
+            "Environment IBL rebuild result applied (stale=\(!resultIsCurrent), generation=\(result.generation), quality=\(result.quality.rawValue), t=\(String(format: "%.3f", result.completedAt)))",
             level: .debug,
             category: .renderer
         )
@@ -1010,11 +1007,15 @@ public final class Renderer: NSObject {
         var state = scene.ecs.get(EnvironmentIBLStateComponent.self, for: entity)
             ?? EnvironmentIBLStateComponent.defaultNeedsRebuild
         state.isRebuilding = false
-        state.dirty = true
-        state.needsRebuild = true
-        state.pendingSignature = failure.signature
+        state.inFlightGeneration = nil
         state.currentRebuildQuality = nil
-        state.lastFailureMessage = failure.message
+        if state.sourceGeneration == failure.generation {
+            state.dirty = true
+            state.needsRebuild = state.lastBuiltSignature == nil
+            state.pendingSignature = failure.signature
+            state.phase = state.lastBuiltQuality == .interactive ? .interactiveReady : .dirty
+            state.lastFailureMessage = failure.message
+        }
         scene.ecs.add(state, to: entity)
     }
 
@@ -1079,18 +1080,29 @@ public final class Renderer: NSObject {
             || (irradianceTexture?.width ?? 0) <= 1
             || (prefilteredTexture?.width ?? 0) <= 1
             || brdfTexture == nil
+        let now = CACurrentMediaTime()
         if texturesMissing {
             iblState.dirty = true
             iblState.needsRebuild = true
+            if !iblState.isRebuilding {
+                iblState.phase = .dirty
+            }
         }
 
-        let now = CACurrentMediaTime()
-        let signatureChanged = iblState.lastBuiltSignature.map { $0 != signature } ?? true
-        let policyAllowsAutomaticRebuild = environment.ibl.realtimeUpdate || environment.ibl.autoRebuildOnChange
-        if signatureChanged, policyAllowsAutomaticRebuild {
+        let trackedDesiredSignature = iblState.pendingSignature ?? iblState.lastBuiltSignature
+        let desiredSourceChanged = trackedDesiredSignature != signature
+        if desiredSourceChanged {
+            iblState.sourceGeneration &+= 1
+            iblState.lastSourceChangeTime = now
+            iblState.pendingSignature = signature
             iblState.dirty = true
-            _lastSkyInteractionTime = now
+            if !iblState.isRebuilding {
+                iblState.phase = .dirty
+            }
+            _pendingEnvironmentRenderState = renderState
         }
+        let signatureChanged = iblState.lastBuiltSignature != signature
+        let policyAllowsAutomaticRebuild = environment.ibl.realtimeUpdate || environment.ibl.autoRebuildOnChange
 
         if didUpdateHandles || texturesMissing || signatureChanged || iblState.dirty {
             iblState.pendingSignature = signature
@@ -1106,14 +1118,22 @@ public final class Renderer: NSObject {
         }
 
         let manualRebuild = iblState.rebuildRequested
+        let finalBuildNeeded = EnvironmentIBLRebuildLifecycle.requiresFinalBuild(
+            state: iblState,
+            desiredSignature: signature,
+            now: now,
+            settleDelay: _skyInteractiveSettleDelay
+        )
         let shouldRebuild = manualRebuild
             || iblState.needsRebuild
             || (iblState.dirty && policyAllowsAutomaticRebuild)
+            || finalBuildNeeded
         if !shouldRebuild { return true }
 
         let bypassCooldown = manualRebuild || iblState.needsRebuild
         let isDebouncingEdit = !bypassCooldown
-            && (now - _lastSkyInteractionTime) < _environmentIBLEditDebounce
+            && !finalBuildNeeded
+            && (now - iblState.lastSourceChangeTime) < _environmentIBLEditDebounce
         let isInCooldown = !bypassCooldown
             && (now - _lastSkyRebuildStartTime) < _skyRebuildCooldown
         if isDebouncingEdit || isInCooldown {
@@ -1126,7 +1146,11 @@ public final class Renderer: NSObject {
         let snapshot = _pendingEnvironmentRenderState ?? renderState
         _pendingEnvironmentRenderState = nil
         let snapshotSignature = snapshot.iblSignature
-        let rebuildQuality: EnvironmentIBLRebuildQuality = manualRebuild ? .final : .interactive
+        let rebuildQuality = EnvironmentIBLRebuildLifecycle.selectedQuality(
+            manualRebuild: manualRebuild,
+            resourcesMissing: iblState.needsRebuild,
+            finalBuildNeeded: finalBuildNeeded
+        )
         let nextIndex = (_activeIBLHandleIndex + 1) % _iblHandleSets.count
         let finalHandles = _iblHandleSets[nextIndex]
         let targetHandles = (rebuildQuality == .interactive ? (_iblFastHandles ?? finalHandles) : finalHandles)
@@ -1136,6 +1160,7 @@ public final class Renderer: NSObject {
             iblState.isRebuilding = false
             iblState.dirty = true
             iblState.needsRebuild = true
+            iblState.phase = .dirty
             iblState.lastFailureMessage = "Missing preallocated IBL textures."
             scene.ecs.add(iblState, to: entity)
             return true
@@ -1146,6 +1171,7 @@ public final class Renderer: NSObject {
             iblState.isRebuilding = false
             iblState.dirty = true
             iblState.needsRebuild = true
+            iblState.phase = .dirty
             iblState.lastFailureMessage = "HDRI texture could not be resolved."
             scene.ecs.add(iblState, to: entity)
             return true
@@ -1168,6 +1194,7 @@ public final class Renderer: NSObject {
         let request = EnvironmentIBLRebuildRequest(
             entity: entity,
             signature: snapshotSignature,
+            generation: iblState.sourceGeneration,
             sourceMode: snapshot.sourceMode,
             hdriTexture: hdriTexture,
             moonAlbedoTexture: moonAlbedoTexture,
@@ -1190,6 +1217,8 @@ public final class Renderer: NSObject {
         iblState.needsRebuild = texturesMissing
         iblState.rebuildRequested = false
         iblState.pendingSignature = snapshotSignature
+        iblState.inFlightGeneration = iblState.sourceGeneration
+        iblState.phase = rebuildQuality == .interactive ? .rebuildingInteractive : .rebuildingFinal
         iblState.currentRebuildQuality = rebuildQuality
         iblState.lastFailureMessage = nil
         scene.ecs.add(iblState, to: entity)
@@ -1215,6 +1244,7 @@ public final class Renderer: NSObject {
                 self.enqueueEnvironmentIBLCompletion(.failure(EnvironmentIBLRebuildFailure(
                     entity: request.entity,
                     signature: request.signature,
+                    generation: request.generation,
                     message: "Failed to create IBL command buffer."
                 )))
                 return
@@ -1233,6 +1263,7 @@ public final class Renderer: NSObject {
                     self.enqueueEnvironmentIBLCompletion(.failure(EnvironmentIBLRebuildFailure(
                         entity: request.entity,
                         signature: request.signature,
+                        generation: request.generation,
                         message: "HDRI texture could not be resolved."
                     )))
                     return
@@ -1286,6 +1317,7 @@ public final class Renderer: NSObject {
                     self.enqueueEnvironmentIBLCompletion(.failure(EnvironmentIBLRebuildFailure(
                         entity: request.entity,
                         signature: request.signature,
+                        generation: request.generation,
                         message: message
                     )))
                     return
@@ -1293,6 +1325,7 @@ public final class Renderer: NSObject {
                 self.enqueueEnvironmentIBLCompletion(.success(EnvironmentIBLRebuildResult(
                     entity: request.entity,
                     signature: request.signature,
+                    generation: request.generation,
                     handles: request.targetHandles,
                     quality: request.quality,
                     completedAt: completed

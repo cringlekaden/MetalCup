@@ -33,6 +33,8 @@ public struct RenderViewContext {
     public var updatesBatchStats: Bool
     public var debugFlags: UInt32
     public var showEditorOverlays: Bool
+    /// True only for the canonical mirrored-X cubemap capture projection.
+    public var usesMirroredCubemapProjection: Bool
     public var exposureSettings: SceneViewExposureSettings
 
     public init(
@@ -44,6 +46,7 @@ public struct RenderViewContext {
         updatesBatchStats: Bool = true,
         debugFlags: UInt32 = 0,
         showEditorOverlays: Bool = false,
+        usesMirroredCubemapProjection: Bool = false,
         exposureSettings: SceneViewExposureSettings = SceneViewExposureSettings()
     ) {
         self.viewId = viewId
@@ -54,6 +57,7 @@ public struct RenderViewContext {
         self.updatesBatchStats = updatesBatchStats
         self.debugFlags = debugFlags
         self.showEditorOverlays = showEditorOverlays
+        self.usesMirroredCubemapProjection = usesMirroredCubemapProjection
         self.exposureSettings = exposureSettings
     }
 
@@ -68,6 +72,7 @@ public struct RenderViewContext {
         hasher.combine(updatesBatchStats)
         hasher.combine(debugFlags)
         hasher.combine(showEditorOverlays)
+        hasher.combine(usesMirroredCubemapProjection)
         // Exposure is final-output state. It must not invalidate view-owned HDR,
         // culling, environment, bloom-input, or probe resources.
         return UInt64(bitPattern: Int64(hasher.finalize()))

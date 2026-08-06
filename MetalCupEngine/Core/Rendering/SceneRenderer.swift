@@ -1034,7 +1034,9 @@ public enum SceneRenderer {
         } else {
             encoder.setCullMode(cullMode)
         }
-        encoder.setFrontFacing(.counterClockwise)
+        encoder.setFrontFacing(
+            frameContext.viewContext().usesMirroredCubemapProjection ? .clockwise : .counterClockwise
+        )
         switch pass {
         case .depthPrepass:
             // Depth prepass should match main pass depth without bias.
@@ -1628,7 +1630,10 @@ public enum SceneRenderer {
                 let uniform = LocalReflectionProbeUniform(
                     probePositionAndWeight: SIMD4<Float>(probe.worldTransform.position, influence.weight),
                     boxExtentsAndBlendDistance: SIMD4<Float>(influence.boxExtents, influence.blendDistance),
-                    intensityAndFlags: SIMD4<Float>(max(probe.intensity, 0.0), 1.0, Float(probe.priority), 0.0),
+                    // Captured texels are authoritative radiance. Keep the
+                    // legacy intensity ABI lane neutral instead of coupling
+                    // local energy to an unrelated authored multiplier.
+                    intensityAndFlags: SIMD4<Float>(1.0, 1.0, Float(probe.priority), 0.0),
                     worldToProbeMatrix: influence.worldToProbe
                 )
                 let selection = LocalReflectionProbeSelection(

@@ -198,10 +198,13 @@ public struct RendererSettings: sizeable {
 
     public var perfFlags: UInt32 = 0
 
+    // Reserved legacy IBL clamp controls. Production convolution preserves source radiance.
     public var iblFireflyClamp: Float = 100.0
-    public var iblFireflyClampEnabled: UInt32 = 1
+    public var iblFireflyClampEnabled: UInt32 = 0
     public var iblSampleMultiplier: Float = 1.0
     public var skyboxMipBias: Float = 0.0
+    // Reserved legacy fields. Production prefilter generation and sampling use
+    // the same linear perceptual-roughness-to-mip mapping.
     public var iblSpecularLodExponent: Float = 1.5
     public var iblSpecularLodBias: Float = 0.0
     public var iblSpecularGrazingLodBias: Float = 0.35

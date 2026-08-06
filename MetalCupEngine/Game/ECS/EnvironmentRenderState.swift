@@ -265,40 +265,36 @@ public extension EnvironmentIBLSignature {
             enabled: state.enabled,
             sourceMode: state.sourceMode,
             hdriTextureHandle: nil,
-            finalTimeOfDay: quantizeStep(state.finalTimeOfDay, step: 0.25),
+            finalTimeOfDay: exactFloatBits(state.finalTimeOfDay),
             weatherPrimary: state.weatherPrimary.rawValue,
             weatherSecondary: state.weatherSecondary.rawValue,
-            weatherBlend: quantizeStep01(state.weatherBlend, step: 0.05),
-            weatherAmount: quantizeStep01(state.weatherAmount, step: 0.05),
-            atmosphereAmount: quantizeStep01(state.atmosphereAmount, step: 0.02),
-            atmosphereHaze: quantizeStep01(state.atmosphereHaze, step: 0.02),
-            atmosphereDensity: quantizeStep(max(state.atmosphereDensity, 0.0), step: 0.05),
-            atmosphereTemperature: quantizeStep(state.atmosphereTemperature, step: 0.05),
-            atmosphereMood: quantizeStep(state.atmosphereMood, step: 0.05),
-            lookMood: quantizeStep(state.lookMood, step: 0.05),
-            lookWarmth: quantizeStep(state.lookWarmth, step: 0.05),
-            lookCinematicAmount: quantizeStep(max(state.lookCinematicAmount, 0.0), step: 0.05),
-            cloudCoverage: quantizeStep01(state.cloudCoverage, step: 0.05),
+            weatherBlend: exactFloatBits(min(max(state.weatherBlend, 0), 1)),
+            weatherAmount: exactFloatBits(min(max(state.weatherAmount, 0), 1)),
+            atmosphereAmount: exactFloatBits(min(max(state.atmosphereAmount, 0), 1)),
+            atmosphereHaze: exactFloatBits(min(max(state.atmosphereHaze, 0), 1)),
+            atmosphereDensity: exactFloatBits(max(state.atmosphereDensity, 0)),
+            atmosphereTemperature: exactFloatBits(state.atmosphereTemperature),
+            atmosphereMood: exactFloatBits(state.atmosphereMood),
+            lookMood: exactFloatBits(state.lookMood),
+            lookWarmth: exactFloatBits(state.lookWarmth),
+            lookCinematicAmount: exactFloatBits(max(state.lookCinematicAmount, 0)),
+            cloudCoverage: exactFloatBits(min(max(state.cloudCoverage, 0), 1)),
             cloudStyle: state.cloudStyle.rawValue,
             cloudRenderMode: state.cloudRenderMode.rawValue,
-            moonIntensity: quantizeStep(max(state.moonIntensity, 0.0), step: 0.05),
-            moonSizeDegrees: quantizeStep(max(state.moonSizeDegrees, 0.0), step: 0.05),
-            starIntensity: quantizeStep(max(state.starIntensity, 0.0), step: 0.05),
-            starRichness: quantizeStep(max(state.starRichness, 0.0), step: 0.05),
-            milkyWayIntensity: quantizeStep(max(state.milkyWayIntensity, 0.0), step: 0.05),
-            milkyWayChroma: quantizeStep(max(state.milkyWayChroma, 0.0), step: 0.05),
-            milkyWayRotation: quantizeStep(state.milkyWayRotation, step: 0.01),
-            nightBrightness: quantizeStep(max(state.nightBrightness, 0.0), step: 0.05)
+            moonIntensity: exactFloatBits(max(state.moonIntensity, 0)),
+            moonSizeDegrees: exactFloatBits(max(state.moonSizeDegrees, 0)),
+            starIntensity: exactFloatBits(max(state.starIntensity, 0)),
+            starRichness: exactFloatBits(max(state.starRichness, 0)),
+            milkyWayIntensity: exactFloatBits(max(state.milkyWayIntensity, 0)),
+            milkyWayChroma: exactFloatBits(max(state.milkyWayChroma, 0)),
+            milkyWayRotation: exactFloatBits(state.milkyWayRotation),
+            nightBrightness: exactFloatBits(max(state.nightBrightness, 0))
         )
     }
 
-    private static func quantizeStep01(_ value: Float, step: Float) -> Int32 {
-        quantizeStep(min(max(value, 0.0), 1.0), step: step)
-    }
-
-    private static func quantizeStep(_ value: Float, step: Float) -> Int32 {
-        guard value.isFinite, step > 0.0 else { return 0 }
-        return Int32((value / step).rounded())
+    private static func exactFloatBits(_ value: Float) -> Int32 {
+        guard value.isFinite else { return 0 }
+        return Int32(bitPattern: value.bitPattern)
     }
 }
 

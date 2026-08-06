@@ -156,6 +156,7 @@ final class ReflectionProbeRuntimeManager {
                     updatesBatchStats: false,
                     debugFlags: 0,
                     showEditorOverlays: false,
+                    usesMirroredCubemapProjection: true,
                     exposureSettings: scene.getViewExposureSettings()
                 )
             )
@@ -459,6 +460,7 @@ final class ReflectionProbeRuntimeManager {
                 updatesBatchStats: false,
                 debugFlags: 0,
                 showEditorOverlays: false,
+                usesMirroredCubemapProjection: true,
                 exposureSettings: scene.getViewExposureSettings()
             )
         )

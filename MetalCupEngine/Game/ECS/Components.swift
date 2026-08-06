@@ -1484,6 +1484,8 @@ public enum ReflectionProbeRuntimeStatus: Int32, CaseIterable {
 
 public struct ReflectionProbeComponent: Equatable {
     public var enabled: Bool
+    /// Serialized for scene compatibility only. Captured texels are the probe
+    /// radiance source of truth and production shading ignores this value.
     public var intensity: Float
     /// Probe-local half extents for the authored influence box, reused later for box projection.
     public var boxExtents: SIMD3<Float>
@@ -1532,6 +1534,15 @@ public enum EnvironmentSourceMode: UInt32, Codable {
 public enum EnvironmentIBLRebuildQuality: String, Codable {
     case interactive
     case final
+}
+
+/// Explicit transient lifecycle for one environment source generation.
+public enum EnvironmentIBLRebuildPhase: String, Equatable, Sendable {
+    case dirty
+    case rebuildingInteractive
+    case interactiveReady
+    case rebuildingFinal
+    case finalReady
 }
 
 public enum AtmosphereWeatherType: UInt32, Codable {
@@ -2080,7 +2091,7 @@ public struct EnvironmentRuntimeStateComponent: Equatable {
 }
 
 public struct EnvironmentIBLSignature: Equatable, Hashable {
-    public static let currentVersion: UInt32 = 9
+    public static let currentVersion: UInt32 = 10
 
     public let version: UInt32
     public let enabled: Bool
@@ -2190,6 +2201,12 @@ public struct EnvironmentIBLStateComponent: Equatable {
     public var currentRebuildQuality: EnvironmentIBLRebuildQuality?
     public var lastBuiltQuality: EnvironmentIBLRebuildQuality?
     public var lastFailureMessage: String?
+    public var phase: EnvironmentIBLRebuildPhase
+    /// Monotonically increases whenever the exact desired source signature changes.
+    public var sourceGeneration: UInt64
+    public var inFlightGeneration: UInt64?
+    public var lastBuiltGeneration: UInt64?
+    public var lastSourceChangeTime: Double
 
     public static var defaultNeedsRebuild: EnvironmentIBLStateComponent {
         EnvironmentIBLStateComponent()
@@ -2208,7 +2225,12 @@ public struct EnvironmentIBLStateComponent: Equatable {
                 pendingSignature: EnvironmentIBLSignature? = nil,
                 currentRebuildQuality: EnvironmentIBLRebuildQuality? = nil,
                 lastBuiltQuality: EnvironmentIBLRebuildQuality? = nil,
-                lastFailureMessage: String? = nil) {
+                lastFailureMessage: String? = nil,
+                phase: EnvironmentIBLRebuildPhase = .dirty,
+                sourceGeneration: UInt64 = 0,
+                inFlightGeneration: UInt64? = nil,
+                lastBuiltGeneration: UInt64? = nil,
+                lastSourceChangeTime: Double = 0.0) {
         self.environmentTexture = environmentTexture
         self.irradianceTexture = irradianceTexture
         self.prefilteredTexture = prefilteredTexture
@@ -2223,6 +2245,11 @@ public struct EnvironmentIBLStateComponent: Equatable {
         self.currentRebuildQuality = currentRebuildQuality
         self.lastBuiltQuality = lastBuiltQuality
         self.lastFailureMessage = lastFailureMessage
+        self.phase = phase
+        self.sourceGeneration = sourceGeneration
+        self.inFlightGeneration = inFlightGeneration
+        self.lastBuiltGeneration = lastBuiltGeneration
+        self.lastSourceChangeTime = lastSourceChangeTime
     }
 }
 

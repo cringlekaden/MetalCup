@@ -602,8 +602,7 @@ static inline bool computeParallaxCorrectedLocalProbeDirection(constant LocalRef
                                              localReflectionProbe.worldToProbeMatrix[1].xyz,
                                              localReflectionProbe.worldToProbeMatrix[2].xyz);
     // Probe capture stays in the renderer's world-basis cubemap convention. Use authored probe
-    // rotation only for the box-space ray test, then rotate the hit vector back to world space
-    // before applying the local cubemap convention fixup.
+    // rotation only for the box-space ray test, then rotate the hit vector back to world space.
     float3 worldHitVector = transpose(worldToProbeRotation) * hitPointLocal;
     float worldHitVectorLengthSquared = dot(worldHitVector, worldHitVector);
     if (!all(isfinite(worldHitVector)) || worldHitVectorLengthSquared <= 1e-8) {
@@ -611,7 +610,7 @@ static inline bool computeParallaxCorrectedLocalProbeDirection(constant LocalRef
     }
 
     float3 worldLookupDirection = worldHitVector * rsqrt(worldHitVectorLengthSquared);
-    localProbeDirection = float3(worldLookupDirection.x, worldLookupDirection.y, -worldLookupDirection.z);
+    localProbeDirection = worldLookupDirection;
     return all(isfinite(localProbeDirection));
 }
 
@@ -1133,15 +1132,10 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
     // ------------------------------------------------------------
     // Specular IBL (prefilter + BRDF LUT)
     // ------------------------------------------------------------
-    // Scene-captured local probes are rendered with the engine's long-standing scene-camera
-    // cubemap face basis, which differs from the canonical runtime texturecube convention by a
-    // flipped Z axis. Keep global sky IBL sampling unchanged and compensate only for local probes.
-    float3 localProbeR = float3(R.x, R.y, -R.z);
     float3 specularIBL = float3(0.0);
     float maxMip = 0.0;
     float mipLevel = 0.0;
     float localProbeWeight = saturate(localReflectionProbe.probePositionAndWeight.w);
-    float localProbeIntensity = max(localReflectionProbe.intensityAndFlags.x, 0.0);
     bool localProbeEnabled = localReflectionProbe.intensityAndFlags.y > 0.5;
     bool localProbeParallaxCorrectionEnabled = !hasFlag(settings.perfFlags, RendererPerfFlags::PerfDisableLocalProbeParallaxCorrection);
     float brdfRoughness = clamp(perceptualRoughness, minRoughness, 1.0);
@@ -1162,17 +1156,16 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
     bool hasLocalProbeSpecular = iblIntensity > 0.0
         && localProbeEnabled
         && localProbeWeight > 0.0
-        && localProbeIntensity > 0.0
         && localReflectionPrefilteredMap.get_num_mip_levels() > 1;
     float3 localSpecularIBL = float3(0.0);
-    float3 localProbeSpecularR = localProbeR;
+    float3 localProbeSpecularR = R;
     if (hasLocalProbeSpecular) {
         if (localProbeParallaxCorrectionEnabled
             && !computeParallaxCorrectedLocalProbeDirection(localReflectionProbe,
                                                             rd.worldPosition,
                                                             R,
                                                             localProbeSpecularR)) {
-            localProbeSpecularR = localProbeR;
+            localProbeSpecularR = R;
         }
         float localProbeMipLevel = 0.0;
         float localProbeMaxMip = 0.0;
@@ -1184,7 +1177,7 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
             brdfRoughness,
             NdotV,
             F0,
-            iblIntensity * localProbeIntensity,
+            1.0,
             localProbeMipLevel,
             localProbeMaxMip
         );
@@ -1224,7 +1217,7 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
                     ccRoughness,
                     NdotV,
                     ccF0,
-                    iblIntensity * localProbeIntensity * clearcoat,
+                    clearcoat,
                     ccLocalMipLevel,
                     ccLocalMaxMip
                 );
@@ -1266,7 +1259,7 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
                     sheenLocalMipLevel,
                     sheenLocalMaxMip
                 );
-                float3 sheenIBLLocal = sheenPrefilteredLocal * sheenColor * sheenStrength * iblIntensity * localProbeIntensity;
+                float3 sheenIBLLocal = sheenPrefilteredLocal * sheenColor * sheenStrength;
                 sheenIBLLocal = min(sheenIBLLocal, sheenPrefilteredLocal * 0.25);
                 sheenIBL = mix(sheenIBLGlobal, sheenIBLLocal, localProbeWeight);
             }

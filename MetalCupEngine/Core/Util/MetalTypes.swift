@@ -192,6 +192,8 @@ public struct LocalReflectionProbeUniform: sizeable {
 
     public var probePositionAndWeight = SIMD4<Float>(0, 0, 0, 0)
     public var boxExtentsAndBlendDistance = SIMD4<Float>(0, 0, 0, 0)
+    /// x is reserved legacy intensity (production uses unit radiance gain),
+    /// y is enabled, z is priority, w is reserved.
     public var intensityAndFlags = SIMD4<Float>(0, 0, 0, 0)
     public var worldToProbeMatrix = matrix_identity_float4x4
 

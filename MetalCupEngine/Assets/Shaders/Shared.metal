@@ -11,6 +11,10 @@ using namespace metal;
 
 // NOTE: Keep these binding indices mirrored in ShaderBindings.swift.
 
+// Canonical MetalCup world-space cubemap contract. World space is right-handed,
+// +Y is up, and unrotated authored forward is local -Z. Metal cube slices are
+// +X, -X, +Y, -Y, +Z, -Z. Capture, convolution, global sampling, and local
+// reflection probes all use this mapping without path-specific axis flips.
 inline float3 cubeDirectionFromFaceUV(uint face, float2 uv) {
     float2 st = uv * 2.0 - 1.0;
     float2 faceUV = float2(st.x, -st.y);
@@ -24,6 +28,18 @@ inline float3 cubeDirectionFromFaceUV(uint face, float2 uv) {
         default: dir = float3(-faceUV.x, faceUV.y,-1.0);      break; // -Z
     }
     return normalize(dir);
+}
+
+inline float2 equirectangularUVFromWorldDirection(float3 worldDirection) {
+    float3 direction = normalize(worldDirection);
+    // Longitude is undefined at the poles. Pin it to the +Z meridian there so
+    // HDRI conversion remains finite and agrees with the CPU convention.
+    float longitude = dot(direction.xz, direction.xz) > 1e-12
+        ? atan2(direction.x, direction.z)
+        : 0.0;
+    float latitude = asin(clamp(direction.y, -1.0, 1.0));
+    return float2(longitude / (2.0 * M_PI_F) + 0.5,
+                  0.5 - latitude / M_PI_F);
 }
 
 enum VertexBufferIndex {
