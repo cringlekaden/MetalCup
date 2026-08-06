@@ -5,21 +5,26 @@ import simd
 
 struct ReflectionProbeConventionTests {
     @Test
-    func globalAndLocalSamplingUseTheSameWorldDirection() throws {
+    func globalAndSceneCapturedLocalProbeUseTheSameWorldDirection() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let library = try Phase3MetalTestSupport.library(device: device)
         let marker = simd_normalize(SIMD3<Float>(1, 0.25, -1))
-        let cube = try Phase3MetalTestSupport.makeCube(
+        let globalCube = try Phase3MetalTestSupport.makeCube(
             device: device,
             size: 64,
             mipmapped: true,
             label: "Phase3.GlobalLocalMarker"
         )
         try Phase3MetalTestSupport.fillDirectionalMarker(
-            cube,
+            globalCube,
             direction: marker,
             radiance: 12,
             cosineThreshold: 0.99
+        )
+        let sceneCapturedProbe = try Phase3MetalTestSupport.renderSceneCapturedMarkerCube(
+            device: device,
+            library: library,
+            markerDirection: marker
         )
         let worldDirections: [SIMD4<Float>] = [
             SIMD4<Float>(marker, 0),
@@ -29,20 +34,20 @@ struct ReflectionProbeConventionTests {
         let global = try Phase3MetalTestSupport.sampleCube(
             device: device,
             library: library,
-            texture: cube,
+            texture: globalCube,
             directionsAndMip: worldDirections
         )
         let local = try Phase3MetalTestSupport.sampleCube(
             device: device,
             library: library,
-            texture: cube,
+            texture: sceneCapturedProbe,
             directionsAndMip: worldDirections
         )
-        for index in worldDirections.indices {
-            #expect(simd_distance(global[index], local[index]) < 0.000001)
-        }
         #expect(global[0].x > 8)
         #expect(global[1].x < 1)
+        #expect(local[0].x > 8)
+        #expect(local[1].x < 1)
+        #expect(local[2].x < 1)
     }
 
     @Test

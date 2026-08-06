@@ -84,6 +84,24 @@ fragment float4 fragment_cubemap_direction_reference(CubemapRasterizerData rd [[
     return float4(direction * 0.5 + 0.5, 1.0);
 }
 
+struct Phase3ProbeCaptureReferenceOutput {
+    float4 position [[ position ]];
+};
+
+/// Offscreen convention reference: rasterizes a world-space scene marker through
+/// the exact production cube view/projection matrices used by reflection probes.
+vertex Phase3ProbeCaptureReferenceOutput phase3_probe_capture_reference_vertex(
+    const SimpleVertex vertexIn [[ stage_in ]],
+    constant float4x4 &viewProjection [[ buffer(VertexBufferIndexCubemapVP) ]]) {
+    Phase3ProbeCaptureReferenceOutput output;
+    output.position = viewProjection * float4(vertexIn.position, 1.0);
+    return output;
+}
+
+fragment float4 phase3_probe_capture_reference_fragment() {
+    return float4(12.0, 12.0, 12.0, 1.0);
+}
+
 fragment float4 fragment_irradiance(CubemapRasterizerData rd [[ stage_in ]],
                                     constant IBLIrradianceParams &params [[ buffer(FragmentBufferIndexIBLParams) ]],
                                     texturecube<float> envMap [[ texture(IBLTextureIndexEnvironment) ]],

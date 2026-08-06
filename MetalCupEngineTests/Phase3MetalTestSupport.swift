@@ -137,6 +137,75 @@ enum Phase3MetalTestSupport {
         return target
     }
 
+    static func renderSceneCapturedMarkerCube(device: MTLDevice,
+                                              library: MTLLibrary,
+                                              markerDirection: SIMD3<Float>,
+                                              size: Int = 128) throws -> MTLTexture {
+        let target = try makeCube(
+            device: device,
+            size: size,
+            mipmapped: true,
+            label: "Phase3.SceneCapturedMarker"
+        )
+        let direction = simd_normalize(markerDirection)
+        let referenceUp = abs(direction.y) < 0.95
+            ? SIMD3<Float>(0, 1, 0)
+            : SIMD3<Float>(0, 0, 1)
+        let tangent = simd_normalize(simd_cross(referenceUp, direction))
+        let up = simd_normalize(simd_cross(direction, tangent))
+        let center = direction * 3
+        let radius: Float = 0.18
+        let vertices = [
+            SimpleVertex(position: center + up * radius),
+            SimpleVertex(position: center - up * radius - tangent * radius),
+            SimpleVertex(position: center - up * radius + tangent * radius)
+        ]
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.label = "Phase3.SceneCaptureConvention"
+        descriptor.vertexFunction = try #require(library.makeFunction(name: "phase3_probe_capture_reference_vertex"))
+        descriptor.fragmentFunction = try #require(library.makeFunction(name: "phase3_probe_capture_reference_fragment"))
+        descriptor.colorAttachments[0].pixelFormat = target.pixelFormat
+        descriptor.vertexDescriptor = simpleVertexDescriptor()
+        let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        let queue = try #require(device.makeCommandQueue())
+        let commandBuffer = try #require(queue.makeCommandBuffer())
+        let vertexBuffer = try Phase2MetalTestSupport.makeBuffer(device: device, values: vertices)
+        let projection = CubemapConvention.captureProjection(nearZ: 0.1, farZ: 10)
+
+        for face in 0..<6 {
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = target
+            pass.colorAttachments[0].slice = face
+            pass.colorAttachments[0].level = 0
+            pass.colorAttachments[0].loadAction = .clear
+            pass.colorAttachments[0].storeAction = .store
+            pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+            let encoder = try #require(commandBuffer.makeRenderCommandEncoder(descriptor: pass))
+            encoder.setRenderPipelineState(pipeline)
+            encoder.setCullMode(.none)
+            encoder.setFrontFacing(.clockwise)
+            encoder.setViewport(MTLViewport(originX: 0, originY: 0,
+                                            width: Double(size), height: Double(size),
+                                            znear: 0, zfar: 1))
+            encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+            var viewProjection = projection * CubemapConvention.captureViewMatrices[face]
+            encoder.setVertexBytes(&viewProjection,
+                                   length: MemoryLayout<matrix_float4x4>.stride,
+                                   index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count)
+            encoder.endEncoding()
+        }
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        #expect(commandBuffer.status == .completed)
+        if let error = commandBuffer.error {
+            Issue.record("Phase 3 scene-capture marker failed: \(error.localizedDescription)")
+        }
+        try generateMipmaps(target)
+        return target
+    }
+
     static func renderIrradiance(device: MTLDevice,
                                  library: MTLLibrary,
                                  source: MTLTexture,
