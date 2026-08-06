@@ -4,6 +4,8 @@
 
 import MetalKit
 
+/// Legacy direct-render return payload kept for `SceneRenderer.render(...)` and
+/// `EngineScene.render(...)` call sites outside the render-graph-driven viewport path.
 public struct RenderOutputs {
     public var color: MTLTexture?
     public var depth: MTLTexture?

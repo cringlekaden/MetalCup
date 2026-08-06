@@ -15,6 +15,7 @@ public enum RenderPipelineStateType {
     case Skybox
     case Final
     case Cubemap
+    case CubemapOrientationDiagnostic
     case IrradianceMap
     case PrefilteredMap
     case BRDF
@@ -29,7 +30,10 @@ public enum RenderPipelineStateType {
     case AOBlurV
     case GridOverlay
     case SelectionOutline
+    case FarCloudCards
     case ProceduralSkyCubemap
+    case ProceduralSkyVisible
+    case ProceduralSkyVisibleCapture
     case HDRILuminance
     case DebugLines
 }
@@ -41,6 +45,9 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
     private var sceneNormalsVariants: [SceneNormalsVariantKey: MTLRenderPipelineState] = [:]
     private var aoNormalsVariants: [SceneNormalsVariantKey: MTLRenderPipelineState] = [:]
     private var skyboxVariants: [SkyboxVariantKey: MTLRenderPipelineState] = [:]
+    private var proceduralSkyVisibleVariants: [SkyboxVariantKey: MTLRenderPipelineState] = [:]
+    private var proceduralSkyCaptureVariants: [SkyboxVariantKey: MTLRenderPipelineState] = [:]
+    private var farCloudCardVariants: [SkyboxVariantKey: MTLRenderPipelineState] = [:]
     private let shaders: ShaderLibrary
     private let vertexDescriptors: VertexDescriptorLibrary
     private let preferences: Preferences
@@ -142,6 +149,18 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.inputPrimitiveTopology = .triangle
         }
 
+        library[.CubemapOrientationDiagnostic] = buildPipeline(label: "CubemapOrientationDiagnostic") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
+            descriptor.colorAttachments[0].isBlendingEnabled = false
+            descriptor.vertexFunction = shaders[.CubemapVertex]
+            descriptor.fragmentFunction = shaders[.CubemapOrientationDiagnosticFragment]
+            descriptor.vertexDescriptor = vertexDescriptors[.Simple]
+            descriptor.depthAttachmentPixelFormat = .invalid
+            descriptor.stencilAttachmentPixelFormat = .invalid
+            descriptor.rasterSampleCount = 1
+            descriptor.inputPrimitiveTopology = .triangle
+        }
+
         library[.ProceduralSkyCubemap] = buildPipeline(label: "ProceduralSkyCubemap") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
             descriptor.colorAttachments[0].isBlendingEnabled = false
@@ -153,6 +172,9 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.rasterSampleCount = 1
             descriptor.inputPrimitiveTopology = .triangle
         }
+
+        library[.ProceduralSkyVisible] = ExistingRenderPipelineState(renderPipelineState: proceduralSkyVisiblePipeline(sampleCount: 1))
+        library[.ProceduralSkyVisibleCapture] = ExistingRenderPipelineState(renderPipelineState: proceduralSkyVisibleCapturePipeline(sampleCount: 1))
 
         library[.IrradianceMap] = buildPipeline(label: "IrradianceMap") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
@@ -262,6 +284,8 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.fragmentFunction = shaders[.OutlineFragment]
             descriptor.vertexDescriptor = vertexDescriptors[.Simple]
         }
+
+        library[.FarCloudCards] = ExistingRenderPipelineState(renderPipelineState: farCloudCardsPipeline(sampleCount: 1))
 
         library[.DebugLines] = buildPipeline(label: "DebugLines") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
@@ -381,6 +405,73 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         descriptor.inputPrimitiveTopology = .triangle
         let pipeline = try! device.makeRenderPipelineState(descriptor: descriptor)
         skyboxVariants[key] = pipeline
+        return pipeline
+    }
+
+    public func farCloudCardsPipeline(sampleCount: Int = 1) -> MTLRenderPipelineState {
+        let normalizedSampleCount = normalizedRasterSampleCount(sampleCount)
+        let key = SkyboxVariantKey(sampleCount: normalizedSampleCount)
+        if let cached = farCloudCardVariants[key] {
+            return cached
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.label = "FarCloudCards.\(normalizedSampleCount)x"
+        descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
+        descriptor.colorAttachments[0].isBlendingEnabled = true
+        descriptor.colorAttachments[0].rgbBlendOperation = .add
+        descriptor.colorAttachments[0].alphaBlendOperation = .add
+        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+        descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
+        descriptor.vertexFunction = shaders[.CloudImpostorVertex]
+        descriptor.fragmentFunction = shaders[.CloudImpostorFragment]
+        descriptor.vertexDescriptor = nil
+        descriptor.rasterSampleCount = normalizedSampleCount
+        descriptor.inputPrimitiveTopology = .triangle
+        let pipeline = try! device.makeRenderPipelineState(descriptor: descriptor)
+        farCloudCardVariants[key] = pipeline
+        return pipeline
+    }
+
+    public func proceduralSkyVisiblePipeline(sampleCount: Int = 1) -> MTLRenderPipelineState {
+        let normalizedSampleCount = normalizedRasterSampleCount(sampleCount)
+        let key = SkyboxVariantKey(sampleCount: normalizedSampleCount)
+        if let cached = proceduralSkyVisibleVariants[key] {
+            return cached
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.label = "ProceduralSkyVisible.\(normalizedSampleCount)x"
+        descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
+        descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
+        descriptor.vertexFunction = shaders[.ProceduralSkyVisibleVertex]
+        descriptor.fragmentFunction = shaders[.ProceduralSkyVisibleFragment]
+        descriptor.vertexDescriptor = vertexDescriptors[.Simple]
+        descriptor.rasterSampleCount = normalizedSampleCount
+        descriptor.inputPrimitiveTopology = .triangle
+        let pipeline = try! device.makeRenderPipelineState(descriptor: descriptor)
+        proceduralSkyVisibleVariants[key] = pipeline
+        return pipeline
+    }
+
+    public func proceduralSkyVisibleCapturePipeline(sampleCount: Int = 1) -> MTLRenderPipelineState {
+        let normalizedSampleCount = normalizedRasterSampleCount(sampleCount)
+        let key = SkyboxVariantKey(sampleCount: normalizedSampleCount)
+        if let cached = proceduralSkyCaptureVariants[key] {
+            return cached
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.label = "ProceduralSkyVisibleCapture.\(normalizedSampleCount)x"
+        descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
+        descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
+        descriptor.vertexFunction = shaders[.ProceduralSkyVisibleVertex]
+        descriptor.fragmentFunction = shaders[.ProceduralSkyCaptureFragment]
+        descriptor.vertexDescriptor = vertexDescriptors[.Simple]
+        descriptor.rasterSampleCount = normalizedSampleCount
+        descriptor.inputPrimitiveTopology = .triangle
+        let pipeline = try! device.makeRenderPipelineState(descriptor: descriptor)
+        proceduralSkyCaptureVariants[key] = pipeline
         return pipeline
     }
 

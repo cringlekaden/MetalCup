@@ -85,7 +85,6 @@ struct RenderGraphFrame {
 
 protocol RenderGraphPass {
     var name: String { get }
-    var gpuPass: RendererProfiler.GpuPass? { get }
     var inputs: [RenderPassResourceUsage] { get }
     var outputs: [RenderPassResourceUsage] { get }
     var allowedDoubleWriteOutputs: Set<RenderResourceHandle> { get }
@@ -93,7 +92,6 @@ protocol RenderGraphPass {
 }
 
 extension RenderGraphPass {
-    var gpuPass: RendererProfiler.GpuPass? { nil }
     var inputs: [RenderPassResourceUsage] { [] }
     var outputs: [RenderPassResourceUsage] { [] }
     var allowedDoubleWriteOutputs: Set<RenderResourceHandle> { [] }

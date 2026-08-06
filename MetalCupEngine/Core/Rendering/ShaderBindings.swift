@@ -10,6 +10,7 @@ enum ShaderBindings {
         static let modelConstants = 2
         static let instances = 3
         static let bonePalette = 4
+        static let cloudImpostorParams = 5
         static let cubemapViewProjection = 1
     }
 
@@ -21,6 +22,7 @@ enum ShaderBindings {
         static let iblParams = 0
         static let skyParams = 0
         static let skyIntensity = 0
+        static let skyFace = 21
         static let outlineParams = 5
         static let gridParams = 6
         static let shadowConstants = 7
@@ -37,6 +39,7 @@ enum ShaderBindings {
         static let postProcessSceneConstants = 18
         static let postProcessParams = 19
         static let localReflectionProbe = 20
+        static let cloudImpostorParams = 22
     }
 
     enum FragmentTexture {
@@ -60,6 +63,10 @@ enum ShaderBindings {
         static let orm = 17
         static let sceneAO = 18
         static let localReflectionPrefiltered = 19
+        static let moonAlbedo = 20
+        static let galaxyBackground = 21
+        static let cloudAtlas = 22
+        static let cloudCard = 23
     }
 
     enum FragmentSampler {

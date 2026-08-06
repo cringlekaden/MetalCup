@@ -2,6 +2,7 @@
 /// Provides a single render entry point for scene rendering.
 /// Created by Kaden Cringle.
 
+import Foundation
 import MetalKit
 import QuartzCore
 import simd
@@ -34,7 +35,11 @@ public struct RenderFrameSnapshot {
     let frameToken: UInt64
     let signature: UInt64
     let sceneConstants: SceneConstants
+    let activeEnvironmentRenderState: EnvironmentRenderState?
+    let activeEnvironmentIBLState: EnvironmentIBLStateComponent?
     let activeSkyLight: SkyLightComponent?
+    let activeEnvironmentState: EnvironmentStateComponent?
+    let activeSkyIBLState: SkyIBLStateComponent?
     let directionalLights: [LightData]
     let localLights: [LightData]
     let directionalShadowLightDirection: SIMD3<Float>?
@@ -82,6 +87,13 @@ public enum SceneRenderer {
     }
 
     private static var frameCache: [FrameCacheKey: FrameCacheEntry] = [:]
+    private static var didLogMoonAlbedoResolution = false
+    private static var didLogMilkyWayResolution = false
+    private static var didLogCloudAtlasResolution = false
+    private static var didLogCloudCardCumulusResolution = false
+    private static var didLogCloudCardDiagnosticFallback = false
+    private static var didLogFarCloudCardDraw = false
+    private static var farCloudCardSkipLogKeys: Set<String> = []
     private struct SnapshotPreparationKey: Hashable {
         let sceneKey: ObjectIdentifier
         let frameToken: UInt64
@@ -151,6 +163,7 @@ public enum SceneRenderer {
             bindShadowResources(encoder, frameContext: frameContext)
             bindLightingInputs(encoder, frameContext: frameContext)
             renderSky(encoder, snapshot: snapshot, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
+            renderFarCloudCards(encoder, snapshot: snapshot, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
             renderMeshes(encoder, snapshot: snapshot, pass: .main, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
         case .normal:
             renderMeshes(encoder, snapshot: snapshot, pass: .normal, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
@@ -263,32 +276,14 @@ public enum SceneRenderer {
         let previousPass = frameContext.currentRenderPass()
         let previousUsePrepass = frameContext.useDepthPrepass()
         let previousViewContext = frameContext.viewContext()
-        let captureSnapshot = RenderFrameSnapshot(
-            sceneKey: snapshot.sceneKey,
-            frameToken: snapshot.frameToken,
-            signature: snapshot.signature,
-            sceneConstants: snapshot.sceneConstants,
-            activeSkyLight: snapshot.activeSkyLight,
-            directionalLights: snapshot.directionalLights,
-            localLights: snapshot.localLights,
-            directionalShadowLightDirection: snapshot.directionalShadowLightDirection,
-            animationPayload: snapshot.animationPayload,
-            renderables: snapshot.renderables,
-            reflectionProbes: []
+        let captureSnapshot = makeCaptureSnapshot(
+            from: snapshot,
+            viewMatrix: viewMatrix,
+            projectionMatrix: projectionMatrix,
+            cameraPosition: cameraPosition
         )
-        var captureConstants = captureSnapshot.sceneConstants
-        captureConstants.viewMatrix = viewMatrix
-        captureConstants.inverseViewMatrix = simd_inverse(viewMatrix)
-        captureConstants.skyViewMatrix = viewMatrix
-        captureConstants.skyViewMatrix[3][0] = 0
-        captureConstants.skyViewMatrix[3][1] = 0
-        captureConstants.skyViewMatrix[3][2] = 0
-        captureConstants.projectionMatrix = projectionMatrix
-        captureConstants.inverseProjectionMatrix = simd_inverse(projectionMatrix)
-        captureConstants.inverseViewProjectionMatrix = simd_inverse(projectionMatrix * viewMatrix)
-        captureConstants.cameraPositionAndIBL = SIMD4<Float>(cameraPosition, captureSnapshot.sceneConstants.cameraPositionAndIBL.w)
         let captureConstantsBuffer = frameContext.makeSceneConstantsBuffer(
-            captureConstants,
+            captureSnapshot.sceneConstants,
             label: "SceneConstants.ReflectionProbeCapture"
         )
         frameContext.setCurrentRenderPass(.main)
@@ -318,7 +313,8 @@ public enum SceneRenderer {
                 snapshot: captureSnapshot,
                 frameContext: frameContext,
                 sceneConstantsBuffer: captureConstantsBuffer,
-                sampleCountOverride: captureSampleCount
+                sampleCountOverride: captureSampleCount,
+                useDisplayCompensatedProceduralSky: false
             )
         }
         renderMeshes(
@@ -334,64 +330,418 @@ public enum SceneRenderer {
         frameContext.setCurrentRenderPass(previousPass)
     }
 
+    static func makeCaptureSnapshot(from snapshot: RenderFrameSnapshot,
+                                    viewMatrix: matrix_float4x4,
+                                    projectionMatrix: matrix_float4x4,
+                                    cameraPosition: SIMD3<Float>) -> RenderFrameSnapshot {
+        let captureSnapshot = RenderFrameSnapshot(
+            sceneKey: snapshot.sceneKey,
+            frameToken: snapshot.frameToken,
+            signature: snapshot.signature,
+            sceneConstants: snapshot.sceneConstants,
+            activeEnvironmentRenderState: snapshot.activeEnvironmentRenderState,
+            activeEnvironmentIBLState: snapshot.activeEnvironmentIBLState,
+            activeSkyLight: snapshot.activeSkyLight,
+            activeEnvironmentState: snapshot.activeEnvironmentState,
+            activeSkyIBLState: snapshot.activeSkyIBLState,
+            directionalLights: snapshot.directionalLights,
+            localLights: snapshot.localLights,
+            directionalShadowLightDirection: snapshot.directionalShadowLightDirection,
+            animationPayload: snapshot.animationPayload,
+            renderables: snapshot.renderables,
+            reflectionProbes: []
+        )
+        var captureConstants = captureSnapshot.sceneConstants
+        captureConstants.viewMatrix = viewMatrix
+        captureConstants.inverseViewMatrix = simd_inverse(viewMatrix)
+        captureConstants.skyViewMatrix = viewMatrix
+        captureConstants.skyViewMatrix[3][0] = 0
+        captureConstants.skyViewMatrix[3][1] = 0
+        captureConstants.skyViewMatrix[3][2] = 0
+        captureConstants.projectionMatrix = projectionMatrix
+        captureConstants.inverseProjectionMatrix = simd_inverse(projectionMatrix)
+        captureConstants.inverseViewProjectionMatrix = simd_inverse(projectionMatrix * viewMatrix)
+        captureConstants.cameraPositionAndIBL = SIMD4<Float>(cameraPosition, captureSnapshot.sceneConstants.cameraPositionAndIBL.w)
+        return RenderFrameSnapshot(
+            sceneKey: captureSnapshot.sceneKey,
+            frameToken: captureSnapshot.frameToken,
+            signature: captureSnapshot.signature,
+            sceneConstants: captureConstants,
+            activeEnvironmentRenderState: captureSnapshot.activeEnvironmentRenderState,
+            activeEnvironmentIBLState: captureSnapshot.activeEnvironmentIBLState,
+            activeSkyLight: captureSnapshot.activeSkyLight,
+            activeEnvironmentState: captureSnapshot.activeEnvironmentState,
+            activeSkyIBLState: captureSnapshot.activeSkyIBLState,
+            directionalLights: captureSnapshot.directionalLights,
+            localLights: captureSnapshot.localLights,
+            directionalShadowLightDirection: captureSnapshot.directionalShadowLightDirection,
+            animationPayload: captureSnapshot.animationPayload,
+            renderables: captureSnapshot.renderables,
+            reflectionProbes: captureSnapshot.reflectionProbes
+        )
+    }
+
+    private static func resolveMoonAlbedoTexture(engineContext: EngineContext, context: String) -> MTLTexture? {
+        resolveBuiltinSkyTexture(
+            engineContext: engineContext,
+            context: context,
+            sourcePath: "Textures/Moon/lroc_color_2k.jpg",
+            fallbackHandle: BuiltinAssets.moonAlbedo,
+            logPrefix: "Moon albedo",
+            didLog: &didLogMoonAlbedoResolution
+        ) {
+            BuiltinAssets.registerMoonAlbedoTextureIfNeeded(
+                assetManager: engineContext.assets,
+                resourcesRootURL: engineContext.resources.resourcesRootURL,
+                device: engineContext.device
+            )
+        }
+    }
+
+    private static func resolveMilkyWayBackgroundTexture(engineContext: EngineContext, context: String) -> MTLTexture? {
+        resolveBuiltinSkyTexture(
+            engineContext: engineContext,
+            context: context,
+            sourcePath: "Textures/Sky/MilkyWay/milkyway_2020_4k.exr",
+            fallbackHandle: BuiltinAssets.milkyWayBackground,
+            logPrefix: "Milky Way background",
+            didLog: &didLogMilkyWayResolution
+        ) {
+            BuiltinAssets.registerMilkyWayBackgroundTextureIfNeeded(
+                assetManager: engineContext.assets,
+                resourcesRootURL: engineContext.resources.resourcesRootURL,
+                device: engineContext.device
+            )
+        }
+    }
+
+    private static func resolveCloudAtlasTexture(engineContext: EngineContext, context: String) -> MTLTexture? {
+        resolveBuiltinSkyTexture(
+            engineContext: engineContext,
+            context: context,
+            sourcePath: "Textures/Sky/Clouds/cloud_atlas_4k.png",
+            fallbackHandle: BuiltinAssets.cloudAtlas,
+            logPrefix: "Cloud atlas",
+            didLog: &didLogCloudAtlasResolution
+        ) {
+            BuiltinAssets.registerCloudAtlasTextureIfNeeded(
+                assetManager: engineContext.assets,
+                resourcesRootURL: engineContext.resources.resourcesRootURL,
+                device: engineContext.device
+            )
+        }
+    }
+
+    private static func resolveCloudCardCumulusTexture(engineContext: EngineContext, context: String) -> MTLTexture? {
+        resolveBuiltinSkyTexture(
+            engineContext: engineContext,
+            context: context,
+            sourcePath: "Textures/Sky/Clouds/Impostors/cloud_card_cumulus.png",
+            fallbackHandle: BuiltinAssets.cloudCardCumulus,
+            logPrefix: "Cloud card cumulus",
+            didLog: &didLogCloudCardCumulusResolution
+        ) {
+            BuiltinAssets.registerCloudCardTexturesIfNeeded(
+                assetManager: engineContext.assets,
+                resourcesRootURL: engineContext.resources.resourcesRootURL,
+                device: engineContext.device
+            )
+        }
+    }
+
+    private static func resolveBuiltinSkyTexture(engineContext: EngineContext,
+                                                 context: String,
+                                                 sourcePath: String,
+                                                 fallbackHandle: AssetHandle,
+                                                 logPrefix: String,
+                                                 didLog: inout Bool,
+                                                 registerFallback: () -> Void) -> MTLTexture? {
+        let sourceHandle = engineContext.assets.handle(forSourcePath: sourcePath)
+        let sourceTexture = sourceHandle.flatMap { engineContext.assets.texture(handle: $0) }
+        if sourceTexture == nil {
+            registerFallback()
+        }
+        let fallbackTexture = engineContext.assets.texture(handle: fallbackHandle)
+        let usedBuiltinFallback = sourceTexture == nil
+        let handle = usedBuiltinFallback ? fallbackHandle : (sourceHandle ?? fallbackHandle)
+        let texture = sourceTexture ?? fallbackTexture
+        if !didLog {
+            didLog = true
+            let textureSummary: String
+            let fallbackHint: Bool
+            if let texture {
+                let label = texture.label ?? "<nil>"
+                let lowerLabel = label.lowercased()
+                fallbackHint = lowerLabel.contains("fallback") || lowerLabel.contains("error") || lowerLabel.contains("white")
+                textureSummary = "label=\(label) size=\(texture.width)x\(texture.height) pixelFormat=\(texture.pixelFormat) fallbackHint=\(fallbackHint)"
+            } else {
+                fallbackHint = false
+                textureSummary = "nil"
+            }
+            EngineLoggerContext.log(
+                "\(logPrefix) resolve context=\(context) sourcePath=\(sourcePath) sourceLookupSucceeded=\(sourceHandle != nil) sourceTextureAvailable=\(sourceTexture != nil) usedBuiltinFallback=\(usedBuiltinFallback) handle=\(handle.rawValue.uuidString) texture=\(textureSummary)",
+                level: (texture == nil || fallbackHint) ? .warning : .debug,
+                category: .renderer
+            )
+            _ = fallbackHint
+        }
+        return texture
+    }
+
     private static func renderSky(_ encoder: MTLRenderCommandEncoder,
                                   snapshot: RenderFrameSnapshot,
                                   frameContext: RendererFrameContext,
                                   sceneConstantsBuffer: MTLBuffer? = nil,
-                                  sampleCountOverride: Int? = nil) {
-        guard let sky = snapshot.activeSkyLight, sky.enabled else { return }
+                                  sampleCountOverride: Int? = nil,
+                                  useDisplayCompensatedProceduralSky: Bool = true) {
+        let environmentRenderState = snapshot.activeEnvironmentRenderState
+        let legacySky = snapshot.activeSkyLight
+        guard environmentRenderState?.enabled == true || legacySky?.enabled == true else { return }
         let engineContext = frameContext.engineContext()
         guard let mesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         bindSceneConstants(encoder, snapshot: snapshot, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
         encoder.setTriangleFillMode(engineContext.preferences.isWireframeEnabled ? .lines : .fill)
-        encoder.setRenderPipelineState(
-            engineContext.graphics.renderPipelineStates.skyboxPipeline(
-                sampleCount: scenePipelineSampleCount(
-                    for: .main,
-                    frameContext: frameContext,
-                    sampleCountOverride: sampleCountOverride
-                )
-            )
+        let sampleCount = scenePipelineSampleCount(
+            for: .main,
+            frameContext: frameContext,
+            sampleCountOverride: sampleCountOverride
         )
+        let orientationSkyboxEnabled = frameContext.rendererSettings().diagnosticFlags.contains(.orientationSkybox)
+        let sourceMode: EnvironmentSourceMode
+        if orientationSkyboxEnabled {
+            sourceMode = .hdri
+        } else if let environmentRenderState {
+            sourceMode = environmentRenderState.sourceMode
+        } else if legacySky?.mode == .procedural {
+            sourceMode = .procedural
+        } else {
+            sourceMode = .hdri
+        }
+
+        switch sourceMode {
+        case .procedural:
+            // Keep separate visible/capture pipeline entry points, but both now shade from the
+            // same HDR procedural sky radiance model so the camera view matches sky-driven IBL.
+            encoder.setRenderPipelineState(
+                useDisplayCompensatedProceduralSky
+                    ? engineContext.graphics.renderPipelineStates.proceduralSkyVisiblePipeline(sampleCount: sampleCount)
+                    : engineContext.graphics.renderPipelineStates.proceduralSkyVisibleCapturePipeline(sampleCount: sampleCount)
+            )
+            var skyParams = environmentRenderState?.legacySkyParams
+                ?? SkySystem.shaderParams(authored: legacySky ?? SkyLightComponent(), runtime: snapshot.activeEnvironmentState)
+            let moonAlbedoTexture = resolveMoonAlbedoTexture(engineContext: engineContext, context: "visibleSky")
+            let galaxyTexture = resolveMilkyWayBackgroundTexture(engineContext: engineContext, context: "visibleSky")
+            let cloudAtlasTexture = resolveCloudAtlasTexture(engineContext: engineContext, context: "visibleSky")
+            skyParams.moonTextureEnabled = moonAlbedoTexture == nil ? 0.0 : 1.0
+            skyParams.galaxyTextureEnabled = galaxyTexture == nil ? 0.0 : 1.0
+            skyParams.cloudAtlasEnabled = cloudAtlasTexture == nil ? 0.0 : 1.0
+            encoder.setFragmentBytes(&skyParams, length: SkyParams.stride, index: FragmentBufferIndex.skyParams)
+            encoder.setFragmentTexture(moonAlbedoTexture ?? engineContext.fallbackTextures.whiteRGBA, index: FragmentTextureIndex.moonAlbedo)
+            encoder.setFragmentTexture(galaxyTexture ?? engineContext.fallbackTextures.whiteRGBA, index: FragmentTextureIndex.galaxyBackground)
+            encoder.setFragmentTexture(cloudAtlasTexture ?? engineContext.fallbackTextures.blackRGBA, index: FragmentTextureIndex.cloudAtlas)
+        case .hdri:
+            encoder.setRenderPipelineState(
+                engineContext.graphics.renderPipelineStates.skyboxPipeline(sampleCount: sampleCount)
+            )
+        }
         encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessEqualNoWrite])
         encoder.setCullMode(.none)
         encoder.setFrontFacing(.clockwise)
         var modelConstants = ModelConstants()
         modelConstants.modelMatrix = matrix_identity_float4x4
         encoder.setVertexBytes(&modelConstants, length: ModelConstants.stride, index: VertexBufferIndex.modelConstants)
-        let envTexture = frameContext.iblTextures().environment
-            ?? engineContext.assets.texture(handle: BuiltinAssets.environmentCubemap)
-            ?? engineContext.fallbackTextures.blackCubemap
-        encoder.setFragmentSamplerState(engineContext.graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-        encoder.setFragmentTexture(envTexture, index: FragmentTextureIndex.skybox)
+        if sourceMode == .hdri {
+            let authoredEnvironmentTexture = environmentRenderState?.hdriTextureHandle
+                .flatMap { engineContext.assets.texture(handle: $0) }
+            let diagnosticTexture = orientationSkyboxEnabled
+                ? engineContext.assets.texture(handle: BuiltinAssets.diagnosticOrientationCubemap)
+                : nil
+            let envTexture = diagnosticTexture
+                ?? (authoredEnvironmentTexture?.textureType == .typeCube ? authoredEnvironmentTexture : nil)
+                ?? frameContext.iblTextures().environment
+                ?? engineContext.assets.texture(handle: BuiltinAssets.environmentCubemap)
+                ?? engineContext.fallbackTextures.blackCubemap
+            encoder.setFragmentSamplerState(engineContext.graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
+            encoder.setFragmentTexture(envTexture, index: FragmentTextureIndex.skybox)
+        }
         mesh.drawPrimitives(encoder, frameContext: frameContext)
+    }
+
+    private static func renderFarCloudCards(_ encoder: MTLRenderCommandEncoder,
+                                            snapshot: RenderFrameSnapshot,
+                                            frameContext: RendererFrameContext,
+                                            sceneConstantsBuffer: MTLBuffer?) {
+        let forceDebugCards = farCloudCardsDebugOverrideEnabled()
+        guard let environmentState = snapshot.activeEnvironmentRenderState,
+              environmentState.enabled else {
+            logFarCloudCardsSkip("no active enabled Environment")
+            return
+        }
+        let clouds = environmentState.cloudRenderParams
+        let authoredCoverage = min(max(clouds.coverage, 0.0), 1.0)
+        guard environmentState.cloudRenderMode != .procedural || forceDebugCards else {
+            logFarCloudCardsSkip("cloud render mode is procedural")
+            return
+        }
+        guard clouds.enabled || forceDebugCards else {
+            logFarCloudCardsSkip("cloud render params disabled style=\(clouds.style) coverage=\(authoredCoverage)")
+            return
+        }
+        guard clouds.style == .puffy || forceDebugCards else {
+            logFarCloudCardsSkip("style is \(clouds.style), expected puffy")
+            return
+        }
+        guard authoredCoverage > 0.02 || forceDebugCards else {
+            logFarCloudCardsSkip("coverage too low: \(authoredCoverage)")
+            return
+        }
+        let coverage = forceDebugCards ? max(authoredCoverage, 0.65) : authoredCoverage
+
+        let engineContext = frameContext.engineContext()
+        let resolvedCloudCardTexture = resolveCloudCardCumulusTexture(engineContext: engineContext, context: "visibleFarCloudCards")
+        let cloudCardTexture: MTLTexture
+        let usingDiagnosticTexture: Bool
+        if let resolvedCloudCardTexture {
+            cloudCardTexture = resolvedCloudCardTexture
+            usingDiagnosticTexture = false
+        } else {
+            cloudCardTexture = engineContext.fallbackTextures.whiteRGBA
+            usingDiagnosticTexture = true
+            if !didLogCloudCardDiagnosticFallback {
+                didLogCloudCardDiagnosticFallback = true
+                EngineLoggerContext.log(
+                    "Far cloud cards using Fallback.WhiteRGBA diagnostic texture because cloud_card_cumulus.png resolved nil. Solid white rectangles mean the pass is drawing but the cloud card asset lookup/load failed.",
+                    level: .warning,
+                    category: .renderer
+                )
+            }
+        }
+        guard usingDiagnosticTexture || (cloudCardTexture.width > 16 && cloudCardTexture.height > 16) else {
+            logFarCloudCardsSkip("cumulus card texture too small: \(cloudCardTexture.width)x\(cloudCardTexture.height) label=\(cloudCardTexture.label ?? "<nil>")")
+            return
+        }
+
+        let cardCount = min(max(Int(round(2.0 + coverage * 5.0)), 1), 7)
+        let daylight = min(max(environmentState.sunDirection.y * 1.15 + 0.12, 0.0), 1.0)
+        let nightFactor = 1.0 - daylight
+        let windOffset = clouds.windDirection * clouds.windPhase * 0.05
+        var params = CloudImpostorParams()
+        params.sunDirectionAndNightFactor = SIMD4<Float>(
+            environmentState.sunDirection.x,
+            environmentState.sunDirection.y,
+            environmentState.sunDirection.z,
+            nightFactor
+        )
+        params.windOffsetCoverageAndCount = SIMD4<Float>(windOffset.x, windOffset.y, coverage, Float(cardCount))
+        params.colorTintAndBrightness = SIMD4<Float>(
+            environmentState.sunColor.x,
+            environmentState.sunColor.y,
+            environmentState.sunColor.z,
+            max(0.18, min(clouds.brightness, 1.5))
+        )
+        params.layout = SIMD4<Float>(
+            7.0,
+            2.1 + coverage * 0.5,
+            1.45 + coverage * 0.55,
+            0.38 + coverage * 0.54
+        )
+
+        #if DEBUG
+        MC_ASSERT(CloudImpostorParams.stride == CloudImpostorParams.expectedMetalStride,
+                  "CloudImpostorParams stride mismatch. Keep Swift and Metal layouts in sync.")
+        #endif
+
+        bindSceneConstants(encoder, snapshot: snapshot, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
+        let sampleCount = scenePipelineSampleCount(for: .main, frameContext: frameContext)
+        encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates.farCloudCardsPipeline(sampleCount: sampleCount))
+        encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.AlwaysNoWrite])
+        encoder.setCullMode(.none)
+        encoder.setFrontFacing(.clockwise)
+        encoder.setTriangleFillMode(.fill)
+        encoder.setVertexBytes(&params, length: CloudImpostorParams.stride, index: VertexBufferIndex.cloudImpostorParams)
+        encoder.setFragmentBytes(&params, length: CloudImpostorParams.stride, index: FragmentBufferIndex.cloudImpostorParams)
+        encoder.setFragmentTexture(cloudCardTexture, index: FragmentTextureIndex.cloudCard)
+        encoder.setFragmentSamplerState(engineContext.graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
+        if !didLogFarCloudCardDraw {
+            didLogFarCloudCardDraw = true
+            EngineLoggerContext.log(
+                "Far cloud cards draw active forced=\(forceDebugCards) style=\(clouds.style) authoredCoverage=\(authoredCoverage) resolvedCoverage=\(coverage) cardCount=\(cardCount) texture=\(cloudCardTexture.label ?? "<nil>") size=\(cloudCardTexture.width)x\(cloudCardTexture.height)",
+                level: .warning,
+                category: .renderer
+            )
+        }
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: cardCount)
+    }
+
+    private static func farCloudCardsDebugOverrideEnabled() -> Bool {
+        let value = ProcessInfo.processInfo.environment["METALCUP_FORCE_FAR_CLOUD_CARDS"] ?? ""
+        return value == "1" || value.lowercased() == "true"
+    }
+
+    private static func logFarCloudCardsSkip(_ reason: String) {
+        guard !farCloudCardSkipLogKeys.contains(reason) else { return }
+        farCloudCardSkipLogKeys.insert(reason)
+        EngineLoggerContext.log(
+            "Far cloud cards skipped: \(reason). Set METALCUP_FORCE_FAR_CLOUD_CARDS=1 to force the diagnostic card pass when an Environment is active.",
+            level: .warning,
+            category: .renderer
+        )
     }
 
     private static func syncIBLTextures(snapshot: RenderFrameSnapshot, frameContext: RendererFrameContext) {
         let engineContext = frameContext.engineContext()
         let fallback = engineContext.fallbackTextures
-        let sky = snapshot.activeSkyLight
-        let envHandle = sky?.iblEnvironmentHandle ?? BuiltinAssets.environmentCubemap
-        let irrHandle = sky?.iblIrradianceHandle ?? BuiltinAssets.irradianceCubemap
-        let preHandle = sky?.iblPrefilteredHandle ?? BuiltinAssets.prefilteredCubemap
-        let brdfHandle = sky?.iblBrdfHandle ?? BuiltinAssets.brdfLut
+        let environmentState = snapshot.activeEnvironmentRenderState
+        let environmentIBLState = snapshot.activeEnvironmentIBLState
+        let legacySky = snapshot.activeSkyLight
+        let legacyIBLState = snapshot.activeSkyIBLState
+
+        let usesEnvironmentIBL = environmentState?.enabled == true && environmentIBLState != nil
+        let envHandle = usesEnvironmentIBL
+            ? (environmentIBLState?.environmentTexture ?? BuiltinAssets.environmentCubemap)
+            : (legacyIBLState?.iblEnvironmentHandle ?? BuiltinAssets.environmentCubemap)
+        let irrHandle = usesEnvironmentIBL
+            ? (environmentIBLState?.irradianceTexture ?? BuiltinAssets.irradianceCubemap)
+            : (legacyIBLState?.iblIrradianceHandle ?? BuiltinAssets.irradianceCubemap)
+        let preHandle = usesEnvironmentIBL
+            ? (environmentIBLState?.prefilteredTexture ?? BuiltinAssets.prefilteredCubemap)
+            : (legacyIBLState?.iblPrefilteredHandle ?? BuiltinAssets.prefilteredCubemap)
+        let brdfHandle = usesEnvironmentIBL
+            ? (environmentIBLState?.brdfLUT ?? BuiltinAssets.brdfLut)
+            : (legacyIBLState?.iblBrdfHandle ?? BuiltinAssets.brdfLut)
         let env = engineContext.assets.texture(handle: envHandle) ?? fallback.blackCubemap
         let irr = engineContext.assets.texture(handle: irrHandle) ?? fallback.blackCubemap
         let pre = engineContext.assets.texture(handle: preHandle) ?? fallback.blackCubemap
         let brdf = engineContext.assets.texture(handle: brdfHandle) ?? fallback.brdfLut
-        let needsRebuild = sky?.needsRebuild ?? true
-        let hasValidIBL = (sky?.enabled ?? false)
+        let diagnosticFlags = frameContext.rendererSettings().diagnosticFlags
+        let diagnosticGlobalIBLEnabled = diagnosticFlags.contains(.orientationGlobalIBL)
+        let diagnosticEnv = diagnosticGlobalIBLEnabled
+            ? engineContext.assets.texture(handle: BuiltinAssets.diagnosticOrientationCubemap)
+            : nil
+        let diagnosticIrr = diagnosticGlobalIBLEnabled
+            ? engineContext.assets.texture(handle: BuiltinAssets.diagnosticOrientationIrradianceCubemap)
+            : nil
+        let diagnosticPre = diagnosticGlobalIBLEnabled
+            ? engineContext.assets.texture(handle: BuiltinAssets.diagnosticOrientationPrefilteredCubemap)
+            : nil
+        let needsRebuild = usesEnvironmentIBL
+            ? (environmentIBLState?.needsRebuild ?? true)
+            : (legacyIBLState?.needsRebuild ?? true)
+        let ownerEnabled = usesEnvironmentIBL
+            ? (environmentState?.enabled ?? false)
+            : (legacySky?.enabled ?? false)
+        let hasValidIBL = ownerEnabled
             && !needsRebuild
             && !fallback.isFallbackTexture(irr)
             && !fallback.isFallbackTexture(pre)
             && !fallback.isFallbackTexture(brdf)
         frameContext.updateIBLTextures(
-            environment: env,
-            irradiance: irr,
-            prefiltered: pre,
+            environment: diagnosticEnv ?? env,
+            irradiance: diagnosticIrr ?? irr,
+            prefiltered: diagnosticPre ?? pre,
             brdfLut: brdf
         )
-        frameContext.setIBLReady(hasValidIBL)
+        frameContext.setIBLReady(diagnosticGlobalIBLEnabled ? (diagnosticIrr != nil && diagnosticPre != nil) : hasValidIBL)
     }
 
     private static func renderMeshes(_ encoder: MTLRenderCommandEncoder,
@@ -1246,6 +1596,161 @@ public enum SceneRenderer {
         let distanceSquared: Float
     }
 
+    private struct ReflectionProbeInfluence {
+        let weight: Float
+        let distanceSquared: Float
+        let boxExtents: SIMD3<Float>
+        let blendDistance: Float
+        let worldToProbe: matrix_float4x4
+    }
+
+    private enum LocalReflectionProbeSelectionPolicy {
+        // Current single-probe policy is intentionally simple:
+        // 1. Higher authored priority wins.
+        // 2. For equal priority, stronger influence weight wins.
+        // 3. For equal weight, the closer probe wins.
+        // 4. Remaining exact ties break by stable entity UUID string for determinism.
+        static func selectRuntimeProbe(at samplePosition: SIMD3<Float>,
+                                       snapshot: RenderFrameSnapshot) -> LocalReflectionProbeSelection? {
+            var bestSelection: LocalReflectionProbeSelection?
+
+            for probe in snapshot.reflectionProbes {
+                guard probe.enabled,
+                      probe.runtimeReady,
+                      let prefilteredHandle = probe.prefilteredHandle else { continue }
+                guard let influence = evaluateInfluence(probe: probe, samplePosition: samplePosition) else {
+                    continue
+                }
+
+                let uniform = LocalReflectionProbeUniform(
+                    probePositionAndWeight: SIMD4<Float>(probe.worldTransform.position, influence.weight),
+                    boxExtentsAndBlendDistance: SIMD4<Float>(influence.boxExtents, influence.blendDistance),
+                    intensityAndFlags: SIMD4<Float>(max(probe.intensity, 0.0), 1.0, Float(probe.priority), 0.0),
+                    worldToProbeMatrix: influence.worldToProbe
+                )
+                let selection = LocalReflectionProbeSelection(
+                    prefilteredHandle: prefilteredHandle,
+                    uniform: uniform,
+                    priority: probe.priority,
+                    weight: influence.weight,
+                    distanceSquared: influence.distanceSquared,
+                    stableEntityKey: probe.entity.id
+                )
+
+                if prefers(selection, over: bestSelection) {
+                    bestSelection = selection
+                }
+            }
+
+            return bestSelection
+        }
+
+        static func selectDebugProbe(at samplePosition: SIMD3<Float>,
+                                     snapshot: RenderFrameSnapshot) -> DebugReflectionProbeSelectionCandidate? {
+            var bestSelection: DebugReflectionProbeSelectionCandidate?
+
+            for probe in snapshot.reflectionProbes {
+                guard probe.enabled else { continue }
+                guard let influence = evaluateInfluence(probe: probe, samplePosition: samplePosition) else {
+                    continue
+                }
+
+                let candidate = DebugReflectionProbeSelectionCandidate(
+                    stableEntityKey: probe.entity.id,
+                    priority: probe.priority,
+                    weight: influence.weight,
+                    distanceSquared: influence.distanceSquared
+                )
+                if prefers(candidate, over: bestSelection) {
+                    bestSelection = candidate
+                }
+            }
+
+            return bestSelection
+        }
+
+        static func fallbackReason(for snapshot: RenderFrameSnapshot) -> ReflectionProbeDebugFallbackReason {
+            let hasEnabledProbes = snapshot.reflectionProbes.contains { $0.enabled }
+            let hasReadyProbes = snapshot.reflectionProbes.contains {
+                $0.enabled && $0.runtimeReady && $0.prefilteredHandle != nil
+            }
+            if !hasEnabledProbes {
+                return .noEnabledProbes
+            }
+            if !hasReadyProbes {
+                return .noReadyProbes
+            }
+            // If probes exist and at least one is runtime-ready but no candidate was selected,
+            // the sample point is simply outside every authored influence volume.
+            return .outsideInfluence
+        }
+
+        private static func evaluateInfluence(probe: ReflectionProbeSnapshot,
+                                              samplePosition: SIMD3<Float>) -> ReflectionProbeInfluence? {
+            let boxExtents = max(probe.boxExtents, SIMD3<Float>(repeating: 0.001))
+            let probeTransform = TransformComponent(
+                position: probe.worldTransform.position,
+                rotation: probe.worldTransform.rotation,
+                scale: SIMD3<Float>(repeating: 1.0)
+            )
+            let worldToProbe = simd_inverse(modelMatrix(for: probeTransform))
+            let sampleLocal4 = worldToProbe * SIMD4<Float>(samplePosition, 1.0)
+            let sampleLocal = SIMD3<Float>(sampleLocal4.x, sampleLocal4.y, sampleLocal4.z)
+            let absLocal = abs(sampleLocal)
+            let excess = max(absLocal - boxExtents, SIMD3<Float>(repeating: 0.0))
+            let maxExcess = max(excess.x, max(excess.y, excess.z))
+            let blendDistance = max(probe.blendDistance, 0.0)
+
+            let weight: Float
+            if blendDistance <= 0 {
+                guard maxExcess == 0 else { return nil }
+                weight = 1.0
+            } else {
+                guard maxExcess <= blendDistance else { return nil }
+                weight = max(0.0, 1.0 - (maxExcess / blendDistance))
+            }
+
+            let distanceSquared = simd_length_squared(probe.worldTransform.position - samplePosition)
+            return ReflectionProbeInfluence(
+                weight: weight,
+                distanceSquared: distanceSquared,
+                boxExtents: boxExtents,
+                blendDistance: blendDistance,
+                worldToProbe: worldToProbe
+            )
+        }
+
+        private static func prefers(_ candidate: DebugReflectionProbeSelectionCandidate,
+                                    over current: DebugReflectionProbeSelectionCandidate?) -> Bool {
+            guard let current else { return true }
+            if candidate.priority != current.priority {
+                return candidate.priority > current.priority
+            }
+            if candidate.weight != current.weight {
+                return candidate.weight > current.weight
+            }
+            if candidate.distanceSquared != current.distanceSquared {
+                return candidate.distanceSquared < current.distanceSquared
+            }
+            return candidate.stableEntityKey.uuidString < current.stableEntityKey.uuidString
+        }
+
+        private static func prefers(_ candidate: LocalReflectionProbeSelection,
+                                    over current: LocalReflectionProbeSelection?) -> Bool {
+            guard let current else { return true }
+            if candidate.priority != current.priority {
+                return candidate.priority > current.priority
+            }
+            if candidate.weight != current.weight {
+                return candidate.weight > current.weight
+            }
+            if candidate.distanceSquared != current.distanceSquared {
+                return candidate.distanceSquared < current.distanceSquared
+            }
+            return candidate.stableEntityKey.uuidString < current.stableEntityKey.uuidString
+        }
+    }
+
     private struct RenderBatchBuilder {
         var mesh: MCMesh
         var submeshIndex: Int?
@@ -1807,7 +2312,7 @@ public enum SceneRenderer {
     private static func resolveLocalReflectionProbeBindings(bounds: InstanceBounds,
                                                             snapshot: RenderFrameSnapshot,
                                                             baseBindings: MaterialBindings) -> MaterialBindings {
-        guard let selection = selectLocalReflectionProbe(at: bounds.center, snapshot: snapshot) else {
+        guard let selection = LocalReflectionProbeSelectionPolicy.selectRuntimeProbe(at: bounds.center, snapshot: snapshot) else {
             return baseBindings
         }
         var bindings = baseBindings
@@ -1818,75 +2323,21 @@ public enum SceneRenderer {
 
     private static func selectLocalReflectionProbe(for bounds: InstanceBounds,
                                                    snapshot: RenderFrameSnapshot) -> LocalReflectionProbeSelection? {
-        selectLocalReflectionProbe(at: bounds.center, snapshot: snapshot)
+        LocalReflectionProbeSelectionPolicy.selectRuntimeProbe(at: bounds.center, snapshot: snapshot)
     }
 
     private static func selectLocalReflectionProbe(at samplePosition: SIMD3<Float>,
                                                    snapshot: RenderFrameSnapshot) -> LocalReflectionProbeSelection? {
-        var bestSelection: LocalReflectionProbeSelection?
-
-        for probe in snapshot.reflectionProbes {
-            guard probe.enabled,
-                  probe.runtimeReady,
-                  let prefilteredHandle = probe.prefilteredHandle else { continue }
-            guard let influence = evaluateReflectionProbeInfluence(probe: probe, samplePosition: samplePosition) else {
-                continue
-            }
-            let boxExtents = influence.boxExtents
-            let blendDistance = influence.blendDistance
-            let uniform = LocalReflectionProbeUniform(
-                probePositionAndWeight: SIMD4<Float>(probe.worldTransform.position, influence.weight),
-                boxExtentsAndBlendDistance: SIMD4<Float>(boxExtents, blendDistance),
-                intensityAndFlags: SIMD4<Float>(max(probe.intensity, 0.0), 1.0, Float(probe.priority), 0.0),
-                worldToProbeMatrix: influence.worldToProbe
-            )
-            let selection = LocalReflectionProbeSelection(
-                prefilteredHandle: prefilteredHandle,
-                uniform: uniform,
-                priority: probe.priority,
-                weight: influence.weight,
-                distanceSquared: influence.distanceSquared,
-                stableEntityKey: probe.entity.id
-            )
-
-            if shouldPreferLocalReflectionProbe(selection, over: bestSelection) {
-                bestSelection = selection
-            }
-        }
-
-        return bestSelection
+        LocalReflectionProbeSelectionPolicy.selectRuntimeProbe(at: samplePosition, snapshot: snapshot)
     }
 
     private static func selectDebugReflectionProbe(at samplePosition: SIMD3<Float>,
                                                    snapshot: RenderFrameSnapshot) -> DebugReflectionProbeSelectionCandidate? {
-        var bestSelection: DebugReflectionProbeSelectionCandidate?
-
-        for probe in snapshot.reflectionProbes {
-            guard probe.enabled else { continue }
-            guard let influence = evaluateReflectionProbeInfluence(probe: probe, samplePosition: samplePosition) else {
-                continue
-            }
-
-            let candidate = DebugReflectionProbeSelectionCandidate(
-                stableEntityKey: probe.entity.id,
-                priority: probe.priority,
-                weight: influence.weight,
-                distanceSquared: influence.distanceSquared
-            )
-            if shouldPreferDebugReflectionProbe(candidate, over: bestSelection) {
-                bestSelection = candidate
-            }
-        }
-
-        return bestSelection
+        LocalReflectionProbeSelectionPolicy.selectDebugProbe(at: samplePosition, snapshot: snapshot)
     }
 
     public static func debugLocalReflectionProbeSelection(samplePosition: SIMD3<Float>,
                                                           snapshot: RenderFrameSnapshot) -> ReflectionProbeDebugSelection {
-        let hasEnabledProbes = snapshot.reflectionProbes.contains { $0.enabled }
-        let hasReadyProbes = snapshot.reflectionProbes.contains {
-            $0.enabled && $0.runtimeReady && $0.prefilteredHandle != nil
-        }
         if let runtimeSelection = selectLocalReflectionProbe(at: samplePosition, snapshot: snapshot) {
             return ReflectionProbeDebugSelection(
                 selectedProbeEntityID: runtimeSelection.stableEntityKey,
@@ -1902,82 +2353,11 @@ public enum SceneRenderer {
             )
         }
 
-        let fallbackReason: ReflectionProbeDebugFallbackReason
-        if !hasEnabledProbes {
-            fallbackReason = .noEnabledProbes
-        } else if !hasReadyProbes {
-            fallbackReason = .noReadyProbes
-        } else {
-            fallbackReason = .outsideInfluence
-        }
         return ReflectionProbeDebugSelection(
             selectedProbeEntityID: nil,
             weight: 0.0,
-            fallbackReason: fallbackReason
+            fallbackReason: LocalReflectionProbeSelectionPolicy.fallbackReason(for: snapshot)
         )
-    }
-
-    private static func evaluateReflectionProbeInfluence(probe: ReflectionProbeSnapshot,
-                                                         samplePosition: SIMD3<Float>) -> (weight: Float,
-                                                                                           distanceSquared: Float,
-                                                                                           boxExtents: SIMD3<Float>,
-                                                                                           blendDistance: Float,
-                                                                                           worldToProbe: matrix_float4x4)? {
-        let boxExtents = max(probe.boxExtents, SIMD3<Float>(repeating: 0.001))
-        let probeTransform = TransformComponent(
-            position: probe.worldTransform.position,
-            rotation: probe.worldTransform.rotation,
-            scale: SIMD3<Float>(repeating: 1.0)
-        )
-        let worldToProbe = simd_inverse(modelMatrix(for: probeTransform))
-        let sampleLocal4 = worldToProbe * SIMD4<Float>(samplePosition, 1.0)
-        let sampleLocal = SIMD3<Float>(sampleLocal4.x, sampleLocal4.y, sampleLocal4.z)
-        let absLocal = abs(sampleLocal)
-        let excess = max(absLocal - boxExtents, SIMD3<Float>(repeating: 0.0))
-        let maxExcess = max(excess.x, max(excess.y, excess.z))
-        let blendDistance = max(probe.blendDistance, 0.0)
-
-        let weight: Float
-        if blendDistance <= 0 {
-            guard maxExcess == 0 else { return nil }
-            weight = 1.0
-        } else {
-            guard maxExcess <= blendDistance else { return nil }
-            weight = max(0.0, 1.0 - (maxExcess / blendDistance))
-        }
-
-        let distanceSquared = simd_length_squared(probe.worldTransform.position - samplePosition)
-        return (weight, distanceSquared, boxExtents, blendDistance, worldToProbe)
-    }
-
-    private static func shouldPreferDebugReflectionProbe(_ candidate: DebugReflectionProbeSelectionCandidate,
-                                                         over current: DebugReflectionProbeSelectionCandidate?) -> Bool {
-        guard let current else { return true }
-        if candidate.priority != current.priority {
-            return candidate.priority > current.priority
-        }
-        if candidate.weight != current.weight {
-            return candidate.weight > current.weight
-        }
-        if candidate.distanceSquared != current.distanceSquared {
-            return candidate.distanceSquared < current.distanceSquared
-        }
-        return candidate.stableEntityKey.uuidString < current.stableEntityKey.uuidString
-    }
-
-    private static func shouldPreferLocalReflectionProbe(_ candidate: LocalReflectionProbeSelection,
-                                                         over current: LocalReflectionProbeSelection?) -> Bool {
-        guard let current else { return true }
-        if candidate.priority != current.priority {
-            return candidate.priority > current.priority
-        }
-        if candidate.weight != current.weight {
-            return candidate.weight > current.weight
-        }
-        if candidate.distanceSquared != current.distanceSquared {
-            return candidate.distanceSquared < current.distanceSquared
-        }
-        return candidate.stableEntityKey.uuidString < current.stableEntityKey.uuidString
     }
 
     private static func validatedSkinningRange(item: RenderItem,
@@ -2177,9 +2557,9 @@ public enum SceneRenderer {
         )
     }
 
-    public static func exposureSettings(from camera: CameraComponent, forceAutoExposure: Bool = false) -> SceneViewExposureSettings {
+    public static func exposureSettings(from camera: CameraComponent) -> SceneViewExposureSettings {
         SceneViewExposureSettings(
-            autoExposureEnabled: (forceAutoExposure || camera.autoExposureEnabled) ? 1 : 0,
+            autoExposureEnabled: camera.autoExposureEnabled ? 1 : 0,
             manualExposure: max(camera.manualExposure, 0.0001),
             exposureCompensation: camera.exposureCompensation,
             autoExposureMin: max(camera.autoExposureMin, 0.0001),

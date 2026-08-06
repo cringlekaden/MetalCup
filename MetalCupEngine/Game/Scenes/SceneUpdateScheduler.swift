@@ -16,6 +16,7 @@ struct SceneUpdateScheduler {
         let ensureCamera: () -> Void
         let updateCamera: (_ isPlaying: Bool, _ frame: FrameContext) -> Void
         let updateSceneConstants: (FrameContext) -> Void
+        let updateEnvironment: (_ frame: FrameContext, _ isPlaying: Bool, _ isPaused: Bool) -> Void
         let updateSky: () -> Void
         let handleRuntimeCursorToggle: (_ isPlaying: Bool) -> Void
         let scriptUpdate: (_ dt: Float, _ runRuntimeScripts: Bool) -> Void
@@ -47,6 +48,7 @@ struct SceneUpdateScheduler {
         pipeline.ensureCamera()
         pipeline.updateCamera(request.isPlaying, request.frame)
         pipeline.updateSceneConstants(request.frame)
+        pipeline.updateEnvironment(request.frame, request.isPlaying, request.isPaused)
         pipeline.updateSky()
         pipeline.handleRuntimeCursorToggle(request.isPlaying)
         pipeline.scriptUpdate(request.frame.time.deltaTime, request.runRuntimeScripts)

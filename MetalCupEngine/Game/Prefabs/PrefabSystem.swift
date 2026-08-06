@@ -301,19 +301,28 @@ public final class PrefabSystem {
             }
         }
 
-        if !isOverridden(.sky) {
-            if let sky = prefabEntity.components.sky {
-                ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
-            } else {
-                ecs.remove(SkyComponent.self, from: entity)
-            }
-        }
-
         if !isOverridden(.skyLight) {
             if let skyLight = prefabEntity.components.skyLight {
-                ecs.add(SkyLightComponent(
+                let component = SkyLightComponent(
                     mode: SkyMode(rawValue: skyLight.mode) ?? .hdri,
                     enabled: skyLight.enabled,
+                    hdriHandle: skyLight.hdriHandle,
+                    timeOfDay: skyLight.timeOfDay,
+                    weatherType: AtmosphereWeatherType(rawValue: skyLight.weatherType) ?? .clear,
+                    secondaryWeatherType: AtmosphereWeatherType(rawValue: skyLight.secondaryWeatherType) ?? .clear,
+                    weatherBlend: skyLight.weatherBlend,
+                    weatherAmount: skyLight.weatherAmount,
+                    atmosphereAmount: skyLight.atmosphereAmount,
+                    cloudCoverage: skyLight.cloudCoverage,
+                    cloudStyle: AtmosphereCloudStyle(rawValue: skyLight.cloudStyle) ?? .puffy,
+                    temperature: skyLight.temperature,
+                    mood: skyLight.mood,
+                    moonIntensity: skyLight.moonIntensity,
+                    moonSizeDegrees: skyLight.moonSizeDegrees,
+                    starIntensity: skyLight.starIntensity,
+                    fogAmount: skyLight.fogAmount,
+                    fogHeight: skyLight.fogHeight,
+                    fogDistance: skyLight.fogDistance,
                     intensity: skyLight.intensity,
                     skyTint: skyLight.skyTint.toSIMD(),
                     turbidity: skyLight.turbidity,
@@ -340,15 +349,48 @@ public final class PrefabSystem {
                     cloudsHeight: skyLight.cloudsHeight,
                     cloudsThickness: skyLight.cloudsThickness,
                     cloudsBrightness: skyLight.cloudsBrightness,
-                    cloudsSunInfluence: skyLight.cloudsSunInfluence,
-                    hdriHandle: skyLight.hdriHandle,
-                    needsRebuild: true,
-                    rebuildRequested: false,
-                    realtimeUpdate: skyLight.realtimeUpdate,
-                    lastRebuildTime: 0.0
-                ), to: entity)
+                    cloudsSunInfluence: skyLight.cloudsSunInfluence
+                )
+                ecs.add(component, to: entity)
+                let environmentState = prefabEntity.components.environmentState?.toComponent()
+                    ?? EnvironmentStateComponent(seededFromAuthored: component)
+                ecs.add(environmentState, to: entity)
+                let iblRealtimeUpdate = prefabEntity.components.skyIBLState?.realtimeUpdate
+                    ?? skyLight.realtimeUpdate
+                    ?? true
+                let iblState = SkyIBLStateComponent(realtimeUpdate: iblRealtimeUpdate)
+                ecs.add(iblState, to: entity)
             } else {
                 ecs.remove(SkyLightComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.environmentState), prefabEntity.components.skyLight == nil {
+            if let environmentState = prefabEntity.components.environmentState {
+                ecs.add(environmentState.toComponent(), to: entity)
+            } else {
+                ecs.remove(EnvironmentStateComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.skyIBLState), prefabEntity.components.skyLight == nil {
+            if let skyIBLState = prefabEntity.components.skyIBLState {
+                ecs.add(SkyIBLStateComponent(realtimeUpdate: skyIBLState.realtimeUpdate), to: entity)
+            } else {
+                ecs.remove(SkyIBLStateComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.environment) {
+            if let environmentDTO = prefabEntity.components.environment {
+                let environment = environmentDTO.toComponent()
+                ecs.add(environment, to: entity)
+                ecs.add(EnvironmentRuntimeStateComponent.default(from: environment), to: entity)
+                ecs.add(EnvironmentIBLStateComponent.defaultNeedsRebuild, to: entity)
+            } else {
+                ecs.remove(EnvironmentComponent.self, from: entity)
+                ecs.remove(EnvironmentRuntimeStateComponent.self, from: entity)
+                ecs.remove(EnvironmentIBLStateComponent.self, from: entity)
             }
         }
 

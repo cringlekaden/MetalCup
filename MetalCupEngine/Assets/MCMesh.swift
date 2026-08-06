@@ -877,11 +877,26 @@ public class MCMesh {
         renderCommandEncoder.setFragmentTexture(ibl.irradiance ?? fallback.blackCubemap, index: FragmentTextureIndex.irradiance)
         renderCommandEncoder.setFragmentTexture(ibl.prefiltered ?? fallback.blackCubemap, index: FragmentTextureIndex.prefiltered)
         renderCommandEncoder.setFragmentTexture(ibl.brdfLut ?? fallback.brdfLut, index: FragmentTextureIndex.brdfLut)
-        var resolvedLocalReflectionProbe = localReflectionProbe ?? LocalReflectionProbeUniform()
+        let resolvedLocalReflectionTexture = localReflectionPrefilteredHandle.flatMap { assetManager?.texture(handle: $0) }
+        let diagnosticLocalReflectionTexture = frameContext.rendererSettings().diagnosticFlags.contains(.orientationLocalProbe)
+            ? assetManager?.texture(handle: BuiltinAssets.diagnosticOrientationPrefilteredCubemap)
+            : nil
+        // If the selected local probe cubemap is unavailable at draw time, disable the local probe
+        // uniform so the shader keeps the global IBL path instead of mixing against a black fallback.
+        let resolvedLocalReflectionProbeValue: LocalReflectionProbeUniform
+        if let localReflectionProbe, resolvedLocalReflectionTexture != nil || diagnosticLocalReflectionTexture != nil {
+            resolvedLocalReflectionProbeValue = localReflectionProbe
+        } else {
+            resolvedLocalReflectionProbeValue = LocalReflectionProbeUniform()
+        }
+        var resolvedLocalReflectionProbe = resolvedLocalReflectionProbeValue
         renderCommandEncoder.setFragmentBytes(&resolvedLocalReflectionProbe,
                                               length: LocalReflectionProbeUniform.stride,
                                               index: FragmentBufferIndex.localReflectionProbe)
-        let localReflectionTexture = localReflectionPrefilteredHandle.flatMap { assetManager?.texture(handle: $0) } ?? fallback.blackCubemap
+        let localReflectionTexture = diagnosticLocalReflectionTexture
+            ?? resolvedLocalReflectionTexture
+            ?? ibl.prefiltered
+            ?? fallback.blackCubemap
         renderCommandEncoder.setFragmentTexture(localReflectionTexture, index: FragmentTextureIndex.localReflectionPrefiltered)
         return resolved.flags
     }
@@ -1056,11 +1071,26 @@ class Submesh {
         renderCommandEncoder.setFragmentTexture(ibl.irradiance ?? fallback.blackCubemap, index: FragmentTextureIndex.irradiance)
         renderCommandEncoder.setFragmentTexture(ibl.prefiltered ?? fallback.blackCubemap, index: FragmentTextureIndex.prefiltered)
         renderCommandEncoder.setFragmentTexture(ibl.brdfLut ?? fallback.brdfLut, index: FragmentTextureIndex.brdfLut)
-        var resolvedLocalReflectionProbe = localReflectionProbe ?? LocalReflectionProbeUniform()
+        let resolvedLocalReflectionTexture = localReflectionPrefilteredHandle.flatMap { assetManager?.texture(handle: $0) }
+        let diagnosticLocalReflectionTexture = frameContext.rendererSettings().diagnosticFlags.contains(.orientationLocalProbe)
+            ? assetManager?.texture(handle: BuiltinAssets.diagnosticOrientationPrefilteredCubemap)
+            : nil
+        // Keep invalid/stale local probes from blacking out reflections by dropping back to the
+        // global IBL path whenever the selected local cubemap cannot be resolved for this draw.
+        let resolvedLocalReflectionProbeValue: LocalReflectionProbeUniform
+        if let localReflectionProbe, resolvedLocalReflectionTexture != nil || diagnosticLocalReflectionTexture != nil {
+            resolvedLocalReflectionProbeValue = localReflectionProbe
+        } else {
+            resolvedLocalReflectionProbeValue = LocalReflectionProbeUniform()
+        }
+        var resolvedLocalReflectionProbe = resolvedLocalReflectionProbeValue
         renderCommandEncoder.setFragmentBytes(&resolvedLocalReflectionProbe,
                                               length: LocalReflectionProbeUniform.stride,
                                               index: FragmentBufferIndex.localReflectionProbe)
-        let localReflectionTexture = localReflectionPrefilteredHandle.flatMap { assetManager?.texture(handle: $0) } ?? fallback.blackCubemap
+        let localReflectionTexture = diagnosticLocalReflectionTexture
+            ?? resolvedLocalReflectionTexture
+            ?? ibl.prefiltered
+            ?? fallback.blackCubemap
         renderCommandEncoder.setFragmentTexture(localReflectionTexture, index: FragmentTextureIndex.localReflectionPrefiltered)
         return resolved.flags
     }

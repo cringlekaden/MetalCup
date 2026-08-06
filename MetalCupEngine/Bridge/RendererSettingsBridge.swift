@@ -204,6 +204,8 @@ public func MCERendererGetIBLIntensity(_ contextPtr: UnsafeRawPointer?) -> Float
 @_cdecl("MCERendererSetIBLIntensity")
 public func MCERendererSetIBLIntensity(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
     updateSettings(contextPtr) { settings in
+        // Retain the legacy bridge for compatibility/debugging, but normal workflow should
+        // keep this override at 1.0 and balance indirect light through sky + exposure instead.
         settings.iblIntensity = value
     }
 }
@@ -294,6 +296,18 @@ public func MCERendererSetForwardPlusEnabled(_ contextPtr: UnsafeRawPointer?, _ 
     }
 }
 
+@_cdecl("MCERendererGetDisableLocalProbeParallaxCorrection")
+public func MCERendererGetDisableLocalProbeParallaxCorrection(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    (getSettings(contextPtr).perfFlags & RendererPerfFlags.disableLocalProbeParallaxCorrection.rawValue) != 0 ? 1 : 0
+}
+
+@_cdecl("MCERendererSetDisableLocalProbeParallaxCorrection")
+public func MCERendererSetDisableLocalProbeParallaxCorrection(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setPerfFlag(.disableLocalProbeParallaxCorrection, enabled: value != 0)
+    }
+}
+
 @_cdecl("MCERendererGetForwardPlusMaxLightsPerCluster")
 public func MCERendererGetForwardPlusMaxLightsPerCluster(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
     _ = contextPtr
@@ -354,6 +368,42 @@ public func MCERendererGetShadingDebugMode(_ contextPtr: UnsafeRawPointer?) -> U
 public func MCERendererSetShadingDebugMode(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
     updateSettings(contextPtr) { settings in
         settings.shadingDebugMode = value
+    }
+}
+
+@_cdecl("MCERendererGetDiagnosticOrientationSkyboxEnabled")
+public func MCERendererGetDiagnosticOrientationSkyboxEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).diagnosticFlags.contains(.orientationSkybox) ? 1 : 0
+}
+
+@_cdecl("MCERendererSetDiagnosticOrientationSkyboxEnabled")
+public func MCERendererSetDiagnosticOrientationSkyboxEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setDiagnosticFlag(.orientationSkybox, enabled: value != 0)
+    }
+}
+
+@_cdecl("MCERendererGetDiagnosticOrientationGlobalIBLEnabled")
+public func MCERendererGetDiagnosticOrientationGlobalIBLEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).diagnosticFlags.contains(.orientationGlobalIBL) ? 1 : 0
+}
+
+@_cdecl("MCERendererSetDiagnosticOrientationGlobalIBLEnabled")
+public func MCERendererSetDiagnosticOrientationGlobalIBLEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setDiagnosticFlag(.orientationGlobalIBL, enabled: value != 0)
+    }
+}
+
+@_cdecl("MCERendererGetDiagnosticOrientationLocalProbeEnabled")
+public func MCERendererGetDiagnosticOrientationLocalProbeEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).diagnosticFlags.contains(.orientationLocalProbe) ? 1 : 0
+}
+
+@_cdecl("MCERendererSetDiagnosticOrientationLocalProbeEnabled")
+public func MCERendererSetDiagnosticOrientationLocalProbeEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setDiagnosticFlag(.orientationLocalProbe, enabled: value != 0)
     }
 }
 
@@ -633,6 +683,75 @@ public func MCERendererGetHeightFogEnabled(_ contextPtr: UnsafeRawPointer?) -> U
 public func MCERendererSetHeightFogEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
     updateSettings(contextPtr) { settings in
         settings.setHeightFogEnabled(value != 0)
+    }
+}
+
+@_cdecl("MCERendererGetFogAmount")
+public func MCERendererGetFogAmount(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).fogAmount
+}
+
+@_cdecl("MCERendererSetFogAmount")
+public func MCERendererSetFogAmount(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setFogAmount(value)
+    }
+}
+
+@_cdecl("MCERendererGetFogHeight")
+public func MCERendererGetFogHeight(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).fogHeight
+}
+
+@_cdecl("MCERendererSetFogHeight")
+public func MCERendererSetFogHeight(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setFogHeight(value)
+    }
+}
+
+@_cdecl("MCERendererGetFogDistance")
+public func MCERendererGetFogDistance(_ contextPtr: UnsafeRawPointer?) -> Float {
+    getSettings(contextPtr).fogDistance
+}
+
+@_cdecl("MCERendererSetFogDistance")
+public func MCERendererSetFogDistance(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setFogDistance(value)
+    }
+}
+
+@_cdecl("MCERendererGetFogColorMode")
+public func MCERendererGetFogColorMode(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).heightFogColorMode.rawValue
+}
+
+@_cdecl("MCERendererSetFogColorMode")
+public func MCERendererSetFogColorMode(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setHeightFogColorMode(FogColorMode(rawValue: value) ?? .manual)
+    }
+}
+
+@_cdecl("MCERendererGetFogManualColor")
+public func MCERendererGetFogManualColor(_ contextPtr: UnsafeRawPointer?,
+                                         _ r: UnsafeMutablePointer<Float>?,
+                                         _ g: UnsafeMutablePointer<Float>?,
+                                         _ b: UnsafeMutablePointer<Float>?) {
+    let color = getSettings(contextPtr).fogManualColor
+    r?.pointee = color.x
+    g?.pointee = color.y
+    b?.pointee = color.z
+}
+
+@_cdecl("MCERendererSetFogManualColor")
+public func MCERendererSetFogManualColor(_ contextPtr: UnsafeRawPointer?,
+                                         _ r: Float,
+                                         _ g: Float,
+                                         _ b: Float) {
+    updateSettings(contextPtr) { settings in
+        settings.setFogManualColor(SIMD3<Float>(r, g, b))
     }
 }
 

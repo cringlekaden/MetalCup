@@ -34,6 +34,20 @@ public enum AOQualityPreset: UInt32 {
     case custom = 4
 }
 
+public enum FogColorMode: UInt32 {
+    case manual = 0
+    case matchActiveSky = 1
+}
+
+public struct RendererDiagnosticFlags: OptionSet {
+    public let rawValue: UInt32
+    public init(rawValue: UInt32) { self.rawValue = rawValue }
+
+    public static let orientationSkybox = RendererDiagnosticFlags(rawValue: 1 << 0)
+    public static let orientationGlobalIBL = RendererDiagnosticFlags(rawValue: 1 << 1)
+    public static let orientationLocalProbe = RendererDiagnosticFlags(rawValue: 1 << 2)
+}
+
 public enum ShadowFilterMode: UInt32 {
     case hard = 0
     case pcf = 1
@@ -139,7 +153,7 @@ public typealias BloomUniforms = RendererSettings
 public typealias RendererUniforms = RendererSettings
 
 public struct RendererSettings: sizeable {
-    public static let expectedMetalStride: Int = 416
+    public static let expectedMetalStride: Int = 464
 
     public init() {}
 
@@ -164,6 +178,8 @@ public struct RendererSettings: sizeable {
     public var gamma: Float = 2.2
 
     public var iblEnabled: UInt32 = 1
+    // Compatibility/debug-only global IBL override. Normal look-dev should leave this at 1.0
+    // and derive indirect brightness from the sky model plus camera exposure.
     public var iblIntensity: Float = 1.0
     // Reserved to preserve Swift/Metal uniform ABI for an unused IBL override slot.
     public var reservedIBL0: UInt32 = 0
@@ -196,6 +212,8 @@ public struct RendererSettings: sizeable {
     public var ssaoBlurSharpness: Float = 24.0
 
     // Enables fullscreen height fog evaluation in later post passes.
+    // Public authoring ownership now lives on SkyLightComponent; these remain the
+    // renderer-consumption values used by the existing fog pass.
     public var heightFogEnabled: UInt32 = 0
     // World-space Y level where fog density is anchored before falloff is applied.
     public var heightFogBaseHeight: Float = 0.0
@@ -209,7 +227,8 @@ public struct RendererSettings: sizeable {
     public var heightFogStartDistance: Float = 3.0
     // Optional uniform distance extinction layered on top of the height term.
     public var heightFogDistanceDensity: Float = 0.0
-    // Explicit padding keeps the Swift/Metal ABI for the fog block easy to mirror.
+    // Reserved fog metadata storage. The shader ignores these values, so the editor uses them for
+    // public-facing fog UX state without changing the Swift/Metal ABI.
     public var heightFogPadding: SIMD2<Float> = .zero
 
     public var outlineEnabled: UInt32 = 1
@@ -227,6 +246,29 @@ public struct RendererSettings: sizeable {
     public var shadows: ShadowsSettings = ShadowsSettings()
     public var padding0: SIMD4<Float> = .zero
     public var padding1: SIMD4<Float> = .zero
+    /// xyz = world-space direction from the scene toward the visible sun, w = night fog scale.
+    public var aerialFogSunDirectionAndNight: SIMD4<Float> = SIMD4<Float>(0.0, 1.0, 0.0, 0.45)
+    /// rgb = sun/transmittance inscattering color, w = forward scattering strength.
+    public var aerialFogSunColorAndStrength: SIMD4<Float> = SIMD4<Float>(1.0, 0.95, 0.9, 0.25)
+    /// x = inscattering strength, y = height extinction scale, z = HG anisotropy, w = max aerial distance.
+    public var aerialFogParams: SIMD4<Float> = SIMD4<Float>(1.0, 1.0, 0.76, 2600.0)
+}
+
+public extension RendererSettings {
+    var diagnosticFlags: RendererDiagnosticFlags {
+        get { RendererDiagnosticFlags(rawValue: reservedDebug0.y) }
+        set { reservedDebug0.y = newValue.rawValue }
+    }
+
+    mutating func setDiagnosticFlag(_ flag: RendererDiagnosticFlags, enabled: Bool) {
+        var flags = diagnosticFlags
+        if enabled {
+            flags.insert(flag)
+        } else {
+            flags.remove(flag)
+        }
+        diagnosticFlags = flags
+    }
 }
 
 public struct RendererPerfFlags: OptionSet {
@@ -240,6 +282,7 @@ public struct RendererPerfFlags: OptionSet {
     public static let disableSheen = RendererPerfFlags(rawValue: 1 << 4)
     public static let skipSpecIBLHighRoughness = RendererPerfFlags(rawValue: 1 << 5)
     public static let forwardPlusEnabled = RendererPerfFlags(rawValue: 1 << 6)
+    public static let disableLocalProbeParallaxCorrection = RendererPerfFlags(rawValue: 1 << 7)
 }
 
 public enum ForwardPlusConfig {
@@ -266,6 +309,74 @@ public extension RendererSettings {
     // Deprecated alias retained for legacy call sites still using SSAO terminology.
     var isSSAOEnabled: Bool { ssaoEnabled != 0 }
     var isHeightFogEnabled: Bool { heightFogEnabled != 0 }
+    var heightFogColorMode: FogColorMode {
+        get {
+            FogColorMode(rawValue: UInt32(max(0, Int(heightFogPadding.x.rounded())))) ?? .manual
+        }
+        set {
+            heightFogPadding.x = Float(newValue.rawValue)
+        }
+    }
+    var fogAmount: Float {
+        get { heightFogDensity }
+        set { heightFogDensity = max(0.0, min(newValue, 1.0)) }
+    }
+    var fogHeight: Float {
+        get { heightFogBaseHeight }
+        set { heightFogBaseHeight = newValue }
+    }
+    var fogDistance: Float {
+        get { heightFogStartDistance }
+        set { heightFogStartDistance = max(0.0, newValue) }
+    }
+    var fogManualColor: SIMD3<Float> {
+        get { heightFogColor }
+        set { heightFogColor = newValue }
+    }
+    var fogSkyMatchColor: SIMD3<Float> {
+        get { SIMD3<Float>(padding0.x, padding0.y, padding0.z) }
+        set { padding0 = SIMD4<Float>(newValue, padding0.w) }
+    }
+    var fogSkyHorizonColor: SIMD3<Float> {
+        get { SIMD3<Float>(padding1.x, padding1.y, padding1.z) }
+        set { padding1 = SIMD4<Float>(newValue, padding1.w) }
+    }
+    var fogSkySunScatterStrength: Float {
+        get { padding1.w }
+        set { padding1.w = max(0.0, min(newValue, 1.0)) }
+    }
+    var aerialFogSunDirection: SIMD3<Float> {
+        get { SIMD3<Float>(aerialFogSunDirectionAndNight.x, aerialFogSunDirectionAndNight.y, aerialFogSunDirectionAndNight.z) }
+        set { aerialFogSunDirectionAndNight = SIMD4<Float>(newValue, aerialFogSunDirectionAndNight.w) }
+    }
+    var aerialFogNightScale: Float {
+        get { aerialFogSunDirectionAndNight.w }
+        set { aerialFogSunDirectionAndNight.w = max(0.0, min(newValue, 1.0)) }
+    }
+    var aerialFogSunColor: SIMD3<Float> {
+        get { SIMD3<Float>(aerialFogSunColorAndStrength.x, aerialFogSunColorAndStrength.y, aerialFogSunColorAndStrength.z) }
+        set { aerialFogSunColorAndStrength = SIMD4<Float>(newValue, aerialFogSunColorAndStrength.w) }
+    }
+    var aerialFogForwardScatteringStrength: Float {
+        get { aerialFogSunColorAndStrength.w }
+        set { aerialFogSunColorAndStrength.w = max(0.0, min(newValue, 2.0)) }
+    }
+    var aerialFogInscatteringStrength: Float {
+        get { aerialFogParams.x }
+        set { aerialFogParams.x = max(0.0, min(newValue, 2.0)) }
+    }
+    var aerialFogHeightExtinctionScale: Float {
+        get { aerialFogParams.y }
+        set { aerialFogParams.y = max(0.0, min(newValue, 4.0)) }
+    }
+    var aerialFogAnisotropy: Float {
+        get { aerialFogParams.z }
+        set { aerialFogParams.z = max(0.0, min(newValue, 0.95)) }
+    }
+    var aerialFogMaxDistance: Float {
+        get { aerialFogParams.w }
+        set { aerialFogParams.w = max(1.0, newValue) }
+    }
     var aoMethod: AOMethod {
         get {
             let rawValue = (ssaoReserved0 & Self.aoMethodMask) >> Self.aoMethodShift
@@ -325,6 +436,38 @@ public extension RendererSettings {
 
     mutating func setHeightFogEnabled(_ enabled: Bool) {
         heightFogEnabled = enabled ? 1 : 0
+    }
+
+    mutating func setHeightFogColorMode(_ mode: FogColorMode) {
+        heightFogColorMode = mode
+    }
+
+    mutating func setFogAmount(_ value: Float) {
+        fogAmount = value
+    }
+
+    mutating func setFogHeight(_ value: Float) {
+        fogHeight = value
+    }
+
+    mutating func setFogDistance(_ value: Float) {
+        fogDistance = value
+    }
+
+    mutating func setFogManualColor(_ value: SIMD3<Float>) {
+        fogManualColor = value
+    }
+
+    mutating func setFogSkyMatchColor(_ value: SIMD3<Float>) {
+        fogSkyMatchColor = value
+    }
+
+    mutating func setFogSkyHorizonColor(_ value: SIMD3<Float>) {
+        fogSkyHorizonColor = value
+    }
+
+    mutating func setFogSkySunScatterStrength(_ value: Float) {
+        fogSkySunScatterStrength = value
     }
 
     mutating func setAORadius(_ value: Float) {

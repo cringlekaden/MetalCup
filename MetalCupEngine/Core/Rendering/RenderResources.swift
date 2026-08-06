@@ -10,6 +10,10 @@ enum RenderResourceLifetime: String {
 }
 
 enum RenderNamedResourceKey {
+    // Post-chain semantic roles:
+    // - scene.color is the resolved HDR scene color after scene rasterization.
+    // - scene.colorFogged is the optional fogged variant of that resolved scene color.
+    // - post.finalColor is the final post/composite output consumed by the editor viewport.
     static let sceneColor = "scene.color"
     static let sceneColorFogged = "scene.colorFogged"
     static let sceneDepth = "scene.depth"
@@ -21,7 +25,6 @@ enum RenderNamedResourceKey {
     static let ssaoFiltered = "ao.filtered"
     static let ssaoPing = "ao.ping"
     static let postFinalColor = "post.finalColor"
-    static let sceneColorResolved = sceneColor
     static let forwardPlusCullingDepth = "forwardPlus.cullingDepth"
     static let forwardPlusTileLightGrid = "forwardPlus.tileLightGrid"
     static let forwardPlusTileLightIndexList = "forwardPlus.tileLightIndexList"
@@ -237,8 +240,10 @@ final class RenderResourceRegistry {
 }
 
 enum RenderResourceTexture {
+    // Resolved HDR scene color before later fullscreen/post passes.
     case baseColor
     case sceneColorFogged
+    // Final composited color that the editor samples for viewport presentation.
     case finalColor
     case baseDepth
     case sceneNormals
@@ -574,8 +579,8 @@ final class RenderResources {
             guard let texture = texture(key) else { continue }
             registry.registerTexture(key, texture: texture, lifetime: .persistent)
         }
-        if let sceneColorResolved = texture(.baseColor) {
-            registry.registerNamedTexture(RenderNamedResourceKey.sceneColor, texture: sceneColorResolved, lifetime: .persistent)
+        if let resolvedSceneColor = texture(.baseColor) {
+            registry.registerNamedTexture(RenderNamedResourceKey.sceneColor, texture: resolvedSceneColor, lifetime: .persistent)
         }
         if let foggedSceneColor = texture(.sceneColorFogged) {
             registry.registerNamedTexture(RenderNamedResourceKey.sceneColorFogged, texture: foggedSceneColor, lifetime: .persistent)
@@ -604,8 +609,8 @@ final class RenderResources {
         if let ssaoPing = texture(.ssaoPing) {
             registry.registerNamedTexture(RenderNamedResourceKey.ssaoPing, texture: ssaoPing, lifetime: .persistent)
         }
-        if let finalColor = texture(.finalColor) {
-            registry.registerNamedTexture(RenderNamedResourceKey.postFinalColor, texture: finalColor, lifetime: .persistent)
+        if let finalCompositeColor = texture(.finalColor) {
+            registry.registerNamedTexture(RenderNamedResourceKey.postFinalColor, texture: finalCompositeColor, lifetime: .persistent)
         }
         return registry
     }

@@ -10,6 +10,7 @@ public enum DepthStencilStateType {
     case LessNoWrite
     case LessEqualNoWrite
     case EqualNoWrite
+    case AlwaysNoWrite
 }
 
 public class DepthStencilStateLibrary: Library<DepthStencilStateType, MTLDepthStencilState> {
@@ -27,6 +28,7 @@ public class DepthStencilStateLibrary: Library<DepthStencilStateType, MTLDepthSt
         _library[.LessNoWrite] = LessNoWriteDepthStencilState(device: device)
         _library[.LessEqualNoWrite] = LessEqualNoWriteDepthStencilState(device: device)
         _library[.EqualNoWrite] = EqualNoWriteDepthStencilState(device: device)
+        _library[.AlwaysNoWrite] = AlwaysNoWriteDepthStencilState(device: device)
     }
 
     override subscript(_ type: DepthStencilStateType)->MTLDepthStencilState {
@@ -84,6 +86,16 @@ class EqualNoWriteDepthStencilState: DepthStencilState {
         let depthStencilDescriptor = MTLDepthStencilDescriptor()
         depthStencilDescriptor.isDepthWriteEnabled = false
         depthStencilDescriptor.depthCompareFunction = .equal
+        depthStencilState = device.makeDepthStencilState(descriptor: depthStencilDescriptor)
+    }
+}
+
+class AlwaysNoWriteDepthStencilState: DepthStencilState {
+    var depthStencilState: MTLDepthStencilState!
+    init(device: MTLDevice) {
+        let depthStencilDescriptor = MTLDepthStencilDescriptor()
+        depthStencilDescriptor.isDepthWriteEnabled = false
+        depthStencilDescriptor.depthCompareFunction = .always
         depthStencilState = device.makeDepthStencilState(descriptor: depthStencilDescriptor)
     }
 }

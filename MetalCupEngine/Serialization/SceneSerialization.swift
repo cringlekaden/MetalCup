@@ -65,8 +65,12 @@ public struct ComponentsDocument: Codable {
     public var characterController: CharacterControllerComponentDTO?
     public var audioSource: AudioSourceComponentDTO?
     public var audioListener: AudioListenerComponentDTO?
-    public var sky: SkyComponentDTO?
     public var skyLight: SkyLightComponentDTO?
+    public var environmentState: EnvironmentStateComponentDTO?
+    /// Migration-only decode surface for renderer-transient sky IBL state.
+    /// New scene writes intentionally leave this nil.
+    public var skyIBLState: SkyIBLStateComponentDTO?
+    public var environment: EnvironmentComponentDTO?
     public var reflectionProbe: ReflectionProbeComponentDTO?
     public var skyLightTag: TagComponentDTO?
     public var skySunTag: TagComponentDTO?
@@ -90,8 +94,10 @@ public struct ComponentsDocument: Codable {
         characterController: CharacterControllerComponentDTO? = nil,
         audioSource: AudioSourceComponentDTO? = nil,
         audioListener: AudioListenerComponentDTO? = nil,
-        sky: SkyComponentDTO? = nil,
         skyLight: SkyLightComponentDTO? = nil,
+        environmentState: EnvironmentStateComponentDTO? = nil,
+        skyIBLState: SkyIBLStateComponentDTO? = nil,
+        environment: EnvironmentComponentDTO? = nil,
         reflectionProbe: ReflectionProbeComponentDTO? = nil,
         skyLightTag: TagComponentDTO? = nil,
         skySunTag: TagComponentDTO? = nil
@@ -114,8 +120,10 @@ public struct ComponentsDocument: Codable {
         self.characterController = characterController
         self.audioSource = audioSource
         self.audioListener = audioListener
-        self.sky = sky
         self.skyLight = skyLight
+        self.environmentState = environmentState
+        self.skyIBLState = skyIBLState
+        self.environment = environment
         self.reflectionProbe = reflectionProbe
         self.skyLightTag = skyLightTag
         self.skySunTag = skySunTag
@@ -1153,16 +1161,6 @@ public struct CharacterControllerComponentDTO: Codable {
     }
 }
 
-public struct SkyComponentDTO: Codable {
-    public var schemaVersion: Int
-    public var environmentMapHandle: AssetHandle?
-
-    public init(schemaVersion: Int = 1, environmentMapHandle: AssetHandle?) {
-        self.schemaVersion = schemaVersion
-        self.environmentMapHandle = environmentMapHandle
-    }
-}
-
 public struct ReflectionProbeComponentDTO: Codable {
     public var schemaVersion: Int
     public var enabled: Bool
@@ -1256,6 +1254,22 @@ public struct SkyLightComponentDTO: Codable {
     public var schemaVersion: Int
     public var mode: UInt32
     public var enabled: Bool
+    public var timeOfDay: Float
+    public var weatherType: UInt32
+    public var secondaryWeatherType: UInt32
+    public var weatherBlend: Float
+    public var weatherAmount: Float
+    public var atmosphereAmount: Float
+    public var cloudCoverage: Float
+    public var cloudStyle: UInt32
+    public var temperature: Float
+    public var mood: Float
+    public var moonIntensity: Float
+    public var moonSizeDegrees: Float
+    public var starIntensity: Float
+    public var fogAmount: Float
+    public var fogHeight: Float
+    public var fogDistance: Float
     public var intensity: Float
     public var skyTint: Vector3DTO
     public var turbidity: Float
@@ -1285,12 +1299,29 @@ public struct SkyLightComponentDTO: Codable {
     public var cloudsBrightness: Float
     public var cloudsSunInfluence: Float
     public var hdriHandle: AssetHandle?
-    public var realtimeUpdate: Bool
+    /// Migration-only legacy field. Wave 1 moved this to `SkyIBLStateComponentDTO`.
+    public var realtimeUpdate: Bool?
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
         mode: UInt32,
         enabled: Bool,
+        timeOfDay: Float,
+        weatherType: UInt32,
+        secondaryWeatherType: UInt32,
+        weatherBlend: Float,
+        weatherAmount: Float,
+        atmosphereAmount: Float,
+        cloudCoverage: Float,
+        cloudStyle: UInt32,
+        temperature: Float,
+        mood: Float,
+        moonIntensity: Float,
+        moonSizeDegrees: Float,
+        starIntensity: Float,
+        fogAmount: Float,
+        fogHeight: Float,
+        fogDistance: Float,
         intensity: Float,
         skyTint: Vector3DTO,
         turbidity: Float,
@@ -1320,11 +1351,27 @@ public struct SkyLightComponentDTO: Codable {
         cloudsBrightness: Float,
         cloudsSunInfluence: Float,
         hdriHandle: AssetHandle?,
-        realtimeUpdate: Bool
+        realtimeUpdate: Bool? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.mode = mode
         self.enabled = enabled
+        self.timeOfDay = timeOfDay
+        self.weatherType = weatherType
+        self.secondaryWeatherType = secondaryWeatherType
+        self.weatherBlend = weatherBlend
+        self.weatherAmount = weatherAmount
+        self.atmosphereAmount = atmosphereAmount
+        self.cloudCoverage = cloudCoverage
+        self.cloudStyle = cloudStyle
+        self.temperature = temperature
+        self.mood = mood
+        self.moonIntensity = moonIntensity
+        self.moonSizeDegrees = moonSizeDegrees
+        self.starIntensity = starIntensity
+        self.fogAmount = fogAmount
+        self.fogHeight = fogHeight
+        self.fogDistance = fogDistance
         self.intensity = intensity
         self.skyTint = skyTint
         self.turbidity = turbidity
@@ -1360,9 +1407,25 @@ public struct SkyLightComponentDTO: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = SkyLightComponent()
-        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 2
         mode = try container.decodeIfPresent(UInt32.self, forKey: .mode) ?? defaults.mode.rawValue
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
+        timeOfDay = try container.decodeIfPresent(Float.self, forKey: .timeOfDay) ?? defaults.timeOfDay
+        weatherType = try container.decodeIfPresent(UInt32.self, forKey: .weatherType) ?? defaults.weatherType.rawValue
+        secondaryWeatherType = try container.decodeIfPresent(UInt32.self, forKey: .secondaryWeatherType) ?? defaults.secondaryWeatherType.rawValue
+        weatherBlend = try container.decodeIfPresent(Float.self, forKey: .weatherBlend) ?? defaults.weatherBlend
+        weatherAmount = try container.decodeIfPresent(Float.self, forKey: .weatherAmount) ?? defaults.weatherAmount
+        atmosphereAmount = try container.decodeIfPresent(Float.self, forKey: .atmosphereAmount) ?? defaults.atmosphereAmount
+        cloudCoverage = try container.decodeIfPresent(Float.self, forKey: .cloudCoverage) ?? defaults.cloudCoverage
+        cloudStyle = try container.decodeIfPresent(UInt32.self, forKey: .cloudStyle) ?? defaults.cloudStyle.rawValue
+        temperature = try container.decodeIfPresent(Float.self, forKey: .temperature) ?? defaults.temperature
+        mood = try container.decodeIfPresent(Float.self, forKey: .mood) ?? defaults.mood
+        moonIntensity = try container.decodeIfPresent(Float.self, forKey: .moonIntensity) ?? defaults.moonIntensity
+        moonSizeDegrees = try container.decodeIfPresent(Float.self, forKey: .moonSizeDegrees) ?? defaults.moonSizeDegrees
+        starIntensity = try container.decodeIfPresent(Float.self, forKey: .starIntensity) ?? defaults.starIntensity
+        fogAmount = try container.decodeIfPresent(Float.self, forKey: .fogAmount) ?? defaults.fogAmount
+        fogHeight = try container.decodeIfPresent(Float.self, forKey: .fogHeight) ?? defaults.fogHeight
+        fogDistance = try container.decodeIfPresent(Float.self, forKey: .fogDistance) ?? defaults.fogDistance
         intensity = try container.decodeIfPresent(Float.self, forKey: .intensity) ?? defaults.intensity
         skyTint = try container.decodeIfPresent(Vector3DTO.self, forKey: .skyTint) ?? Vector3DTO(defaults.skyTint)
         turbidity = try container.decodeIfPresent(Float.self, forKey: .turbidity) ?? defaults.turbidity
@@ -1392,7 +1455,7 @@ public struct SkyLightComponentDTO: Codable {
         cloudsBrightness = try container.decodeIfPresent(Float.self, forKey: .cloudsBrightness) ?? defaults.cloudsBrightness
         cloudsSunInfluence = try container.decodeIfPresent(Float.self, forKey: .cloudsSunInfluence) ?? defaults.cloudsSunInfluence
         hdriHandle = try container.decodeIfPresent(AssetHandle.self, forKey: .hdriHandle)
-        realtimeUpdate = try container.decodeIfPresent(Bool.self, forKey: .realtimeUpdate) ?? defaults.realtimeUpdate
+        realtimeUpdate = try container.decodeIfPresent(Bool.self, forKey: .realtimeUpdate)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1400,6 +1463,22 @@ public struct SkyLightComponentDTO: Codable {
         try container.encode(schemaVersion, forKey: .schemaVersion)
         try container.encode(mode, forKey: .mode)
         try container.encode(enabled, forKey: .enabled)
+        try container.encode(timeOfDay, forKey: .timeOfDay)
+        try container.encode(weatherType, forKey: .weatherType)
+        try container.encode(secondaryWeatherType, forKey: .secondaryWeatherType)
+        try container.encode(weatherBlend, forKey: .weatherBlend)
+        try container.encode(weatherAmount, forKey: .weatherAmount)
+        try container.encode(atmosphereAmount, forKey: .atmosphereAmount)
+        try container.encode(cloudCoverage, forKey: .cloudCoverage)
+        try container.encode(cloudStyle, forKey: .cloudStyle)
+        try container.encode(temperature, forKey: .temperature)
+        try container.encode(mood, forKey: .mood)
+        try container.encode(moonIntensity, forKey: .moonIntensity)
+        try container.encode(moonSizeDegrees, forKey: .moonSizeDegrees)
+        try container.encode(starIntensity, forKey: .starIntensity)
+        try container.encode(fogAmount, forKey: .fogAmount)
+        try container.encode(fogHeight, forKey: .fogHeight)
+        try container.encode(fogDistance, forKey: .fogDistance)
         try container.encode(intensity, forKey: .intensity)
         try container.encode(skyTint, forKey: .skyTint)
         try container.encode(turbidity, forKey: .turbidity)
@@ -1429,13 +1508,28 @@ public struct SkyLightComponentDTO: Codable {
         try container.encode(cloudsBrightness, forKey: .cloudsBrightness)
         try container.encode(cloudsSunInfluence, forKey: .cloudsSunInfluence)
         try container.encode(hdriHandle, forKey: .hdriHandle)
-        try container.encode(realtimeUpdate, forKey: .realtimeUpdate)
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case mode
         case enabled
+        case timeOfDay
+        case weatherType
+        case secondaryWeatherType
+        case weatherBlend
+        case weatherAmount
+        case atmosphereAmount
+        case cloudCoverage
+        case cloudStyle
+        case temperature
+        case mood
+        case moonIntensity
+        case moonSizeDegrees
+        case starIntensity
+        case fogAmount
+        case fogHeight
+        case fogDistance
         case intensity
         case skyTint
         case turbidity
@@ -1466,6 +1560,497 @@ public struct SkyLightComponentDTO: Codable {
         case cloudsSunInfluence
         case hdriHandle
         case realtimeUpdate
+    }
+}
+
+public struct EnvironmentStateComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var currentTimeOfDay: Float
+    public var timeControlMode: UInt32
+    public var dayLengthSeconds: Float
+    public var environmentTimeScale: Float
+    public var currentWeatherType: UInt32
+    public var targetWeatherType: UInt32
+    public var weatherTransitionProgress: Float
+    public var weatherTransitionDuration: Float
+    public var weatherAmount: Float
+    public var cloudPhase: Float
+    public var windPhase: Float
+    public var scriptedTimeOfDayOverride: Float?
+    public var precipitationAmount: Float
+    public var stormActivity: Float
+    public var lightningActivity: Float
+    public var wetnessDriver: Float
+
+    public init(schemaVersion: Int = 1,
+                component: EnvironmentStateComponent) {
+        self.schemaVersion = schemaVersion
+        self.currentTimeOfDay = component.currentTimeOfDay
+        self.timeControlMode = component.timeControlMode.rawValue
+        self.dayLengthSeconds = component.dayLengthSeconds
+        self.environmentTimeScale = component.environmentTimeScale
+        self.currentWeatherType = component.currentWeatherType.rawValue
+        self.targetWeatherType = component.targetWeatherType.rawValue
+        self.weatherTransitionProgress = component.weatherTransitionProgress
+        self.weatherTransitionDuration = component.weatherTransitionDuration
+        self.weatherAmount = component.weatherAmount
+        self.cloudPhase = component.cloudPhase
+        self.windPhase = component.windPhase
+        self.scriptedTimeOfDayOverride = component.scriptedTimeOfDayOverride
+        self.precipitationAmount = component.precipitationAmount
+        self.stormActivity = component.stormActivity
+        self.lightningActivity = component.lightningActivity
+        self.wetnessDriver = component.wetnessDriver
+    }
+
+    public func toComponent() -> EnvironmentStateComponent {
+        EnvironmentStateComponent(
+            currentTimeOfDay: currentTimeOfDay,
+            timeControlMode: EnvironmentTimeControlMode(rawValue: timeControlMode) ?? .fixed,
+            dayLengthSeconds: dayLengthSeconds,
+            environmentTimeScale: environmentTimeScale,
+            currentWeatherType: AtmosphereWeatherType(rawValue: currentWeatherType) ?? .clear,
+            targetWeatherType: AtmosphereWeatherType(rawValue: targetWeatherType) ?? .clear,
+            weatherTransitionProgress: weatherTransitionProgress,
+            weatherTransitionDuration: weatherTransitionDuration,
+            weatherAmount: weatherAmount,
+            cloudPhase: cloudPhase,
+            windPhase: windPhase,
+            scriptedTimeOfDayOverride: scriptedTimeOfDayOverride,
+            precipitationAmount: precipitationAmount,
+            stormActivity: stormActivity,
+            lightningActivity: lightningActivity,
+            wetnessDriver: wetnessDriver
+        )
+    }
+}
+
+public struct SkyIBLStateComponentDTO: Codable {
+    public var schemaVersion: Int
+    /// Persist only the stable rebuild-policy knob. The texture handles and timing
+    /// bookkeeping remain runtime/transient and are reinitialized on load.
+    public var realtimeUpdate: Bool
+
+    public init(schemaVersion: Int = 1,
+                realtimeUpdate: Bool = true) {
+        self.schemaVersion = schemaVersion
+        self.realtimeUpdate = realtimeUpdate
+    }
+
+    public init(schemaVersion: Int = 1,
+                component: SkyIBLStateComponent) {
+        self.schemaVersion = schemaVersion
+        self.realtimeUpdate = component.realtimeUpdate
+    }
+
+    public func toComponent() -> SkyIBLStateComponent {
+        SkyIBLStateComponent(realtimeUpdate: realtimeUpdate)
+    }
+}
+
+public struct EnvironmentComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var look: EnvironmentLookDTO?
+    public var source: EnvironmentSourceDTO
+    public var celestial: EnvironmentCelestialDTO
+    public var atmosphere: EnvironmentAtmosphereDTO
+    public var weather: EnvironmentWeatherDTO
+    public var clouds: EnvironmentCloudDTO
+    public var fog: EnvironmentFogDTO
+    public var ibl: EnvironmentIBLDTO
+
+    public init(schemaVersion: Int = 1,
+                enabled: Bool,
+                look: EnvironmentLookDTO? = nil,
+                source: EnvironmentSourceDTO,
+                celestial: EnvironmentCelestialDTO,
+                atmosphere: EnvironmentAtmosphereDTO,
+                weather: EnvironmentWeatherDTO,
+                clouds: EnvironmentCloudDTO,
+                fog: EnvironmentFogDTO,
+                ibl: EnvironmentIBLDTO) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.look = look
+        self.source = source
+        self.celestial = celestial
+        self.atmosphere = atmosphere
+        self.weather = weather
+        self.clouds = clouds
+        self.fog = fog
+        self.ibl = ibl
+    }
+
+    public init(component: EnvironmentComponent) {
+        self.init(
+            enabled: component.enabled,
+            look: EnvironmentLookDTO(config: component.look),
+            source: EnvironmentSourceDTO(config: component.source),
+            celestial: EnvironmentCelestialDTO(config: component.celestial),
+            atmosphere: EnvironmentAtmosphereDTO(config: component.atmosphere),
+            weather: EnvironmentWeatherDTO(config: component.weather),
+            clouds: EnvironmentCloudDTO(config: component.clouds),
+            fog: EnvironmentFogDTO(config: component.fog),
+            ibl: EnvironmentIBLDTO(config: component.ibl)
+        )
+    }
+
+    public func toComponent() -> EnvironmentComponent {
+        EnvironmentComponent(
+            enabled: enabled,
+            look: look?.toConfig() ?? EnvironmentLookConfig(),
+            source: source.toConfig(),
+            celestial: celestial.toConfig(),
+            atmosphere: atmosphere.toConfig(),
+            weather: weather.toConfig(),
+            clouds: clouds.toConfig(),
+            fog: fog.toConfig(),
+            ibl: ibl.toConfig()
+        )
+    }
+}
+
+public struct EnvironmentLookDTO: Codable {
+    public var schemaVersion: Int
+    public var preset: UInt32
+    public var mood: Float
+    public var warmth: Float
+    public var cinematicAmount: Float
+
+    public init(schemaVersion: Int = 1,
+                preset: UInt32,
+                mood: Float,
+                warmth: Float,
+                cinematicAmount: Float) {
+        self.schemaVersion = schemaVersion
+        self.preset = preset
+        self.mood = mood
+        self.warmth = warmth
+        self.cinematicAmount = cinematicAmount
+    }
+
+    public init(config: EnvironmentLookConfig) {
+        self.init(
+            preset: config.preset.rawValue,
+            mood: config.mood,
+            warmth: config.warmth,
+            cinematicAmount: config.cinematicAmount
+        )
+    }
+
+    public func toConfig() -> EnvironmentLookConfig {
+        EnvironmentLookConfig(
+            preset: EnvironmentLookPreset(rawValue: preset) ?? .custom,
+            mood: mood,
+            warmth: warmth,
+            cinematicAmount: cinematicAmount
+        )
+    }
+}
+
+public struct EnvironmentSourceDTO: Codable {
+    public var schemaVersion: Int
+    public var mode: UInt32
+    public var hdriTextureHandle: AssetHandle?
+
+    public init(schemaVersion: Int = 1,
+                mode: UInt32,
+                hdriTextureHandle: AssetHandle?) {
+        self.schemaVersion = schemaVersion
+        self.mode = mode
+        self.hdriTextureHandle = hdriTextureHandle
+    }
+
+    public init(config: EnvironmentSourceConfig) {
+        self.init(mode: config.mode.rawValue, hdriTextureHandle: config.hdriTextureHandle)
+    }
+
+    public func toConfig() -> EnvironmentSourceConfig {
+        EnvironmentSourceConfig(
+            mode: EnvironmentSourceMode(rawValue: mode) ?? .hdri,
+            hdriTextureHandle: hdriTextureHandle
+        )
+    }
+}
+
+public struct EnvironmentCelestialDTO: Codable {
+    public var schemaVersion: Int
+    public var defaultTimeOfDay: Float
+    public var moonIntensity: Float
+    public var moonSizeDegrees: Float
+    public var starIntensity: Float
+    public var starRichness: Float
+    public var milkyWayIntensity: Float
+    public var milkyWayChroma: Float
+    public var milkyWayRotation: Float
+    public var nightBrightness: Float
+
+    public init(schemaVersion: Int = 2,
+                defaultTimeOfDay: Float,
+                moonIntensity: Float,
+                moonSizeDegrees: Float,
+                starIntensity: Float,
+                starRichness: Float = 1.0,
+                milkyWayIntensity: Float = 1.0,
+                milkyWayChroma: Float = 1.0,
+                milkyWayRotation: Float = 0.0,
+                nightBrightness: Float = 1.0) {
+        self.schemaVersion = schemaVersion
+        self.defaultTimeOfDay = defaultTimeOfDay
+        self.moonIntensity = moonIntensity
+        self.moonSizeDegrees = moonSizeDegrees
+        self.starIntensity = starIntensity
+        self.starRichness = starRichness
+        self.milkyWayIntensity = milkyWayIntensity
+        self.milkyWayChroma = milkyWayChroma
+        self.milkyWayRotation = milkyWayRotation
+        self.nightBrightness = nightBrightness
+    }
+
+    public init(config: EnvironmentCelestialConfig) {
+        self.init(
+            defaultTimeOfDay: config.defaultTimeOfDay,
+            moonIntensity: config.moonIntensity,
+            moonSizeDegrees: config.moonSizeDegrees,
+            starIntensity: config.starIntensity,
+            starRichness: config.starRichness,
+            milkyWayIntensity: config.milkyWayIntensity,
+            milkyWayChroma: config.milkyWayChroma,
+            milkyWayRotation: config.milkyWayRotation,
+            nightBrightness: config.nightBrightness
+        )
+    }
+
+    public func toConfig() -> EnvironmentCelestialConfig {
+        EnvironmentCelestialConfig(
+            defaultTimeOfDay: defaultTimeOfDay,
+            moonIntensity: moonIntensity,
+            moonSizeDegrees: moonSizeDegrees,
+            starIntensity: starIntensity,
+            starRichness: starRichness,
+            milkyWayIntensity: milkyWayIntensity,
+            milkyWayChroma: milkyWayChroma,
+            milkyWayRotation: milkyWayRotation,
+            nightBrightness: nightBrightness
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case defaultTimeOfDay
+        case moonIntensity
+        case moonSizeDegrees
+        case starIntensity
+        case starRichness
+        case milkyWayIntensity
+        case milkyWayChroma
+        case milkyWayRotation
+        case nightBrightness
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = EnvironmentCelestialConfig()
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        defaultTimeOfDay = try container.decodeIfPresent(Float.self, forKey: .defaultTimeOfDay) ?? defaults.defaultTimeOfDay
+        moonIntensity = try container.decodeIfPresent(Float.self, forKey: .moonIntensity) ?? defaults.moonIntensity
+        moonSizeDegrees = try container.decodeIfPresent(Float.self, forKey: .moonSizeDegrees) ?? defaults.moonSizeDegrees
+        starIntensity = try container.decodeIfPresent(Float.self, forKey: .starIntensity) ?? defaults.starIntensity
+        starRichness = try container.decodeIfPresent(Float.self, forKey: .starRichness) ?? defaults.starRichness
+        milkyWayIntensity = try container.decodeIfPresent(Float.self, forKey: .milkyWayIntensity) ?? defaults.milkyWayIntensity
+        milkyWayChroma = try container.decodeIfPresent(Float.self, forKey: .milkyWayChroma) ?? defaults.milkyWayChroma
+        milkyWayRotation = try container.decodeIfPresent(Float.self, forKey: .milkyWayRotation) ?? defaults.milkyWayRotation
+        nightBrightness = try container.decodeIfPresent(Float.self, forKey: .nightBrightness) ?? defaults.nightBrightness
+    }
+}
+
+public struct EnvironmentAtmosphereDTO: Codable {
+    public var schemaVersion: Int
+    public var amount: Float
+    public var haze: Float
+    public var density: Float
+    public var temperature: Float
+    public var mood: Float
+
+    public init(schemaVersion: Int = 1,
+                amount: Float,
+                haze: Float,
+                density: Float,
+                temperature: Float,
+                mood: Float) {
+        self.schemaVersion = schemaVersion
+        self.amount = amount
+        self.haze = haze
+        self.density = density
+        self.temperature = temperature
+        self.mood = mood
+    }
+
+    public init(config: EnvironmentAtmosphereConfig) {
+        self.init(
+            amount: config.amount,
+            haze: config.haze,
+            density: config.density,
+            temperature: config.temperature,
+            mood: config.mood
+        )
+    }
+
+    public func toConfig() -> EnvironmentAtmosphereConfig {
+        EnvironmentAtmosphereConfig(
+            amount: amount,
+            haze: haze,
+            density: density,
+            temperature: temperature,
+            mood: mood
+        )
+    }
+}
+
+public struct EnvironmentWeatherDTO: Codable {
+    public var schemaVersion: Int
+    public var primaryType: UInt32
+    public var secondaryType: UInt32
+    public var blend: Float
+    public var amount: Float
+
+    public init(schemaVersion: Int = 1,
+                primaryType: UInt32,
+                secondaryType: UInt32,
+                blend: Float,
+                amount: Float) {
+        self.schemaVersion = schemaVersion
+        self.primaryType = primaryType
+        self.secondaryType = secondaryType
+        self.blend = blend
+        self.amount = amount
+    }
+
+    public init(config: EnvironmentWeatherConfig) {
+        self.init(
+            primaryType: config.primaryType.rawValue,
+            secondaryType: config.secondaryType.rawValue,
+            blend: config.blend,
+            amount: config.amount
+        )
+    }
+
+    public func toConfig() -> EnvironmentWeatherConfig {
+        EnvironmentWeatherConfig(
+            primaryType: EnvironmentWeatherType(rawValue: primaryType) ?? .clear,
+            secondaryType: EnvironmentWeatherType(rawValue: secondaryType) ?? .clear,
+            blend: blend,
+            amount: amount
+        )
+    }
+}
+
+public struct EnvironmentCloudDTO: Codable {
+    public var schemaVersion: Int
+    public var coverage: Float
+    public var style: UInt32
+    public var renderMode: UInt32
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case coverage
+        case style
+        case renderMode
+    }
+
+    public init(schemaVersion: Int = 1,
+                coverage: Float,
+                style: UInt32,
+                renderMode: UInt32 = EnvironmentCloudRenderMode.both.rawValue) {
+        self.schemaVersion = schemaVersion
+        self.coverage = coverage
+        self.style = style
+        self.renderMode = renderMode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        coverage = try container.decode(Float.self, forKey: .coverage)
+        style = try container.decode(UInt32.self, forKey: .style)
+        renderMode = try container.decodeIfPresent(UInt32.self, forKey: .renderMode)
+            ?? EnvironmentCloudRenderMode.both.rawValue
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(coverage, forKey: .coverage)
+        try container.encode(style, forKey: .style)
+        try container.encode(renderMode, forKey: .renderMode)
+    }
+
+    public init(config: EnvironmentCloudConfig) {
+        self.init(coverage: config.coverage,
+                  style: config.style.rawValue,
+                  renderMode: config.renderMode.rawValue)
+    }
+
+    public func toConfig() -> EnvironmentCloudConfig {
+        EnvironmentCloudConfig(
+            coverage: coverage,
+            style: EnvironmentCloudStyle(rawValue: style) ?? .puffy,
+            renderMode: EnvironmentCloudRenderMode(rawValue: renderMode) ?? .both
+        )
+    }
+}
+
+public struct EnvironmentFogDTO: Codable {
+    public var schemaVersion: Int
+    public var amount: Float
+    public var height: Float
+    public var distance: Float
+
+    public init(schemaVersion: Int = 1,
+                amount: Float,
+                height: Float,
+                distance: Float) {
+        self.schemaVersion = schemaVersion
+        self.amount = amount
+        self.height = height
+        self.distance = distance
+    }
+
+    public init(config: EnvironmentFogConfig) {
+        self.init(amount: config.amount, height: config.height, distance: config.distance)
+    }
+
+    public func toConfig() -> EnvironmentFogConfig {
+        EnvironmentFogConfig(amount: amount, height: height, distance: distance)
+    }
+}
+
+public struct EnvironmentIBLDTO: Codable {
+    public var schemaVersion: Int
+    public var realtimeUpdate: Bool
+    public var autoRebuildOnChange: Bool
+
+    public init(schemaVersion: Int = 1,
+                realtimeUpdate: Bool,
+                autoRebuildOnChange: Bool) {
+        self.schemaVersion = schemaVersion
+        self.realtimeUpdate = realtimeUpdate
+        self.autoRebuildOnChange = autoRebuildOnChange
+    }
+
+    public init(config: EnvironmentIBLConfig) {
+        self.init(
+            realtimeUpdate: config.realtimeUpdate,
+            autoRebuildOnChange: config.autoRebuildOnChange
+        )
+    }
+
+    public func toConfig() -> EnvironmentIBLConfig {
+        EnvironmentIBLConfig(
+            realtimeUpdate: realtimeUpdate,
+            autoRebuildOnChange: autoRebuildOnChange
+        )
     }
 }
 
@@ -1508,6 +2093,7 @@ public struct RendererSettingsDTO: Codable {
     public var ssaoThickness: Float
     public var ssaoBlurSharpness: Float
     public var heightFogEnabled: UInt32
+    public var heightFogColorMode: UInt32
     public var heightFogColor: Vector3DTO
     public var heightFogBaseHeight: Float
     public var heightFogDensity: Float
@@ -1524,7 +2110,7 @@ public struct RendererSettingsDTO: Codable {
     public var gridMajorLineEvery: Float
     public var shadows: ShadowsSettingsDTO
 
-    public init(schemaVersion: Int = 3, settings: RendererSettings) {
+    public init(schemaVersion: Int = 4, settings: RendererSettings) {
         self.schemaVersion = schemaVersion
         self.bloomThreshold = settings.bloomThreshold
         self.bloomKnee = settings.bloomKnee
@@ -1561,6 +2147,7 @@ public struct RendererSettingsDTO: Codable {
         self.ssaoThickness = settings.ssaoThickness
         self.ssaoBlurSharpness = settings.ssaoBlurSharpness
         self.heightFogEnabled = settings.heightFogEnabled
+        self.heightFogColorMode = settings.heightFogColorMode.rawValue
         self.heightFogColor = Vector3DTO(settings.heightFogColor)
         self.heightFogBaseHeight = settings.heightFogBaseHeight
         self.heightFogDensity = settings.heightFogDensity
@@ -1617,6 +2204,7 @@ public struct RendererSettingsDTO: Codable {
         ssaoThickness = try container.decodeIfPresent(Float.self, forKey: .ssaoThickness) ?? defaults.ssaoThickness
         ssaoBlurSharpness = try container.decodeIfPresent(Float.self, forKey: .ssaoBlurSharpness) ?? defaults.ssaoBlurSharpness
         heightFogEnabled = try container.decodeIfPresent(UInt32.self, forKey: .heightFogEnabled) ?? defaults.heightFogEnabled
+        heightFogColorMode = try container.decodeIfPresent(UInt32.self, forKey: .heightFogColorMode) ?? defaults.heightFogColorMode.rawValue
         heightFogColor = try container.decodeIfPresent(Vector3DTO.self, forKey: .heightFogColor) ?? Vector3DTO(defaults.heightFogColor)
         heightFogBaseHeight = try container.decodeIfPresent(Float.self, forKey: .heightFogBaseHeight) ?? defaults.heightFogBaseHeight
         heightFogDensity = try container.decodeIfPresent(Float.self, forKey: .heightFogDensity) ?? defaults.heightFogDensity
@@ -1672,6 +2260,7 @@ public struct RendererSettingsDTO: Codable {
         try container.encode(ssaoThickness, forKey: .ssaoThickness)
         try container.encode(ssaoBlurSharpness, forKey: .ssaoBlurSharpness)
         try container.encode(heightFogEnabled, forKey: .heightFogEnabled)
+        try container.encode(heightFogColorMode, forKey: .heightFogColorMode)
         try container.encode(heightFogColor, forKey: .heightFogColor)
         try container.encode(heightFogBaseHeight, forKey: .heightFogBaseHeight)
         try container.encode(heightFogDensity, forKey: .heightFogDensity)
@@ -1726,6 +2315,7 @@ public struct RendererSettingsDTO: Codable {
         case ssaoThickness
         case ssaoBlurSharpness
         case heightFogEnabled
+        case heightFogColorMode
         case heightFogColor
         case heightFogBaseHeight
         case heightFogDensity
@@ -1780,6 +2370,7 @@ public struct RendererSettingsDTO: Codable {
         settings.ssaoThickness = ssaoThickness
         settings.setAOSharpness(ssaoBlurSharpness)
         settings.setHeightFogEnabled(heightFogEnabled != 0)
+        settings.setHeightFogColorMode(FogColorMode(rawValue: heightFogColorMode) ?? .manual)
         settings.heightFogColor = heightFogColor.toSIMD()
         settings.heightFogBaseHeight = heightFogBaseHeight
         settings.heightFogDensity = max(0.0, heightFogDensity)
@@ -2344,7 +2935,9 @@ public enum SceneSerializer {
         let document = scene.toDocument(
             rendererSettingsOverride: RendererSettingsDTO(settings: rendererSettings),
             physicsSettingsOverride: PhysicsSettingsDTO(settings: physicsSettings),
-            includeEditorEntities: false
+            // Persist the editor camera with the scene so editor-only view settings such as
+            // exposure mode and manual/auto exposure values survive save/load.
+            includeEditorEntities: true
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

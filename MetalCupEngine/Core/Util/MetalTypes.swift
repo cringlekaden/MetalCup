@@ -38,6 +38,7 @@ public enum VertexBufferIndex {
     public static let modelConstants = ShaderBindings.VertexBuffer.modelConstants
     public static let instances = ShaderBindings.VertexBuffer.instances
     public static let bonePalette = ShaderBindings.VertexBuffer.bonePalette
+    public static let cloudImpostorParams = ShaderBindings.VertexBuffer.cloudImpostorParams
     public static let cubemapViewProjection = ShaderBindings.VertexBuffer.cubemapViewProjection
 }
 
@@ -49,6 +50,7 @@ public enum FragmentBufferIndex {
     public static let iblParams = ShaderBindings.FragmentBuffer.iblParams
     public static let skyParams = ShaderBindings.FragmentBuffer.skyParams
     public static let skyIntensity = ShaderBindings.FragmentBuffer.skyIntensity
+    public static let skyFace = ShaderBindings.FragmentBuffer.skyFace
     public static let outlineParams = ShaderBindings.FragmentBuffer.outlineParams
     public static let gridParams = ShaderBindings.FragmentBuffer.gridParams
     public static let shadowConstants = ShaderBindings.FragmentBuffer.shadowConstants
@@ -65,6 +67,7 @@ public enum FragmentBufferIndex {
     public static let postProcessSceneConstants = ShaderBindings.FragmentBuffer.postProcessSceneConstants
     public static let postProcessParams = ShaderBindings.FragmentBuffer.postProcessParams
     public static let localReflectionProbe = ShaderBindings.FragmentBuffer.localReflectionProbe
+    public static let cloudImpostorParams = ShaderBindings.FragmentBuffer.cloudImpostorParams
 }
 
 public enum FragmentTextureIndex {
@@ -88,6 +91,10 @@ public enum FragmentTextureIndex {
     public static let orm = ShaderBindings.FragmentTexture.orm
     public static let sceneAO = ShaderBindings.FragmentTexture.sceneAO
     public static let localReflectionPrefiltered = ShaderBindings.FragmentTexture.localReflectionPrefiltered
+    public static let moonAlbedo = ShaderBindings.FragmentTexture.moonAlbedo
+    public static let galaxyBackground = ShaderBindings.FragmentTexture.galaxyBackground
+    public static let cloudAtlas = ShaderBindings.FragmentTexture.cloudAtlas
+    public static let cloudCard = ShaderBindings.FragmentTexture.cloudCard
 }
 
 public enum FragmentSamplerIndex {
@@ -172,6 +179,7 @@ public struct SceneConstants: sizeable {
     public var projectionMatrix = matrix_identity_float4x4
     public var inverseProjectionMatrix = matrix_identity_float4x4
     public var inverseViewProjectionMatrix = matrix_identity_float4x4
+    /// xyz = camera world position. w = 1 when global IBL is available for this view, else 0.
     public var cameraPositionAndIBL = SIMD4<Float>(0, 0, 0, 1)
 
     public static let expectedMetalStride = 16
@@ -196,6 +204,19 @@ public struct LocalReflectionProbeUniform: sizeable {
         self.intensityAndFlags = intensityAndFlags
         self.worldToProbeMatrix = worldToProbeMatrix
     }
+}
+
+public struct CloudImpostorParams: sizeable {
+    public static let expectedMetalStride: Int = 64
+
+    /// xyz = world-space sun direction, w = night factor.
+    public var sunDirectionAndNightFactor = SIMD4<Float>(0, 1, 0, 0)
+    /// xy = wind offset, z = coverage, w = card count.
+    public var windOffsetCoverageAndCount = SIMD4<Float>(0, 0, 0, 0)
+    /// rgb = cloud tint, w = brightness.
+    public var colorTintAndBrightness = SIMD4<Float>(1, 1, 1, 1)
+    /// x = distance, y = altitude, z = base scale, w = opacity.
+    public var layout = SIMD4<Float>(380, 105, 115, 0.35)
 }
 
 public struct MetalCupMaterial: sizeable {
@@ -445,6 +466,33 @@ public struct SkyParams: sizeable {
     public var sunHaloSize: Float = 2.5
     public var sunHaloIntensity: Float = 0.5
     public var sunHaloSoftness: Float = 1.2
+    /// Packed derived atmosphere cues for later shader work.
+    public var dayNightFactor: Float = 1.0
+    public var twilightFactor: Float = 0.0
+    public var nightFactor: Float = 0.0
+    public var solarVisibility: Float = 1.0
+    public var horizonDensity: Float = 0.35
+    public var skyCoolness: Float = 0.0
+    public var starVisibility: Float = 0.0
+    public var _skyDerivedPadding0: Float = 0.0
+    public var solarExtinctionTint: SIMD3<Float> = SIMD3<Float>(1.0, 0.95, 0.9)
+    public var _skyDerivedPadding1: Float = 0.0
+    public var moonDirection: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0)
+    public var moonAngularRadius: Float = 0.00935
+    public var moonColor: SIMD3<Float> = SIMD3<Float>(0.82, 0.88, 1.0)
+    public var moonIntensity: Float = 0.0
+    public var duskTint: SIMD3<Float> = SIMD3<Float>(1.0, 0.54, 0.30)
+    public var _skyDerivedPadding2: Float = 0.0
+    public var antiSolarTint: SIMD3<Float> = SIMD3<Float>(0.34, 0.48, 0.82)
+    public var _skyDerivedPadding3: Float = 0.0
+    public var starIntensity: Float = 0.0
+    public var moonTextureEnabled: Float = 0.0
+    public var galaxyTextureEnabled: Float = 0.0
+    public var _skyDerivedPadding4: Float = 0.0
+    /// x = star richness, y = Milky Way intensity, z = Milky Way chroma, w = night background brightness.
+    public var celestialArtParams: SIMD4<Float> = SIMD4<Float>(1.0, 1.0, 1.0, 1.0)
+    /// x = Milky Way rotation in turns, y/z/w reserved.
+    public var milkyWayParams: SIMD4<Float> = SIMD4<Float>(0.0, 0.0, 0.0, 0.0)
     public var cloudsEnabled: UInt32 = 0
     public var cloudsCoverage: Float = 0.35
     public var cloudsSoftness: Float = 0.6
@@ -455,7 +503,14 @@ public struct SkyParams: sizeable {
     public var cloudsThickness: Float = 0.35
     public var cloudsBrightness: Float = 1.0
     public var cloudsSunInfluence: Float = 1.0
-    public var padding: SIMD2<Float> = .zero
+    public var cloudAtlasEnabled: Float = 0.0
+    public var cloudAtlasStyle: Float = 0.0
+    /// x = Rayleigh strength, y = Mie strength, z = Mie anisotropy, w = aerosol density.
+    public var atmosphereScatteringParams: SIMD4<Float> = SIMD4<Float>(1.0, 0.25, 0.8, 0.25)
+    /// x = horizon optical depth, y = ozone/twilight amount, z = sky radiance scale, w = sun disk radiance.
+    public var atmosphereOpticalParams: SIMD4<Float> = SIMD4<Float>(1.5, 0.35, 1.0, 5.0)
+    /// x = sun aureole strength, y = ground bounce strength, z/w reserved.
+    public var sunAureoleParams: SIMD4<Float> = SIMD4<Float>(0.35, 0.08, 0.0, 0.0)
 }
 
 public typealias SkyUniforms = SkyParams

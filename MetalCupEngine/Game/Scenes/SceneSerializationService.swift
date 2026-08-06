@@ -139,14 +139,27 @@ public final class SceneSerializationService {
                     audioListener: shouldSerializeOverride(.audioListener, for: entity)
                         ? scene.ecs.get(AudioListenerComponent.self, for: entity).map { AudioListenerComponentDTO(component: $0) }
                         : nil,
-                    sky: shouldSerializeOverride(.sky, for: entity)
-                        ? scene.ecs.get(SkyComponent.self, for: entity).map { SkyComponentDTO(environmentMapHandle: $0.environmentMapHandle) }
-                        : nil,
                     skyLight: shouldSerializeOverride(.skyLight, for: entity)
                         ? scene.ecs.get(SkyLightComponent.self, for: entity).map { component in
                             SkyLightComponentDTO(
                                 mode: component.mode.rawValue,
                                 enabled: component.enabled,
+                                timeOfDay: component.timeOfDay,
+                                weatherType: component.weatherType.rawValue,
+                                secondaryWeatherType: component.secondaryWeatherType.rawValue,
+                                weatherBlend: component.weatherBlend,
+                                weatherAmount: component.weatherAmount,
+                                atmosphereAmount: component.atmosphereAmount,
+                                cloudCoverage: component.cloudCoverage,
+                                cloudStyle: component.cloudStyle.rawValue,
+                                temperature: component.temperature,
+                                mood: component.mood,
+                                moonIntensity: component.moonIntensity,
+                                moonSizeDegrees: component.moonSizeDegrees,
+                                starIntensity: component.starIntensity,
+                                fogAmount: component.fogAmount,
+                                fogHeight: component.fogHeight,
+                                fogDistance: component.fogDistance,
                                 intensity: component.intensity,
                                 skyTint: Vector3DTO(component.skyTint),
                                 turbidity: component.turbidity,
@@ -175,10 +188,16 @@ public final class SceneSerializationService {
                                 cloudsThickness: component.cloudsThickness,
                                 cloudsBrightness: component.cloudsBrightness,
                                 cloudsSunInfluence: component.cloudsSunInfluence,
-                                hdriHandle: component.hdriHandle,
-                                realtimeUpdate: component.realtimeUpdate
+                                hdriHandle: component.hdriHandle
                             )
                         }
+                        : nil,
+                    environmentState: shouldSerializeOverride(.environmentState, for: entity)
+                        ? scene.ecs.get(EnvironmentStateComponent.self, for: entity).map { EnvironmentStateComponentDTO(component: $0) }
+                        : nil,
+                    skyIBLState: nil,
+                    environment: shouldSerializeOverride(.environment, for: entity)
+                        ? scene.ecs.get(EnvironmentComponent.self, for: entity).map { EnvironmentComponentDTO(component: $0) }
                         : nil,
                     reflectionProbe: shouldSerializeOverride(.reflectionProbe, for: entity)
                         ? scene.ecs.get(ReflectionProbeComponent.self, for: entity).map { component in
@@ -278,13 +297,26 @@ public final class SceneSerializationService {
                 audioListener: scene.ecs.get(AudioListenerComponent.self, for: entity).map { component in
                     AudioListenerComponentDTO(component: component)
                 },
-                sky: scene.ecs.get(SkyComponent.self, for: entity).map { component in
-                    SkyComponentDTO(environmentMapHandle: component.environmentMapHandle)
-                },
                 skyLight: scene.ecs.get(SkyLightComponent.self, for: entity).map { component in
                     SkyLightComponentDTO(
                         mode: component.mode.rawValue,
                         enabled: component.enabled,
+                        timeOfDay: component.timeOfDay,
+                        weatherType: component.weatherType.rawValue,
+                        secondaryWeatherType: component.secondaryWeatherType.rawValue,
+                        weatherBlend: component.weatherBlend,
+                        weatherAmount: component.weatherAmount,
+                        atmosphereAmount: component.atmosphereAmount,
+                        cloudCoverage: component.cloudCoverage,
+                        cloudStyle: component.cloudStyle.rawValue,
+                        temperature: component.temperature,
+                        mood: component.mood,
+                        moonIntensity: component.moonIntensity,
+                        moonSizeDegrees: component.moonSizeDegrees,
+                        starIntensity: component.starIntensity,
+                        fogAmount: component.fogAmount,
+                        fogHeight: component.fogHeight,
+                        fogDistance: component.fogDistance,
                         intensity: component.intensity,
                         skyTint: Vector3DTO(component.skyTint),
                         turbidity: component.turbidity,
@@ -313,9 +345,15 @@ public final class SceneSerializationService {
                         cloudsThickness: component.cloudsThickness,
                         cloudsBrightness: component.cloudsBrightness,
                         cloudsSunInfluence: component.cloudsSunInfluence,
-                        hdriHandle: component.hdriHandle,
-                        realtimeUpdate: component.realtimeUpdate
+                        hdriHandle: component.hdriHandle
                     )
+                },
+                environmentState: scene.ecs.get(EnvironmentStateComponent.self, for: entity).map {
+                    EnvironmentStateComponentDTO(component: $0)
+                },
+                skyIBLState: nil,
+                environment: scene.ecs.get(EnvironmentComponent.self, for: entity).map {
+                    EnvironmentComponentDTO(component: $0)
                 },
                 reflectionProbe: scene.ecs.get(ReflectionProbeComponent.self, for: entity).map { component in
                     ReflectionProbeComponentDTO(
@@ -341,6 +379,15 @@ public final class SceneSerializationService {
             rendererSettingsOverride: rendererSettingsOverride,
             physicsSettingsOverride: physicsSettingsOverride
         )
+    }
+
+    private func addEnvironmentComponents(from dto: EnvironmentComponentDTO,
+                                          to entity: Entity,
+                                          in ecs: SceneECS) {
+        let environment = dto.toComponent()
+        ecs.add(environment, to: entity)
+        ecs.add(EnvironmentRuntimeStateComponent.default(from: environment), to: entity)
+        ecs.add(EnvironmentIBLStateComponent.defaultNeedsRebuild, to: entity)
     }
 
     public func apply(document: SceneDocument, to scene: EngineScene) {
@@ -464,13 +511,27 @@ public final class SceneSerializationService {
                 if let audioListener = entityDoc.components.audioListener {
                     scene.ecs.add(audioListener.toComponent(), to: entity)
                 }
-                if let sky = entityDoc.components.sky {
-                    scene.ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
-                }
                 if let skyLight = entityDoc.components.skyLight {
                     let component = SkyLightComponent(
                         mode: SkyMode(rawValue: skyLight.mode) ?? .hdri,
                         enabled: skyLight.enabled,
+                        hdriHandle: skyLight.hdriHandle,
+                        timeOfDay: skyLight.timeOfDay,
+                        weatherType: AtmosphereWeatherType(rawValue: skyLight.weatherType) ?? .clear,
+                        secondaryWeatherType: AtmosphereWeatherType(rawValue: skyLight.secondaryWeatherType) ?? .clear,
+                        weatherBlend: skyLight.weatherBlend,
+                        weatherAmount: skyLight.weatherAmount,
+                        atmosphereAmount: skyLight.atmosphereAmount,
+                        cloudCoverage: skyLight.cloudCoverage,
+                        cloudStyle: AtmosphereCloudStyle(rawValue: skyLight.cloudStyle) ?? .puffy,
+                        temperature: skyLight.temperature,
+                        mood: skyLight.mood,
+                        moonIntensity: skyLight.moonIntensity,
+                        moonSizeDegrees: skyLight.moonSizeDegrees,
+                        starIntensity: skyLight.starIntensity,
+                        fogAmount: skyLight.fogAmount,
+                        fogHeight: skyLight.fogHeight,
+                        fogDistance: skyLight.fogDistance,
                         intensity: skyLight.intensity,
                         skyTint: skyLight.skyTint.toSIMD(),
                         turbidity: skyLight.turbidity,
@@ -497,14 +558,20 @@ public final class SceneSerializationService {
                         cloudsHeight: skyLight.cloudsHeight,
                         cloudsThickness: skyLight.cloudsThickness,
                         cloudsBrightness: skyLight.cloudsBrightness,
-                        cloudsSunInfluence: skyLight.cloudsSunInfluence,
-                        hdriHandle: skyLight.hdriHandle,
-                        needsRebuild: true,
-                        rebuildRequested: false,
-                        realtimeUpdate: skyLight.realtimeUpdate,
-                        lastRebuildTime: 0.0
+                        cloudsSunInfluence: skyLight.cloudsSunInfluence
                     )
                     scene.ecs.add(component, to: entity)
+                    let environmentState = entityDoc.components.environmentState?.toComponent()
+                        ?? EnvironmentStateComponent(seededFromAuthored: component)
+                    scene.ecs.add(environmentState, to: entity)
+                    let iblRealtimeUpdate = entityDoc.components.skyIBLState?.realtimeUpdate
+                        ?? skyLight.realtimeUpdate
+                        ?? true
+                    let iblState = SkyIBLStateComponent(realtimeUpdate: iblRealtimeUpdate)
+                    scene.ecs.add(iblState, to: entity)
+                }
+                if let environment = entityDoc.components.environment {
+                    addEnvironmentComponents(from: environment, to: entity, in: scene.ecs)
                 }
                 if let reflectionProbe = entityDoc.components.reflectionProbe {
                     scene.ecs.add(reflectionProbe.toComponent(), to: entity)
@@ -597,13 +664,27 @@ public final class SceneSerializationService {
             if let audioListener = entityDoc.components.audioListener {
                 scene.ecs.add(audioListener.toComponent(), to: entity)
             }
-            if let sky = entityDoc.components.sky {
-                scene.ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
-            }
             if let skyLight = entityDoc.components.skyLight {
                 let component = SkyLightComponent(
                     mode: SkyMode(rawValue: skyLight.mode) ?? .hdri,
                     enabled: skyLight.enabled,
+                        hdriHandle: skyLight.hdriHandle,
+                        timeOfDay: skyLight.timeOfDay,
+                        weatherType: AtmosphereWeatherType(rawValue: skyLight.weatherType) ?? .clear,
+                        secondaryWeatherType: AtmosphereWeatherType(rawValue: skyLight.secondaryWeatherType) ?? .clear,
+                        weatherBlend: skyLight.weatherBlend,
+                        weatherAmount: skyLight.weatherAmount,
+                    atmosphereAmount: skyLight.atmosphereAmount,
+                    cloudCoverage: skyLight.cloudCoverage,
+                        cloudStyle: AtmosphereCloudStyle(rawValue: skyLight.cloudStyle) ?? .puffy,
+                        temperature: skyLight.temperature,
+                        mood: skyLight.mood,
+                        moonIntensity: skyLight.moonIntensity,
+                        moonSizeDegrees: skyLight.moonSizeDegrees,
+                        starIntensity: skyLight.starIntensity,
+                        fogAmount: skyLight.fogAmount,
+                    fogHeight: skyLight.fogHeight,
+                    fogDistance: skyLight.fogDistance,
                     intensity: skyLight.intensity,
                     skyTint: skyLight.skyTint.toSIMD(),
                     turbidity: skyLight.turbidity,
@@ -630,14 +711,20 @@ public final class SceneSerializationService {
                     cloudsHeight: skyLight.cloudsHeight,
                     cloudsThickness: skyLight.cloudsThickness,
                     cloudsBrightness: skyLight.cloudsBrightness,
-                    cloudsSunInfluence: skyLight.cloudsSunInfluence,
-                    hdriHandle: skyLight.hdriHandle,
-                    needsRebuild: true,
-                    rebuildRequested: false,
-                    realtimeUpdate: skyLight.realtimeUpdate,
-                    lastRebuildTime: 0.0
+                    cloudsSunInfluence: skyLight.cloudsSunInfluence
                 )
                 scene.ecs.add(component, to: entity)
+                let environmentState = entityDoc.components.environmentState?.toComponent()
+                    ?? EnvironmentStateComponent(seededFromAuthored: component)
+                scene.ecs.add(environmentState, to: entity)
+                let iblRealtimeUpdate = entityDoc.components.skyIBLState?.realtimeUpdate
+                    ?? skyLight.realtimeUpdate
+                    ?? true
+                let iblState = SkyIBLStateComponent(realtimeUpdate: iblRealtimeUpdate)
+                scene.ecs.add(iblState, to: entity)
+            }
+            if let environment = entityDoc.components.environment {
+                addEnvironmentComponents(from: environment, to: entity, in: scene.ecs)
             }
             if let reflectionProbe = entityDoc.components.reflectionProbe {
                 scene.ecs.add(reflectionProbe.toComponent(), to: entity)
@@ -774,13 +861,27 @@ public final class SceneSerializationService {
             if let audioListener = entityDoc.components.audioListener {
                 scene.ecs.add(audioListener.toComponent(), to: entity)
             }
-            if let sky = entityDoc.components.sky {
-                scene.ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
-            }
             if let skyLight = entityDoc.components.skyLight {
                 let component = SkyLightComponent(
                     mode: SkyMode(rawValue: skyLight.mode) ?? .hdri,
                     enabled: skyLight.enabled,
+                        hdriHandle: skyLight.hdriHandle,
+                        timeOfDay: skyLight.timeOfDay,
+                        weatherType: AtmosphereWeatherType(rawValue: skyLight.weatherType) ?? .clear,
+                        secondaryWeatherType: AtmosphereWeatherType(rawValue: skyLight.secondaryWeatherType) ?? .clear,
+                        weatherBlend: skyLight.weatherBlend,
+                        weatherAmount: skyLight.weatherAmount,
+                    atmosphereAmount: skyLight.atmosphereAmount,
+                    cloudCoverage: skyLight.cloudCoverage,
+                        cloudStyle: AtmosphereCloudStyle(rawValue: skyLight.cloudStyle) ?? .puffy,
+                        temperature: skyLight.temperature,
+                        mood: skyLight.mood,
+                        moonIntensity: skyLight.moonIntensity,
+                        moonSizeDegrees: skyLight.moonSizeDegrees,
+                        starIntensity: skyLight.starIntensity,
+                        fogAmount: skyLight.fogAmount,
+                    fogHeight: skyLight.fogHeight,
+                    fogDistance: skyLight.fogDistance,
                     intensity: skyLight.intensity,
                     skyTint: skyLight.skyTint.toSIMD(),
                     turbidity: skyLight.turbidity,
@@ -807,14 +908,20 @@ public final class SceneSerializationService {
                     cloudsHeight: skyLight.cloudsHeight,
                     cloudsThickness: skyLight.cloudsThickness,
                     cloudsBrightness: skyLight.cloudsBrightness,
-                    cloudsSunInfluence: skyLight.cloudsSunInfluence,
-                    hdriHandle: skyLight.hdriHandle,
-                    needsRebuild: true,
-                    rebuildRequested: false,
-                    realtimeUpdate: skyLight.realtimeUpdate,
-                    lastRebuildTime: 0.0
+                    cloudsSunInfluence: skyLight.cloudsSunInfluence
                 )
                 scene.ecs.add(component, to: entity)
+                let environmentState = entityDoc.components.environmentState?.toComponent()
+                    ?? EnvironmentStateComponent(seededFromAuthored: component)
+                scene.ecs.add(environmentState, to: entity)
+                let iblRealtimeUpdate = entityDoc.components.skyIBLState?.realtimeUpdate
+                    ?? skyLight.realtimeUpdate
+                    ?? true
+                let iblState = SkyIBLStateComponent(realtimeUpdate: iblRealtimeUpdate)
+                scene.ecs.add(iblState, to: entity)
+            }
+            if let environment = entityDoc.components.environment {
+                addEnvironmentComponents(from: environment, to: entity, in: scene.ecs)
             }
             if let reflectionProbe = entityDoc.components.reflectionProbe {
                 scene.ecs.add(reflectionProbe.toComponent(), to: entity)

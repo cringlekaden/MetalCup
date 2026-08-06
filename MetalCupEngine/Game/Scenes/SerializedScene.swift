@@ -10,7 +10,6 @@ public final class SerializedScene: EngineScene {
                 engineContext: EngineContext? = nil) {
         super.init(id: document.id,
                    name: document.name,
-                   environmentMapHandle: nil,
                    prefabSystem: prefabSystem,
                    engineContext: engineContext,
                    shouldBuildScene: false)

@@ -565,6 +565,11 @@ public enum PrefabOverrideType: String, Codable, CaseIterable {
     case script
     case sky
     case skyLight
+    case environmentState
+    case skyIBLState
+    case environment
+    case environmentRuntimeState
+    case environmentIBLState
     case reflectionProbe
     case skyLightTag
     case skySunTag
@@ -1462,14 +1467,6 @@ public struct LightOrbitComponent {
     }
 }
 
-public struct SkyComponent {
-    public var environmentMapHandle: AssetHandle?
-
-    public init(environmentMapHandle: AssetHandle? = nil) {
-        self.environmentMapHandle = environmentMapHandle
-    }
-}
-
 public enum ReflectionProbeRebuildMode: UInt32, Codable {
     case manual = 0
     case onPlay = 1
@@ -1526,9 +1523,871 @@ public enum SkyMode: UInt32 {
     case procedural = 1
 }
 
+public enum EnvironmentSourceMode: UInt32, Codable {
+    case hdri = 0
+    case procedural = 1
+}
+
+public enum EnvironmentIBLRebuildQuality: String, Codable {
+    case interactive
+    case final
+}
+
+public enum AtmosphereWeatherType: UInt32, Codable {
+    case clear = 0
+    case partlyCloudy = 1
+    case overcast = 2
+    case storm = 3
+    case foggy = 4
+    case custom = 5
+}
+
+public enum AtmosphereCloudStyle: UInt32, Codable {
+    case clear = 0
+    case wispy = 1
+    case puffy = 2
+    case layered = 3
+    case overcast = 4
+    case storm = 5
+    case custom = 6
+}
+
+public typealias EnvironmentWeatherType = AtmosphereWeatherType
+public typealias EnvironmentCloudStyle = AtmosphereCloudStyle
+
+public enum EnvironmentCloudRenderMode: UInt32, Codable {
+    case both = 0
+    case procedural = 1
+    case cards = 2
+}
+
+public enum EnvironmentTimeControlMode: UInt32, Codable {
+    case fixed = 0
+    case cycle = 1
+    case scripted = 2
+}
+
+public enum EnvironmentLookPreset: UInt32, Codable, CaseIterable {
+    case custom = 0
+    case clearNoon = 1
+    case goldenHour = 2
+    case blueHour = 3
+    case moonlitNight = 4
+    case starryNight = 5
+    case milkyWayNight = 6
+    case foggyMorning = 7
+    case overcast = 8
+    case stormy = 9
+
+    public var displayName: String {
+        switch self {
+        case .custom: return "Custom"
+        case .clearNoon: return "Clear Noon"
+        case .goldenHour: return "Golden Hour"
+        case .blueHour: return "Blue Hour"
+        case .moonlitNight: return "Moonlit Night"
+        case .starryNight: return "Starry Night"
+        case .milkyWayNight: return "Milky Way Night"
+        case .foggyMorning: return "Foggy Morning"
+        case .overcast: return "Overcast"
+        case .stormy: return "Stormy"
+        }
+    }
+
+    public func apply(to environment: inout EnvironmentComponent) {
+        EnvironmentPresetLibrary.apply(self, to: &environment)
+    }
+}
+
+public struct EnvironmentLookConfig: Equatable {
+    public var preset: EnvironmentLookPreset
+    public var mood: Float
+    public var warmth: Float
+    public var cinematicAmount: Float
+
+    public init(preset: EnvironmentLookPreset = .custom,
+                mood: Float = 0.0,
+                warmth: Float = 0.0,
+                cinematicAmount: Float = 0.0) {
+        self.preset = preset
+        self.mood = mood
+        self.warmth = warmth
+        self.cinematicAmount = cinematicAmount
+    }
+}
+
+public struct EnvironmentSourceConfig: Equatable {
+    public var mode: EnvironmentSourceMode
+    public var hdriTextureHandle: AssetHandle?
+
+    public init(mode: EnvironmentSourceMode = .hdri,
+                hdriTextureHandle: AssetHandle? = nil) {
+        self.mode = mode
+        self.hdriTextureHandle = hdriTextureHandle
+    }
+}
+
+public struct EnvironmentCelestialConfig: Equatable {
+    public var defaultTimeOfDay: Float
+    public var moonIntensity: Float
+    public var moonSizeDegrees: Float
+    public var starIntensity: Float
+    public var starRichness: Float
+    public var milkyWayIntensity: Float
+    public var milkyWayChroma: Float
+    public var milkyWayRotation: Float
+    public var nightBrightness: Float
+
+    public init(defaultTimeOfDay: Float = 14.0,
+                moonIntensity: Float = 0.18,
+                moonSizeDegrees: Float = 0.54,
+                starIntensity: Float = 0.75,
+                starRichness: Float = 1.0,
+                milkyWayIntensity: Float = 1.0,
+                milkyWayChroma: Float = 1.0,
+                milkyWayRotation: Float = 0.0,
+                nightBrightness: Float = 1.0) {
+        self.defaultTimeOfDay = defaultTimeOfDay
+        self.moonIntensity = moonIntensity
+        self.moonSizeDegrees = moonSizeDegrees
+        self.starIntensity = starIntensity
+        self.starRichness = starRichness
+        self.milkyWayIntensity = milkyWayIntensity
+        self.milkyWayChroma = milkyWayChroma
+        self.milkyWayRotation = milkyWayRotation
+        self.nightBrightness = nightBrightness
+    }
+}
+
+public struct EnvironmentAtmosphereConfig: Equatable {
+    public var amount: Float
+    public var haze: Float
+    public var density: Float
+    public var temperature: Float
+    public var mood: Float
+
+    public init(amount: Float = 0.28,
+                haze: Float = 0.28,
+                density: Float = 1.0,
+                temperature: Float = 0.0,
+                mood: Float = 0.0) {
+        self.amount = amount
+        self.haze = haze
+        self.density = density
+        self.temperature = temperature
+        self.mood = mood
+    }
+}
+
+public struct EnvironmentWeatherConfig: Equatable {
+    public var primaryType: EnvironmentWeatherType
+    public var secondaryType: EnvironmentWeatherType
+    public var blend: Float
+    public var amount: Float
+
+    public init(primaryType: EnvironmentWeatherType = .clear,
+                secondaryType: EnvironmentWeatherType = .clear,
+                blend: Float = 0.0,
+                amount: Float = 0.0) {
+        self.primaryType = primaryType
+        self.secondaryType = secondaryType
+        self.blend = blend
+        self.amount = amount
+    }
+}
+
+public struct EnvironmentCloudConfig: Equatable {
+    public var coverage: Float
+    public var style: EnvironmentCloudStyle
+    public var renderMode: EnvironmentCloudRenderMode
+
+    public init(coverage: Float = 0.3,
+                style: EnvironmentCloudStyle = .puffy,
+                renderMode: EnvironmentCloudRenderMode = .both) {
+        self.coverage = coverage
+        self.style = style
+        self.renderMode = renderMode
+    }
+}
+
+public struct EnvironmentFogConfig: Equatable {
+    public var amount: Float
+    public var height: Float
+    public var distance: Float
+
+    public init(amount: Float = 0.03,
+                height: Float = 0.0,
+                distance: Float = 3.0) {
+        self.amount = amount
+        self.height = height
+        self.distance = distance
+    }
+}
+
+public struct EnvironmentIBLConfig: Equatable {
+    public var realtimeUpdate: Bool
+    public var autoRebuildOnChange: Bool
+
+    public init(realtimeUpdate: Bool = false,
+                autoRebuildOnChange: Bool = false) {
+        self.realtimeUpdate = realtimeUpdate
+        self.autoRebuildOnChange = autoRebuildOnChange
+    }
+}
+
+/// Authored persistent environment source of truth. Renderer-facing sky, fog,
+/// sun, cloud, and IBL state should be derived from this plus runtime state.
+public struct EnvironmentComponent: Equatable {
+    public var enabled: Bool
+    public var look: EnvironmentLookConfig
+    public var source: EnvironmentSourceConfig
+    public var celestial: EnvironmentCelestialConfig
+    public var atmosphere: EnvironmentAtmosphereConfig
+    public var weather: EnvironmentWeatherConfig
+    public var clouds: EnvironmentCloudConfig
+    public var fog: EnvironmentFogConfig
+    public var ibl: EnvironmentIBLConfig
+
+    public static var `default`: EnvironmentComponent {
+        EnvironmentComponent()
+    }
+
+    public init(enabled: Bool = true,
+                look: EnvironmentLookConfig = EnvironmentLookConfig(),
+                source: EnvironmentSourceConfig = EnvironmentSourceConfig(),
+                celestial: EnvironmentCelestialConfig = EnvironmentCelestialConfig(),
+                atmosphere: EnvironmentAtmosphereConfig = EnvironmentAtmosphereConfig(),
+                weather: EnvironmentWeatherConfig = EnvironmentWeatherConfig(),
+                clouds: EnvironmentCloudConfig = EnvironmentCloudConfig(),
+                fog: EnvironmentFogConfig = EnvironmentFogConfig(),
+                ibl: EnvironmentIBLConfig = EnvironmentIBLConfig()) {
+        self.enabled = enabled
+        self.look = look
+        self.source = source
+        self.celestial = celestial
+        self.atmosphere = atmosphere
+        self.weather = weather
+        self.clouds = clouds
+        self.fog = fog
+        self.ibl = ibl
+    }
+}
+
+public enum EnvironmentPresetLibrary {
+    public static func apply(_ preset: EnvironmentLookPreset, to environment: inout EnvironmentComponent) {
+        guard preset != .custom else {
+            environment.look.preset = .custom
+            return
+        }
+
+        environment.look = lookConfig(for: preset)
+        environment.source = EnvironmentSourceConfig(mode: .procedural, hdriTextureHandle: nil)
+
+        switch preset {
+        case .custom:
+            break
+        case .clearNoon:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 12.0,
+                                                               moonIntensity: 0.0,
+                                                               moonSizeDegrees: 0.54,
+                                                               starIntensity: 0.0,
+                                                               starRichness: 0.6,
+                                                               milkyWayIntensity: 0.0,
+                                                               milkyWayChroma: 0.8,
+                                                               milkyWayRotation: 0.0,
+                                                               nightBrightness: 0.8)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.24,
+                                                                 haze: 0.16,
+                                                                 density: 0.95,
+                                                                 temperature: 0.05,
+                                                                 mood: 0.08)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .clear,
+                                                           secondaryType: .clear,
+                                                           blend: 0.0,
+                                                           amount: 0.0)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.08, style: .wispy)
+            environment.fog = EnvironmentFogConfig(amount: 0.0, height: 0.0, distance: 4.0)
+        case .goldenHour:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 18.25,
+                                                               moonIntensity: 0.03,
+                                                               moonSizeDegrees: 0.54,
+                                                               starIntensity: 0.05,
+                                                               starRichness: 0.75,
+                                                               milkyWayIntensity: 0.0,
+                                                               milkyWayChroma: 0.9,
+                                                               milkyWayRotation: 0.0,
+                                                               nightBrightness: 0.95)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.44,
+                                                                 haze: 0.36,
+                                                                 density: 1.08,
+                                                                 temperature: 0.58,
+                                                                 mood: 0.22)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .clear,
+                                                           secondaryType: .partlyCloudy,
+                                                           blend: 0.25,
+                                                           amount: 0.18)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.26, style: .wispy)
+            environment.fog = EnvironmentFogConfig(amount: 0.018, height: 0.0, distance: 7.5)
+        case .blueHour:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 19.25,
+                                                               moonIntensity: 0.12,
+                                                               moonSizeDegrees: 0.54,
+                                                               starIntensity: 0.35,
+                                                               starRichness: 0.85,
+                                                               milkyWayIntensity: 0.15,
+                                                               milkyWayChroma: 0.9,
+                                                               milkyWayRotation: 0.05,
+                                                               nightBrightness: 1.05)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.34,
+                                                                 haze: 0.22,
+                                                                 density: 0.9,
+                                                                 temperature: -0.38,
+                                                                 mood: 0.08)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .clear,
+                                                           secondaryType: .clear,
+                                                           blend: 0.0,
+                                                           amount: 0.0)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.12, style: .wispy)
+            environment.fog = EnvironmentFogConfig(amount: 0.012, height: 0.0, distance: 8.0)
+        case .moonlitNight:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 22.0,
+                                                               moonIntensity: 0.75,
+                                                               moonSizeDegrees: 0.62,
+                                                               starIntensity: 0.65,
+                                                               starRichness: 0.8,
+                                                               milkyWayIntensity: 0.12,
+                                                               milkyWayChroma: 0.75,
+                                                               milkyWayRotation: 0.10,
+                                                               nightBrightness: 1.35)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.2,
+                                                                 haze: 0.12,
+                                                                 density: 0.82,
+                                                                 temperature: -0.28,
+                                                                 mood: 0.12)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .clear,
+                                                           secondaryType: .clear,
+                                                           blend: 0.0,
+                                                           amount: 0.0)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.08, style: .wispy)
+            environment.fog = EnvironmentFogConfig(amount: 0.006, height: 0.0, distance: 12.0)
+        case .starryNight:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 0.5,
+                                                               moonIntensity: 0.08,
+                                                               moonSizeDegrees: 0.54,
+                                                               starIntensity: 1.15,
+                                                               starRichness: 1.55,
+                                                               milkyWayIntensity: 0.55,
+                                                               milkyWayChroma: 1.0,
+                                                               milkyWayRotation: 0.18,
+                                                               nightBrightness: 0.95)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.14,
+                                                                 haze: 0.04,
+                                                                 density: 0.72,
+                                                                 temperature: -0.18,
+                                                                 mood: 0.0)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .clear,
+                                                           secondaryType: .clear,
+                                                           blend: 0.0,
+                                                           amount: 0.0)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.0, style: .clear)
+            environment.fog = EnvironmentFogConfig(amount: 0.0, height: 0.0, distance: 16.0)
+        case .milkyWayNight:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 1.25,
+                                                               moonIntensity: 0.02,
+                                                               moonSizeDegrees: 0.54,
+                                                               starIntensity: 1.35,
+                                                               starRichness: 1.75,
+                                                               milkyWayIntensity: 1.65,
+                                                               milkyWayChroma: 1.28,
+                                                               milkyWayRotation: 0.18,
+                                                               nightBrightness: 0.82)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.11,
+                                                                 haze: 0.02,
+                                                                 density: 0.64,
+                                                                 temperature: -0.12,
+                                                                 mood: 0.1)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .clear,
+                                                           secondaryType: .clear,
+                                                           blend: 0.0,
+                                                           amount: 0.0)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.0, style: .clear)
+            environment.fog = EnvironmentFogConfig(amount: 0.0, height: 0.0, distance: 18.0)
+        case .foggyMorning:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 7.0,
+                                                               moonIntensity: 0.02,
+                                                               moonSizeDegrees: 0.54,
+                                                               starIntensity: 0.0,
+                                                               starRichness: 0.7,
+                                                               milkyWayIntensity: 0.0,
+                                                               milkyWayChroma: 0.8,
+                                                               milkyWayRotation: 0.0,
+                                                               nightBrightness: 1.0)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.48,
+                                                                 haze: 0.78,
+                                                                 density: 1.28,
+                                                                 temperature: -0.12,
+                                                                 mood: -0.04)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .foggy,
+                                                           secondaryType: .clear,
+                                                           blend: 0.15,
+                                                           amount: 0.82)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.24, style: .layered)
+            environment.fog = EnvironmentFogConfig(amount: 0.12, height: -0.4, distance: 4.0)
+        case .overcast:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 13.5,
+                                                               moonIntensity: 0.0,
+                                                               moonSizeDegrees: 0.54,
+                                                               starIntensity: 0.0,
+                                                               starRichness: 0.6,
+                                                               milkyWayIntensity: 0.0,
+                                                               milkyWayChroma: 0.8,
+                                                               milkyWayRotation: 0.0,
+                                                               nightBrightness: 0.9)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.38,
+                                                                 haze: 0.42,
+                                                                 density: 1.12,
+                                                                 temperature: -0.08,
+                                                                 mood: -0.16)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .overcast,
+                                                           secondaryType: .clear,
+                                                           blend: 0.0,
+                                                           amount: 0.86)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.9, style: .overcast)
+            environment.fog = EnvironmentFogConfig(amount: 0.035, height: 0.0, distance: 8.0)
+        case .stormy:
+            environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 16.0,
+                                                               moonIntensity: 0.0,
+                                                               moonSizeDegrees: 0.54,
+                                                               starIntensity: 0.0,
+                                                               starRichness: 0.5,
+                                                               milkyWayIntensity: 0.0,
+                                                               milkyWayChroma: 0.7,
+                                                               milkyWayRotation: 0.0,
+                                                               nightBrightness: 0.75)
+            environment.atmosphere = EnvironmentAtmosphereConfig(amount: 0.52,
+                                                                 haze: 0.62,
+                                                                 density: 1.38,
+                                                                 temperature: -0.2,
+                                                                 mood: -0.48)
+            environment.weather = EnvironmentWeatherConfig(primaryType: .storm,
+                                                           secondaryType: .overcast,
+                                                           blend: 0.28,
+                                                           amount: 0.95)
+            environment.clouds = EnvironmentCloudConfig(coverage: 0.96, style: .storm)
+            environment.fog = EnvironmentFogConfig(amount: 0.07, height: 0.0, distance: 6.0)
+        }
+    }
+
+    private static func lookConfig(for preset: EnvironmentLookPreset) -> EnvironmentLookConfig {
+        switch preset {
+        case .custom:
+            return EnvironmentLookConfig()
+        case .clearNoon:
+            return EnvironmentLookConfig(preset: preset, mood: 0.0, warmth: 0.04, cinematicAmount: 0.0)
+        case .goldenHour:
+            return EnvironmentLookConfig(preset: preset, mood: 0.28, warmth: 0.66, cinematicAmount: 0.28)
+        case .blueHour:
+            return EnvironmentLookConfig(preset: preset, mood: 0.10, warmth: -0.42, cinematicAmount: 0.12)
+        case .moonlitNight:
+            return EnvironmentLookConfig(preset: preset, mood: 0.12, warmth: -0.24, cinematicAmount: 0.16)
+        case .starryNight:
+            return EnvironmentLookConfig(preset: preset, mood: 0.16, warmth: -0.16, cinematicAmount: 0.30)
+        case .milkyWayNight:
+            return EnvironmentLookConfig(preset: preset, mood: 0.22, warmth: -0.1, cinematicAmount: 0.46)
+        case .foggyMorning:
+            return EnvironmentLookConfig(preset: preset, mood: -0.04, warmth: -0.12, cinematicAmount: 0.08)
+        case .overcast:
+            return EnvironmentLookConfig(preset: preset, mood: -0.18, warmth: -0.08, cinematicAmount: 0.1)
+        case .stormy:
+            return EnvironmentLookConfig(preset: preset, mood: 0.56, warmth: -0.2, cinematicAmount: 0.46)
+        }
+    }
+}
+
+/// Runtime-only mutable environment simulation state. This is seeded from
+/// `EnvironmentComponent` and should not be serialized as authored scene data.
+public struct EnvironmentRuntimeStateComponent: Equatable {
+    public var currentTimeOfDay: Float
+    public var timeControlMode: EnvironmentTimeControlMode
+    public var dayLengthSeconds: Float
+    public var timeScale: Float
+    public var currentWeatherType: EnvironmentWeatherType
+    public var targetWeatherType: EnvironmentWeatherType
+    public var weatherBlend: Float
+    public var weatherAmount: Float
+    public var cloudPhase: Float
+    public var windPhase: Float
+    public var scriptedTimeOfDayOverride: Float?
+    public var precipitationAmount: Float
+    public var stormActivity: Float
+    public var lightningActivity: Float
+    public var wetnessDriver: Float
+
+    public init(currentTimeOfDay: Float = 14.0,
+                timeControlMode: EnvironmentTimeControlMode = .fixed,
+                dayLengthSeconds: Float = 600.0,
+                timeScale: Float = 1.0,
+                currentWeatherType: EnvironmentWeatherType = .clear,
+                targetWeatherType: EnvironmentWeatherType = .clear,
+                weatherBlend: Float = 0.0,
+                weatherAmount: Float = 0.0,
+                cloudPhase: Float = 0.0,
+                windPhase: Float = 0.0,
+                scriptedTimeOfDayOverride: Float? = nil,
+                precipitationAmount: Float = 0.0,
+                stormActivity: Float = 0.0,
+                lightningActivity: Float = 0.0,
+                wetnessDriver: Float = 0.0) {
+        self.currentTimeOfDay = currentTimeOfDay
+        self.timeControlMode = timeControlMode
+        self.dayLengthSeconds = dayLengthSeconds
+        self.timeScale = timeScale
+        self.currentWeatherType = currentWeatherType
+        self.targetWeatherType = targetWeatherType
+        self.weatherBlend = weatherBlend
+        self.weatherAmount = weatherAmount
+        self.cloudPhase = cloudPhase
+        self.windPhase = windPhase
+        self.scriptedTimeOfDayOverride = scriptedTimeOfDayOverride
+        self.precipitationAmount = precipitationAmount
+        self.stormActivity = stormActivity
+        self.lightningActivity = lightningActivity
+        self.wetnessDriver = wetnessDriver
+    }
+
+    public init(seededFrom environment: EnvironmentComponent) {
+        self.init(currentTimeOfDay: environment.celestial.defaultTimeOfDay,
+                  timeControlMode: .fixed,
+                  dayLengthSeconds: 600.0,
+                  timeScale: 1.0,
+                  currentWeatherType: environment.weather.primaryType,
+                  targetWeatherType: environment.weather.secondaryType,
+                  weatherBlend: environment.weather.blend,
+                  weatherAmount: environment.weather.amount,
+                  cloudPhase: 0.0,
+                  windPhase: 0.0,
+                  scriptedTimeOfDayOverride: nil,
+                  precipitationAmount: 0.0,
+                  stormActivity: environment.weather.primaryType == .storm || environment.weather.secondaryType == .storm ? environment.weather.amount : 0.0,
+                  lightningActivity: 0.0,
+                  wetnessDriver: 0.0)
+    }
+
+    public static func `default`(from environment: EnvironmentComponent) -> EnvironmentRuntimeStateComponent {
+        EnvironmentRuntimeStateComponent(seededFrom: environment)
+    }
+}
+
+public struct EnvironmentIBLSignature: Equatable, Hashable {
+    public static let currentVersion: UInt32 = 9
+
+    public let version: UInt32
+    public let enabled: Bool
+    public let sourceMode: EnvironmentSourceMode
+    public let hdriTextureHandle: AssetHandle?
+    public let finalTimeOfDay: Int32
+    public let weatherPrimary: UInt32
+    public let weatherSecondary: UInt32
+    public let weatherBlend: Int32
+    public let weatherAmount: Int32
+    public let atmosphereAmount: Int32
+    public let atmosphereHaze: Int32
+    public let atmosphereDensity: Int32
+    public let atmosphereTemperature: Int32
+    public let atmosphereMood: Int32
+    public let lookMood: Int32
+    public let lookWarmth: Int32
+    public let lookCinematicAmount: Int32
+    public let cloudCoverage: Int32
+    public let cloudStyle: UInt32
+    public let cloudRenderMode: UInt32
+    public let moonIntensity: Int32
+    public let moonSizeDegrees: Int32
+    public let starIntensity: Int32
+    public let starRichness: Int32
+    public let milkyWayIntensity: Int32
+    public let milkyWayChroma: Int32
+    public let milkyWayRotation: Int32
+    public let nightBrightness: Int32
+
+    public init(version: UInt32 = EnvironmentIBLSignature.currentVersion,
+                enabled: Bool = false,
+                sourceMode: EnvironmentSourceMode = .hdri,
+                hdriTextureHandle: AssetHandle? = nil,
+                finalTimeOfDay: Int32 = 0,
+                weatherPrimary: UInt32 = 0,
+                weatherSecondary: UInt32 = 0,
+                weatherBlend: Int32 = 0,
+                weatherAmount: Int32 = 0,
+                atmosphereAmount: Int32 = 0,
+                atmosphereHaze: Int32 = 0,
+                atmosphereDensity: Int32 = 0,
+                atmosphereTemperature: Int32 = 0,
+                atmosphereMood: Int32 = 0,
+                lookMood: Int32 = 0,
+                lookWarmth: Int32 = 0,
+                lookCinematicAmount: Int32 = 0,
+                cloudCoverage: Int32 = 0,
+                cloudStyle: UInt32 = 0,
+                cloudRenderMode: UInt32 = 0,
+                moonIntensity: Int32 = 0,
+                moonSizeDegrees: Int32 = 0,
+                starIntensity: Int32 = 0,
+                starRichness: Int32 = 0,
+                milkyWayIntensity: Int32 = 0,
+                milkyWayChroma: Int32 = 0,
+                milkyWayRotation: Int32 = 0,
+                nightBrightness: Int32 = 0) {
+        self.version = version
+        self.enabled = enabled
+        self.sourceMode = sourceMode
+        self.hdriTextureHandle = hdriTextureHandle
+        self.finalTimeOfDay = finalTimeOfDay
+        self.weatherPrimary = weatherPrimary
+        self.weatherSecondary = weatherSecondary
+        self.weatherBlend = weatherBlend
+        self.weatherAmount = weatherAmount
+        self.atmosphereAmount = atmosphereAmount
+        self.atmosphereHaze = atmosphereHaze
+        self.atmosphereDensity = atmosphereDensity
+        self.atmosphereTemperature = atmosphereTemperature
+        self.atmosphereMood = atmosphereMood
+        self.lookMood = lookMood
+        self.lookWarmth = lookWarmth
+        self.lookCinematicAmount = lookCinematicAmount
+        self.cloudCoverage = cloudCoverage
+        self.cloudStyle = cloudStyle
+        self.cloudRenderMode = cloudRenderMode
+        self.moonIntensity = moonIntensity
+        self.moonSizeDegrees = moonSizeDegrees
+        self.starIntensity = starIntensity
+        self.starRichness = starRichness
+        self.milkyWayIntensity = milkyWayIntensity
+        self.milkyWayChroma = milkyWayChroma
+        self.milkyWayRotation = milkyWayRotation
+        self.nightBrightness = nightBrightness
+    }
+}
+
+/// Transient renderer-owned IBL resource state for an environment entity.
+/// Texture handles and rebuild bookkeeping are intentionally not authored data.
+public struct EnvironmentIBLStateComponent: Equatable {
+    public var environmentTexture: AssetHandle?
+    public var irradianceTexture: AssetHandle?
+    public var prefilteredTexture: AssetHandle?
+    public var brdfLUT: AssetHandle?
+    /// Existing IBL no longer matches the desired environment, but automatic rebuild policy may leave it bound.
+    public var dirty: Bool
+    /// Generated textures are missing or invalid and should be rebuilt as soon as possible.
+    public var needsRebuild: Bool
+    /// User explicitly requested a rebuild; this bypasses debounce/cooldown.
+    public var rebuildRequested: Bool
+    public var isRebuilding: Bool
+    public var lastRebuildTime: Double
+    public var lastBuiltSignature: EnvironmentIBLSignature?
+    public var pendingSignature: EnvironmentIBLSignature?
+    public var currentRebuildQuality: EnvironmentIBLRebuildQuality?
+    public var lastBuiltQuality: EnvironmentIBLRebuildQuality?
+    public var lastFailureMessage: String?
+
+    public static var defaultNeedsRebuild: EnvironmentIBLStateComponent {
+        EnvironmentIBLStateComponent()
+    }
+
+    public init(environmentTexture: AssetHandle? = nil,
+                irradianceTexture: AssetHandle? = nil,
+                prefilteredTexture: AssetHandle? = nil,
+                brdfLUT: AssetHandle? = nil,
+                dirty: Bool = true,
+                needsRebuild: Bool = true,
+                rebuildRequested: Bool = false,
+                isRebuilding: Bool = false,
+                lastRebuildTime: Double = 0.0,
+                lastBuiltSignature: EnvironmentIBLSignature? = nil,
+                pendingSignature: EnvironmentIBLSignature? = nil,
+                currentRebuildQuality: EnvironmentIBLRebuildQuality? = nil,
+                lastBuiltQuality: EnvironmentIBLRebuildQuality? = nil,
+                lastFailureMessage: String? = nil) {
+        self.environmentTexture = environmentTexture
+        self.irradianceTexture = irradianceTexture
+        self.prefilteredTexture = prefilteredTexture
+        self.brdfLUT = brdfLUT
+        self.dirty = dirty
+        self.needsRebuild = needsRebuild
+        self.rebuildRequested = rebuildRequested
+        self.isRebuilding = isRebuilding
+        self.lastRebuildTime = lastRebuildTime
+        self.lastBuiltSignature = lastBuiltSignature
+        self.pendingSignature = pendingSignature
+        self.currentRebuildQuality = currentRebuildQuality
+        self.lastBuiltQuality = lastBuiltQuality
+        self.lastFailureMessage = lastFailureMessage
+    }
+}
+
+/// Live mutable weather progression state for the active atmosphere owner.
+/// The authored defaults live on `SkyLightComponent`; this component holds the
+/// runtime-resolved values that later systems will mutate frame to frame.
+public struct EnvironmentStateComponent: Equatable {
+    public var currentTimeOfDay: Float
+    public var timeControlMode: EnvironmentTimeControlMode
+    public var dayLengthSeconds: Float
+    public var environmentTimeScale: Float
+    public var currentWeatherType: AtmosphereWeatherType
+    public var targetWeatherType: AtmosphereWeatherType
+    public var weatherTransitionProgress: Float
+    public var weatherTransitionDuration: Float
+    public var weatherAmount: Float
+    public var cloudPhase: Float
+    public var windPhase: Float
+    public var scriptedTimeOfDayOverride: Float?
+    public var precipitationAmount: Float
+    public var stormActivity: Float
+    public var lightningActivity: Float
+    public var wetnessDriver: Float
+
+    public init(currentTimeOfDay: Float = 14.0,
+                timeControlMode: EnvironmentTimeControlMode = .fixed,
+                dayLengthSeconds: Float = 600.0,
+                environmentTimeScale: Float = 1.0,
+                currentWeatherType: AtmosphereWeatherType = .clear,
+                targetWeatherType: AtmosphereWeatherType = .clear,
+                weatherTransitionProgress: Float = 1.0,
+                weatherTransitionDuration: Float = 10.0,
+                weatherAmount: Float = 0.0,
+                cloudPhase: Float = 0.0,
+                windPhase: Float = 0.0,
+                scriptedTimeOfDayOverride: Float? = nil,
+                precipitationAmount: Float = 0.0,
+                stormActivity: Float = 0.0,
+                lightningActivity: Float = 0.0,
+                wetnessDriver: Float = 0.0) {
+        self.currentTimeOfDay = currentTimeOfDay
+        self.timeControlMode = timeControlMode
+        self.dayLengthSeconds = dayLengthSeconds
+        self.environmentTimeScale = environmentTimeScale
+        self.currentWeatherType = currentWeatherType
+        self.targetWeatherType = targetWeatherType
+        self.weatherTransitionProgress = weatherTransitionProgress
+        self.weatherTransitionDuration = weatherTransitionDuration
+        self.weatherAmount = weatherAmount
+        self.cloudPhase = cloudPhase
+        self.windPhase = windPhase
+        self.scriptedTimeOfDayOverride = scriptedTimeOfDayOverride
+        self.precipitationAmount = precipitationAmount
+        self.stormActivity = stormActivity
+        self.lightningActivity = lightningActivity
+        self.wetnessDriver = wetnessDriver
+    }
+
+    public init(seededFromAuthored sky: SkyLightComponent) {
+        self.init(currentTimeOfDay: sky.timeOfDay,
+                  timeControlMode: .fixed,
+                  dayLengthSeconds: 600.0,
+                  environmentTimeScale: 1.0,
+                  currentWeatherType: sky.weatherType,
+                  targetWeatherType: sky.secondaryWeatherType,
+                  weatherTransitionProgress: sky.weatherBlend,
+                  weatherTransitionDuration: 10.0,
+                  weatherAmount: sky.weatherAmount,
+                  cloudPhase: 0.0,
+                  windPhase: 0.0,
+                  scriptedTimeOfDayOverride: nil,
+                  precipitationAmount: 0.0,
+                  stormActivity: sky.weatherType == .storm || sky.secondaryWeatherType == .storm ? sky.weatherAmount : 0.0,
+                  lightningActivity: 0.0,
+                  wetnessDriver: 0.0)
+    }
+}
+
+/// Renderer-owned transient IBL state for the active atmosphere owner.
+/// This is intentionally separate from authored atmosphere config so rebuild
+/// bookkeeping and runtime texture handles do not pollute serialized sky intent.
+public struct SkyIBLStateComponent: Equatable {
+    public var iblEnvironmentHandle: AssetHandle?
+    public var iblIrradianceHandle: AssetHandle?
+    public var iblPrefilteredHandle: AssetHandle?
+    public var iblBrdfHandle: AssetHandle?
+    public var needsRebuild: Bool
+    public var rebuildRequested: Bool
+    public var realtimeUpdate: Bool
+    public var lastRebuildTime: Double
+    public var lastRequestedSnapshotSignature: UInt64?
+
+    public init(iblEnvironmentHandle: AssetHandle? = nil,
+                iblIrradianceHandle: AssetHandle? = nil,
+                iblPrefilteredHandle: AssetHandle? = nil,
+                iblBrdfHandle: AssetHandle? = nil,
+                needsRebuild: Bool = true,
+                rebuildRequested: Bool = false,
+                realtimeUpdate: Bool = true,
+                lastRebuildTime: Double = 0.0,
+                lastRequestedSnapshotSignature: UInt64? = nil) {
+        self.iblEnvironmentHandle = iblEnvironmentHandle
+        self.iblIrradianceHandle = iblIrradianceHandle
+        self.iblPrefilteredHandle = iblPrefilteredHandle
+        self.iblBrdfHandle = iblBrdfHandle
+        self.needsRebuild = needsRebuild
+        self.rebuildRequested = rebuildRequested
+        self.realtimeUpdate = realtimeUpdate
+        self.lastRebuildTime = lastRebuildTime
+        self.lastRequestedSnapshotSignature = lastRequestedSnapshotSignature
+    }
+}
+
+/// The active sky is the scene's single authored atmosphere owner.
+///
+/// Ownership intent:
+/// - this component is the source of truth for authored atmosphere state
+/// - sky, fog, sun, and future moon/stars/weather derivation flow from it
+/// - the auto sun light is a runtime-derived artifact owned by the active atmosphere
+/// - the legacy procedural fields below remain only to bridge the current renderer/editor
+///   until later passes derive them automatically from the higher-level authored state
 public struct SkyLightComponent: Equatable {
+    // MARK: Source / ownership
+
     public var mode: SkyMode
     public var enabled: Bool
+    public var hdriHandle: AssetHandle?
+
+    // MARK: High-level authored atmosphere state
+
+    /// Authored default solar-time control in hours on a 0...24 day cycle.
+    /// Later runtime passes seed `EnvironmentStateComponent.currentTimeOfDay` from this.
+    public var timeOfDay: Float
+    /// Authored default primary weather preset/state for the active atmosphere owner.
+    public var weatherType: AtmosphereWeatherType
+    /// Authored secondary weather preset/state used as the default runtime target.
+    public var secondaryWeatherType: AtmosphereWeatherType
+    /// Authored default blend factor between primary and secondary weather states.
+    public var weatherBlend: Float
+    /// Authored default intensity/amplitude of the resolved weather state after blending.
+    public var weatherAmount: Float
+    /// High-level atmosphere / haze control used to derive the current lower-level air terms.
+    public var atmosphereAmount: Float
+    public var cloudCoverage: Float
+    public var cloudStyle: AtmosphereCloudStyle
+    /// Warm/cool grading bias. Negative is cooler, positive is warmer.
+    public var temperature: Float
+    /// High-level mood bias. Negative is darker/bleaker, positive is clearer/vibrant.
+    public var mood: Float
+    /// First-night-pass authored moon strength. The moon remains runtime-derived from atmosphere state.
+    public var moonIntensity: Float
+    /// Authored apparent moon size in degrees for the shared non-volumetric sky path.
+    public var moonSizeDegrees: Float
+    /// High-level star field strength. Visibility is still derived from haze, clouds, and moon brightness.
+    public var starIntensity: Float
+    public var starRichness: Float
+    public var milkyWayIntensity: Float
+    public var milkyWayChroma: Float
+    public var milkyWayRotation: Float
+    public var nightBrightness: Float
+    public var fogAmount: Float
+    public var fogHeight: Float
+    public var fogDistance: Float
+
+    // MARK: Legacy procedural compatibility state
+
     public var intensity: Float
     public var skyTint: SIMD3<Float>
     public var turbidity: Float
@@ -1556,58 +2415,84 @@ public struct SkyLightComponent: Equatable {
     public var cloudsThickness: Float
     public var cloudsBrightness: Float
     public var cloudsSunInfluence: Float
-    public var hdriHandle: AssetHandle?
-    public var iblEnvironmentHandle: AssetHandle?
-    public var iblIrradianceHandle: AssetHandle?
-    public var iblPrefilteredHandle: AssetHandle?
-    public var iblBrdfHandle: AssetHandle?
-    public var needsRebuild: Bool
-    public var rebuildRequested: Bool
-    public var realtimeUpdate: Bool
-    public var lastRebuildTime: Double
 
     public init(
         mode: SkyMode = .hdri,
         enabled: Bool = true,
+        hdriHandle: AssetHandle? = nil,
+        timeOfDay: Float = 14.0,
+        weatherType: AtmosphereWeatherType = .clear,
+        secondaryWeatherType: AtmosphereWeatherType = .clear,
+        weatherBlend: Float = 0.0,
+        weatherAmount: Float = 0.0,
+        atmosphereAmount: Float = 0.28,
+        cloudCoverage: Float = 0.3,
+        cloudStyle: AtmosphereCloudStyle = .puffy,
+        temperature: Float = 0.0,
+        mood: Float = 0.0,
+        moonIntensity: Float = 0.18,
+        moonSizeDegrees: Float = 0.54,
+        starIntensity: Float = 0.75,
+        starRichness: Float = 1.0,
+        milkyWayIntensity: Float = 1.0,
+        milkyWayChroma: Float = 1.0,
+        milkyWayRotation: Float = 0.0,
+        nightBrightness: Float = 1.0,
+        fogAmount: Float = 0.03,
+        fogHeight: Float = 0.0,
+        fogDistance: Float = 3.0,
         intensity: Float = 1.0,
         skyTint: SIMD3<Float> = SIMD3<Float>(1.0, 1.0, 1.0),
         turbidity: Float = 2.0,
         azimuthDegrees: Float = 0.0,
         elevationDegrees: Float = 30.0,
         sunSizeDegrees: Float = 0.535,
-        zenithTint: SIMD3<Float> = SIMD3<Float>(0.24, 0.45, 0.95),
-        horizonTint: SIMD3<Float> = SIMD3<Float>(0.95, 0.75, 0.55),
-        gradientStrength: Float = 1.0,
-        hazeDensity: Float = 0.35,
+        zenithTint: SIMD3<Float> = SIMD3<Float>(0.26, 0.42, 0.78),
+        horizonTint: SIMD3<Float> = SIMD3<Float>(0.92, 0.78, 0.64),
+        gradientStrength: Float = 0.9,
+        hazeDensity: Float = 0.28,
         hazeFalloff: Float = 2.2,
         hazeHeight: Float = 0.0,
-        ozoneStrength: Float = 0.35,
-        ozoneTint: SIMD3<Float> = SIMD3<Float>(0.55, 0.7, 1.0),
+        ozoneStrength: Float = 0.42,
+        ozoneTint: SIMD3<Float> = SIMD3<Float>(0.58, 0.72, 0.96),
         sunHaloSize: Float = 2.5,
-        sunHaloIntensity: Float = 0.5,
-        sunHaloSoftness: Float = 1.2,
+        sunHaloIntensity: Float = 0.38,
+        sunHaloSoftness: Float = 1.35,
         cloudsEnabled: Bool = false,
-        cloudsCoverage: Float = 0.35,
-        cloudsSoftness: Float = 0.6,
+        cloudsCoverage: Float = 0.3,
+        cloudsSoftness: Float = 0.55,
         cloudsScale: Float = 1.0,
         cloudsSpeed: Float = 0.02,
         cloudsWindDirection: SIMD2<Float> = SIMD2<Float>(1.0, 0.0),
-        cloudsHeight: Float = 0.25,
-        cloudsThickness: Float = 0.35,
-        cloudsBrightness: Float = 1.0,
-        cloudsSunInfluence: Float = 1.0,
-        hdriHandle: AssetHandle? = nil,
-        iblEnvironmentHandle: AssetHandle? = nil,
-        iblIrradianceHandle: AssetHandle? = nil,
-        iblPrefilteredHandle: AssetHandle? = nil,
-        iblBrdfHandle: AssetHandle? = nil,
-        needsRebuild: Bool = true,
-        rebuildRequested: Bool = false,
-        realtimeUpdate: Bool = true,
-        lastRebuildTime: Double = 0.0
+        cloudsHeight: Float = 0.22,
+        cloudsThickness: Float = 0.32,
+        cloudsBrightness: Float = 0.95,
+        cloudsSunInfluence: Float = 0.9
     ) {
         self.mode = mode
         self.enabled = enabled
+        self.hdriHandle = hdriHandle
+        self.timeOfDay = timeOfDay
+        self.weatherType = weatherType
+        self.secondaryWeatherType = secondaryWeatherType
+        self.weatherBlend = weatherBlend
+        self.weatherAmount = weatherAmount
+        self.atmosphereAmount = atmosphereAmount
+        self.cloudCoverage = cloudCoverage
+        self.cloudStyle = cloudStyle
+        self.temperature = temperature
+        self.mood = mood
+        self.moonIntensity = moonIntensity
+        self.moonSizeDegrees = moonSizeDegrees
+        self.starIntensity = starIntensity
+        self.starRichness = starRichness
+        self.milkyWayIntensity = milkyWayIntensity
+        self.milkyWayChroma = milkyWayChroma
+        self.milkyWayRotation = milkyWayRotation
+        self.nightBrightness = nightBrightness
+        self.fogAmount = fogAmount
+        self.fogHeight = fogHeight
+        self.fogDistance = fogDistance
         self.intensity = intensity
         self.skyTint = skyTint
         self.turbidity = turbidity
@@ -1635,15 +2520,6 @@ public struct SkyLightComponent: Equatable {
         self.cloudsThickness = cloudsThickness
         self.cloudsBrightness = cloudsBrightness
         self.cloudsSunInfluence = cloudsSunInfluence
-        self.hdriHandle = hdriHandle
-        self.iblEnvironmentHandle = iblEnvironmentHandle
-        self.iblIrradianceHandle = iblIrradianceHandle
-        self.iblPrefilteredHandle = iblPrefilteredHandle
-        self.iblBrdfHandle = iblBrdfHandle
-        self.needsRebuild = needsRebuild
-        self.rebuildRequested = rebuildRequested
-        self.realtimeUpdate = realtimeUpdate
-        self.lastRebuildTime = lastRebuildTime
     }
 }
 

@@ -46,8 +46,17 @@ public final class Renderer: NSObject {
     private var _fixedDeltaTime: Float = 1.0 / 60.0
     private let _maxFrameDelta: Float = 0.25
     // MARK: - Shared cubemap views
-    // These are the renderer's long-standing views used by the procedural sky / shared
-    // IBL generation path. Keep them stable so skybox/IBL behavior does not change.
+    // Engine convention reference:
+    // - World space uses +Y as up. Scene cameras look down their local -Z axis through the Metal
+    //   right-handed clip path. Directional light direction is the ray direction from light to scene.
+    // - Runtime texturecube sampling expects reflection vectors in world space; global IBL samples R
+    //   directly, while local reflection probes currently compensate their scene-capture convention
+    //   with a Z flip in the PBR shader.
+    // - Metal cube slices are intended as +X, -X, +Y, -Y, +Z, -Z. The shader-side
+    //   cubeDirectionFromFaceUV helper documents that canonical order. These long-standing capture
+    //   views are intentionally left unchanged for diagnostics; any future convention fix must make
+    //   Renderer._views, cubeDirectionFromFaceUV, skybox sampling, probe capture, and PBR reflection
+    //   sampling agree explicitly.
     private let _views: [float4x4] = [
         float4x4(lookAt: .zero, center: [ 1, 0, 0], up: [0, 1, 0]),
         float4x4(lookAt: .zero, center: [-1, 0, 0], up: [0, 1, 0]),
@@ -64,8 +73,13 @@ public final class Renderer: NSObject {
     private let _irradianceSizeFast = 32
     private let _prefilteredSizeFast = 256
     private let _brdfLutSize = 512
+    private let _diagnosticEnvironmentSize = 512
+    private let _diagnosticIrradianceSize = 32
+    private let _diagnosticPrefilteredSize = 256
     private let _skyRebuildQueue = DispatchQueue(label: "MetalCup.Renderer.SkyRebuild", qos: .userInitiated)
+    private let _environmentIBLCommandQueue: MTLCommandQueue
     private let _skyRebuildCooldown: Double = 2.0
+    private let _environmentIBLEditDebounce: Double = 0.75
     private let _skyInteractiveSettleDelay: Double = 4.0
     private var _skyRebuildInFlight = false
     private var _lastSkyRequestedSnapshot: SkyLightComponent?
@@ -74,6 +88,52 @@ public final class Renderer: NSObject {
     private var _lastSkyRebuildStartTime: Double = 0.0
     private var _lastSkyInteractionTime: Double = 0.0
     private var _pendingSkySnapshot: SkyLightComponent?
+    private var _pendingEnvironmentRenderState: EnvironmentRenderState?
+    private var _diagnosticOrientationIBLGenerated = false
+    private var _didLogMoonAlbedoResolution = false
+    private var _didLogMilkyWayResolution = false
+    private var _didLogCloudAtlasResolution = false
+
+    private struct EnvironmentIBLRebuildRequest {
+        let entity: Entity
+        let signature: EnvironmentIBLSignature
+        let sourceMode: EnvironmentSourceMode
+        let hdriTexture: MTLTexture?
+        let moonAlbedoTexture: MTLTexture?
+        let galaxyTexture: MTLTexture?
+        let cloudAtlasTexture: MTLTexture?
+        let skyParams: SkyParams
+        let targetHandles: IBLTextureHandles
+        let targetEnvironment: MTLTexture
+        let targetIrradiance: MTLTexture
+        let targetPrefiltered: MTLTexture
+        let generationConfig: IBLGenerationConfig
+        let quality: EnvironmentIBLRebuildQuality
+        let requestedAt: Double
+        let manual: Bool
+    }
+
+    private struct EnvironmentIBLRebuildResult {
+        let entity: Entity
+        let signature: EnvironmentIBLSignature
+        let handles: IBLTextureHandles
+        let quality: EnvironmentIBLRebuildQuality
+        let completedAt: Double
+    }
+
+    private struct EnvironmentIBLRebuildFailure {
+        let entity: Entity
+        let signature: EnvironmentIBLSignature
+        let message: String
+    }
+
+    private enum EnvironmentIBLRebuildCompletion {
+        case success(EnvironmentIBLRebuildResult)
+        case failure(EnvironmentIBLRebuildFailure)
+    }
+
+    private let _environmentIBLCompletionLock = NSLock()
+    private var _pendingEnvironmentIBLCompletions: [EnvironmentIBLRebuildCompletion] = []
 
     private struct IBLTextureHandles {
         let environment: AssetHandle
@@ -136,6 +196,7 @@ public final class Renderer: NSObject {
         self._frameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
         self._skyRebuildFrameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
         self._reflectionProbeCaptureFrameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
+        self._environmentIBLCommandQueue = engineContext.device.makeCommandQueue() ?? engineContext.commandQueue
         self.shadowRenderer = ShadowRenderer(engineContext: engineContext)
         super.init()
         self._lastPerfFlags = settings.perfFlags
@@ -154,6 +215,8 @@ public final class Renderer: NSObject {
         _ = ensureBRDFLUTTexture()
         prewarmIBLPipelinesWithTiming()
         BuiltinAssets.registerFallbackIBLTextures(assetManager: engineContext.assets, preferences: engineContext.preferences, device: engineContext.device)
+        ensureDiagnosticOrientationIBLTextures()
+        renderDiagnosticOrientationIBL(frameContext: _skyRebuildFrameContextStorage.beginFrame())
         let builtinHandles = IBLTextureHandles(
             environment: BuiltinAssets.environmentCubemap,
             irradiance: BuiltinAssets.irradianceCubemap,
@@ -210,10 +273,7 @@ public final class Renderer: NSObject {
         var samplingStrategy: String
     }
 
-    private enum IBLBuildMode: String {
-        case interactive
-        case final
-    }
+    private typealias IBLBuildMode = EnvironmentIBLRebuildQuality
 
     // MARK: - Render pass descriptor helpers
     private func makeRenderPassDescriptor(
@@ -391,6 +451,73 @@ public final class Renderer: NSObject {
         }
     }
 
+    private func ensureDiagnosticOrientationIBLTextures() {
+        let handles = IBLTextureHandles(
+            environment: BuiltinAssets.diagnosticOrientationCubemap,
+            irradiance: BuiltinAssets.diagnosticOrientationIrradianceCubemap,
+            prefiltered: BuiltinAssets.diagnosticOrientationPrefilteredCubemap,
+            brdf: BuiltinAssets.brdfLut
+        )
+        ensureIBLTextureSet(
+            handles: handles,
+            environmentSize: _diagnosticEnvironmentSize,
+            irradianceSize: _diagnosticIrradianceSize,
+            prefilteredSize: _diagnosticPrefilteredSize,
+            labelSuffix: "DiagnosticOrientation"
+        )
+    }
+
+    private func renderDiagnosticOrientationCubemap(targetEnvironment: MTLTexture,
+                                                    frameContext: RendererFrameContext,
+                                                    commandBuffer: MTLCommandBuffer) {
+        guard let quadMesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
+        validateIBLResources(environment: targetEnvironment, irradiance: nil, prefiltered: nil)
+        for face in 0..<6 {
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createCubemapRenderPassDescriptor(texture: targetEnvironment, face: face)) else { continue }
+            encoder.label = "Diagnostic Orientation Cubemap face \(face)"
+            encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.CubemapOrientationDiagnostic])
+            encoder.setCullMode(.none)
+            var vp = matrix_identity_float4x4
+            encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
+            var cubemapParams = SIMD2<Float>(1.0, Float(face))
+            encoder.setFragmentBytes(&cubemapParams, length: MemoryLayout<SIMD2<Float>>.stride, index: FragmentBufferIndex.skyIntensity)
+            quadMesh.drawPrimitives(encoder, frameContext: frameContext)
+            encoder.endEncoding()
+        }
+        if targetEnvironment.mipmapLevelCount > 1,
+           let blit = commandBuffer.makeBlitCommandEncoder() {
+            blit.generateMipmaps(for: targetEnvironment)
+            blit.endEncoding()
+        }
+    }
+
+    private func renderDiagnosticOrientationIBL(frameContext: RendererFrameContext) {
+        guard !_diagnosticOrientationIBLGenerated else { return }
+        ensureDiagnosticOrientationIBLTextures()
+        guard let environment = engineContext.assets.texture(handle: BuiltinAssets.diagnosticOrientationCubemap),
+              let irradiance = engineContext.assets.texture(handle: BuiltinAssets.diagnosticOrientationIrradianceCubemap),
+              let prefiltered = engineContext.assets.texture(handle: BuiltinAssets.diagnosticOrientationPrefilteredCubemap),
+              let commandBuffer = engineContext.commandQueue.makeCommandBuffer() else {
+            return
+        }
+        commandBuffer.label = "Render Diagnostic Orientation IBL"
+        let config = IBLGenerationConfig(
+            qualityPreset: .low,
+            irradianceSamples: 256,
+            prefilterSamplesMin: 64,
+            prefilterSamplesMax: 256,
+            fireflyClamp: settings.iblFireflyClamp,
+            fireflyClampEnabled: settings.iblFireflyClampEnabled != 0,
+            samplingStrategy: "diagnostic orientation"
+        )
+        renderDiagnosticOrientationCubemap(targetEnvironment: environment, frameContext: frameContext, commandBuffer: commandBuffer)
+        renderIrradianceMap(sourceEnvironment: environment, targetIrradiance: irradiance, config: config, frameContext: frameContext, commandBuffer: commandBuffer)
+        renderPrefilteredSpecularMap(sourceEnvironment: environment, targetPrefiltered: prefiltered, config: config, frameContext: frameContext, commandBuffer: commandBuffer)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        _diagnosticOrientationIBLGenerated = true
+    }
+
     public func queueReflectionProbeRebuilds(scene: EngineScene, entities: [Entity]? = nil, force: Bool = false) {
         _reflectionProbeRuntimeManager.queueReflectionProbeRebuilds(scene: scene, entities: entities, force: force)
     }
@@ -416,6 +543,7 @@ public final class Renderer: NSObject {
         let warmStart = CACurrentMediaTime()
         let cubemapStart = CACurrentMediaTime()
         _ = engineContext.graphics.renderPipelineStates[.Cubemap]
+        _ = engineContext.graphics.renderPipelineStates[.CubemapOrientationDiagnostic]
         let cubemapDt = CACurrentMediaTime() - cubemapStart
         let irradianceStart = CACurrentMediaTime()
         _ = engineContext.graphics.renderPipelineStates[.IrradianceMap]
@@ -642,20 +770,111 @@ public final class Renderer: NSObject {
         commandBuffer.commit()
     }
 
-    private func renderProceduralSkyToEnvironmentMap(params: SkyParams, targetEnvironment: MTLTexture, frameContext: RendererFrameContext, commandBuffer: MTLCommandBuffer) {
-        guard let cubemapMesh = engineContext.assets.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
+    private func resolveMoonAlbedoTexture(context: String) -> MTLTexture? {
+        resolveBuiltinSkyTexture(
+            context: context,
+            sourcePath: "Textures/Moon/lroc_color_2k.jpg",
+            fallbackHandle: BuiltinAssets.moonAlbedo,
+            logPrefix: "Moon albedo",
+            didLog: &_didLogMoonAlbedoResolution
+        ) {
+            BuiltinAssets.registerMoonAlbedoTextureIfNeeded(
+                assetManager: engineContext.assets,
+                resourcesRootURL: engineContext.resources.resourcesRootURL,
+                device: engineContext.device
+            )
+        }
+    }
+
+    private func resolveMilkyWayBackgroundTexture(context: String) -> MTLTexture? {
+        resolveBuiltinSkyTexture(
+            context: context,
+            sourcePath: "Textures/Sky/MilkyWay/milkyway_2020_4k.exr",
+            fallbackHandle: BuiltinAssets.milkyWayBackground,
+            logPrefix: "Milky Way background",
+            didLog: &_didLogMilkyWayResolution
+        ) {
+            BuiltinAssets.registerMilkyWayBackgroundTextureIfNeeded(
+                assetManager: engineContext.assets,
+                resourcesRootURL: engineContext.resources.resourcesRootURL,
+                device: engineContext.device
+            )
+        }
+    }
+
+    private func resolveCloudAtlasTexture(context: String) -> MTLTexture? {
+        resolveBuiltinSkyTexture(
+            context: context,
+            sourcePath: "Textures/Sky/Clouds/cloud_atlas_4k.png",
+            fallbackHandle: BuiltinAssets.cloudAtlas,
+            logPrefix: "Cloud atlas",
+            didLog: &_didLogCloudAtlasResolution
+        ) {
+            BuiltinAssets.registerCloudAtlasTextureIfNeeded(
+                assetManager: engineContext.assets,
+                resourcesRootURL: engineContext.resources.resourcesRootURL,
+                device: engineContext.device
+            )
+        }
+    }
+
+    private func resolveBuiltinSkyTexture(context: String,
+                                          sourcePath: String,
+                                          fallbackHandle: AssetHandle,
+                                          logPrefix: String,
+                                          didLog: inout Bool,
+                                          registerFallback: () -> Void) -> MTLTexture? {
+        let sourceHandle = engineContext.assets.handle(forSourcePath: sourcePath)
+        let sourceTexture = sourceHandle.flatMap { engineContext.assets.texture(handle: $0) }
+        if sourceTexture == nil {
+            registerFallback()
+        }
+        let fallbackTexture = engineContext.assets.texture(handle: fallbackHandle)
+        let usedBuiltinFallback = sourceTexture == nil
+        let handle = usedBuiltinFallback ? fallbackHandle : (sourceHandle ?? fallbackHandle)
+        let texture = sourceTexture ?? fallbackTexture
+        if !didLog {
+            didLog = true
+            let textureSummary: String
+            let fallbackHint: Bool
+            if let texture {
+                let label = texture.label ?? "<nil>"
+                let lowerLabel = label.lowercased()
+                fallbackHint = lowerLabel.contains("fallback") || lowerLabel.contains("error") || lowerLabel.contains("white")
+                textureSummary = "label=\(label) size=\(texture.width)x\(texture.height) pixelFormat=\(texture.pixelFormat) fallbackHint=\(fallbackHint)"
+            } else {
+                fallbackHint = false
+                textureSummary = "nil"
+            }
+            EngineLoggerContext.log(
+                "\(logPrefix) resolve context=\(context) sourcePath=\(sourcePath) sourceLookupSucceeded=\(sourceHandle != nil) sourceTextureAvailable=\(sourceTexture != nil) usedBuiltinFallback=\(usedBuiltinFallback) handle=\(handle.rawValue.uuidString) texture=\(textureSummary)",
+                level: .debug,
+                category: .renderer
+            )
+            _ = fallbackHint
+        }
+        return texture
+    }
+
+    private func renderProceduralSkyToEnvironmentMap(params: SkyParams, moonAlbedoTexture: MTLTexture?, galaxyTexture: MTLTexture?, cloudAtlasTexture: MTLTexture?, targetEnvironment: MTLTexture, frameContext: RendererFrameContext, commandBuffer: MTLCommandBuffer) {
+        guard let quadMesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         validateIBLResources(environment: targetEnvironment, irradiance: nil, prefiltered: nil)
         for face in 0..<6 {
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createCubemapRenderPassDescriptor(texture: targetEnvironment, face: face)) else { continue }
             encoder.label = "Procedural Sky face \(face)"
             encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.ProceduralSkyCubemap])
-            encoder.setCullMode(.front)
-            encoder.setFrontFacing(.clockwise)
-            var vp = _viewProjections[face]
+            encoder.setCullMode(.none)
+            var vp = matrix_identity_float4x4
             var skyParams = params
+            skyParams.cloudAtlasEnabled = cloudAtlasTexture == nil ? 0.0 : skyParams.cloudAtlasEnabled
+            var faceIndex = Float(face)
             encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
             encoder.setFragmentBytes(&skyParams, length: SkyParams.stride, index: FragmentBufferIndex.skyParams)
-            cubemapMesh.drawPrimitives(encoder, frameContext: frameContext)
+            encoder.setFragmentBytes(&faceIndex, length: MemoryLayout<Float>.stride, index: FragmentBufferIndex.skyFace)
+            encoder.setFragmentTexture(moonAlbedoTexture ?? engineContext.fallbackTextures.whiteRGBA, index: FragmentTextureIndex.moonAlbedo)
+            encoder.setFragmentTexture(galaxyTexture ?? engineContext.fallbackTextures.whiteRGBA, index: FragmentTextureIndex.galaxyBackground)
+            encoder.setFragmentTexture(cloudAtlasTexture ?? engineContext.fallbackTextures.blackRGBA, index: FragmentTextureIndex.cloudAtlas)
+            quadMesh.drawPrimitives(encoder, frameContext: frameContext)
             encoder.endEncoding()
         }
         if targetEnvironment.mipmapLevelCount > 1,
@@ -665,121 +884,487 @@ public final class Renderer: NSObject {
         }
     }
 
-    private func skyParams(from sky: SkyLightComponent) -> SkyParams {
-        var params = SkyParams()
-        let worldSunDirection = SkySystem.sunDirection(azimuthDegrees: sky.azimuthDegrees,
-                                                       elevationDegrees: sky.elevationDegrees)
-        params.sunDirection = SkySystem.skyShaderSunDirection(fromWorldSunDirection: worldSunDirection)
-        params.sunAngularRadius = max(0.0001, sky.sunSizeDegrees * Float.pi / 180.0)
-        params.sunColor = SIMD3<Float>(1.0, 0.98, 0.92)
-        params.sunIntensity = max(1.0, sky.intensity * 10.0)
-        params.turbidity = max(1.0, sky.turbidity)
-        params.intensity = max(0.0, sky.intensity)
-        params.skyTime = _totalTime
-        params.skyTint = sky.skyTint
-        params.zenithTint = sky.zenithTint
-        params.horizonTint = sky.horizonTint
-        params.gradientStrength = max(0.0, sky.gradientStrength)
-        params.hazeDensity = max(0.0, sky.hazeDensity)
-        params.hazeFalloff = max(0.01, sky.hazeFalloff)
-        params.hazeHeight = sky.hazeHeight
-        params.ozoneStrength = max(0.0, sky.ozoneStrength)
-        params.ozoneTint = sky.ozoneTint
-        params.sunHaloSize = max(0.1, sky.sunHaloSize)
-        params.sunHaloIntensity = max(0.0, sky.sunHaloIntensity)
-        params.sunHaloSoftness = max(0.05, sky.sunHaloSoftness)
-        params.cloudsEnabled = sky.cloudsEnabled ? 1 : 0
-        params.cloudsCoverage = min(max(sky.cloudsCoverage, 0.0), 1.0)
-        params.cloudsSoftness = min(max(sky.cloudsSoftness, 0.01), 1.0)
-        params.cloudsScale = max(0.01, sky.cloudsScale)
-        params.cloudsSpeed = sky.cloudsSpeed
-        params.cloudsWindDirection = sky.cloudsWindDirection
-        params.cloudsHeight = min(max(sky.cloudsHeight, 0.0), 1.0)
-        params.cloudsThickness = min(max(sky.cloudsThickness, 0.0), 1.0)
-        params.cloudsBrightness = max(0.0, sky.cloudsBrightness)
-        params.cloudsSunInfluence = max(0.0, sky.cloudsSunInfluence)
-        return params
+    private func skyParams(from sky: SkyLightComponent,
+                           environmentState: EnvironmentStateComponent?) -> SkyParams {
+        SkySystem.shaderParams(authored: sky, runtime: environmentState)
     }
 
-    private func updateSkyIfNeeded(scene: EngineScene) {
-        guard let skyEntry = scene.ecs.activeSkyLight() else { return }
-        let entity = skyEntry.0
-        var sky = skyEntry.1
-        guard sky.enabled else { return }
+    private func resolvedRendererSettings(for scene: EngineScene?) -> RendererSettings {
+        var resolved = settings
+        if let environmentEntry = scene?.ecs.activeEnvironment() {
+            let runtime = scene?.ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntry.0)
+            let renderState = EnvironmentRenderStateBuilder.build(
+                environment: environmentEntry.1,
+                runtime: runtime,
+                rendererSettings: resolved
+            )
+            renderState.legacyFogPatch.applying(to: &resolved)
+            resolved.iblIntensity = max(0.0, resolved.iblIntensity) * renderState.iblLightingIntensity
+            return resolved
+        }
+
+        let activeSkyEntry = scene?.ecs.activeSkyLight()
+        let environmentState = activeSkyEntry.flatMap { scene?.ecs.get(EnvironmentStateComponent.self, for: $0.0) }
+        SkySystem.applyDerivedFogSettings(&resolved,
+                                          authored: activeSkyEntry?.1,
+                                          runtime: environmentState)
+        return resolved
+    }
+
+    private func enqueueEnvironmentIBLCompletion(_ completion: EnvironmentIBLRebuildCompletion) {
+        _environmentIBLCompletionLock.lock()
+        _pendingEnvironmentIBLCompletions.append(completion)
+        _environmentIBLCompletionLock.unlock()
+    }
+
+    private func takeEnvironmentIBLCompletions() -> [EnvironmentIBLRebuildCompletion] {
+        _environmentIBLCompletionLock.lock()
+        let completions = _pendingEnvironmentIBLCompletions
+        _pendingEnvironmentIBLCompletions.removeAll(keepingCapacity: true)
+        _environmentIBLCompletionLock.unlock()
+        return completions
+    }
+
+    private func drainEnvironmentIBLCompletions(scene: EngineScene) {
+        let completions = takeEnvironmentIBLCompletions()
+        guard !completions.isEmpty else { return }
+
+        for completion in completions {
+            _skyRebuildInFlight = false
+
+            switch completion {
+            case let .success(result):
+                applyEnvironmentIBLResult(result, scene: scene)
+            case let .failure(failure):
+                applyEnvironmentIBLFailure(failure, scene: scene)
+            }
+        }
+    }
+
+    private func applyEnvironmentIBLResult(_ result: EnvironmentIBLRebuildResult, scene: EngineScene) {
+        guard let entity = scene.ecs.entity(with: result.entity.id),
+              let environment = scene.ecs.get(EnvironmentComponent.self, for: entity) else {
+            return
+        }
+
+        let activeEnvironmentEntity = scene.ecs.activeEnvironment()?.0
+        let runtime = scene.ecs.get(EnvironmentRuntimeStateComponent.self, for: entity)
+        let currentRenderState = EnvironmentRenderStateBuilder.build(
+            environment: environment,
+            runtime: runtime,
+            rendererSettings: settings
+        )
+        var state = scene.ecs.get(EnvironmentIBLStateComponent.self, for: entity)
+            ?? EnvironmentIBLStateComponent.defaultNeedsRebuild
+        let keepManualFinalRequest = state.rebuildRequested && result.quality == .interactive
+
+        if activeEnvironmentEntity == entity, currentRenderState.iblSignature == result.signature {
+            if let appliedIndex = _iblHandleSets.firstIndex(where: {
+                $0.environment == result.handles.environment
+                    && $0.irradiance == result.handles.irradiance
+                    && $0.prefiltered == result.handles.prefiltered
+            }) {
+                _activeIBLHandleIndex = appliedIndex
+            }
+            state.environmentTexture = result.handles.environment
+            state.irradianceTexture = result.handles.irradiance
+            state.prefilteredTexture = result.handles.prefiltered
+            state.brdfLUT = result.handles.brdf
+            state.dirty = false
+            state.needsRebuild = false
+            state.rebuildRequested = false
+            state.isRebuilding = false
+            state.lastBuiltSignature = result.signature
+            state.currentRebuildQuality = nil
+            state.lastBuiltQuality = result.quality
+            state.pendingSignature = nil
+            state.lastFailureMessage = nil
+            if keepManualFinalRequest {
+                state.dirty = true
+                state.needsRebuild = true
+                state.rebuildRequested = true
+                state.pendingSignature = currentRenderState.iblSignature
+            }
+        } else {
+            state.dirty = true
+            state.needsRebuild = false
+            state.isRebuilding = false
+            state.currentRebuildQuality = nil
+            state.pendingSignature = currentRenderState.iblSignature
+            _pendingEnvironmentRenderState = currentRenderState
+        }
+
+        scene.ecs.add(state, to: entity)
+        EngineLoggerContext.log(
+            "Environment IBL rebuild result applied (stale=\(currentRenderState.iblSignature != result.signature), t=\(String(format: "%.3f", result.completedAt)))",
+            level: .debug,
+            category: .renderer
+        )
+    }
+
+    private func applyEnvironmentIBLFailure(_ failure: EnvironmentIBLRebuildFailure, scene: EngineScene) {
+        guard let entity = scene.ecs.entity(with: failure.entity.id) else { return }
+        var state = scene.ecs.get(EnvironmentIBLStateComponent.self, for: entity)
+            ?? EnvironmentIBLStateComponent.defaultNeedsRebuild
+        state.isRebuilding = false
+        state.dirty = true
+        state.needsRebuild = true
+        state.pendingSignature = failure.signature
+        state.currentRebuildQuality = nil
+        state.lastFailureMessage = failure.message
+        scene.ecs.add(state, to: entity)
+    }
+
+    @discardableResult
+    private func updateEnvironmentIBLIfNeeded(scene: EngineScene) -> Bool {
+        drainEnvironmentIBLCompletions(scene: scene)
+        guard let environmentEntry = scene.ecs.activeEnvironment() else { return false }
+        let entity = environmentEntry.0
+        let environment = environmentEntry.1
+        guard environment.enabled else { return true }
+
+        let runtime: EnvironmentRuntimeStateComponent
+        if let existingRuntime = scene.ecs.get(EnvironmentRuntimeStateComponent.self, for: entity) {
+            runtime = existingRuntime
+        } else {
+            runtime = EnvironmentRuntimeStateComponent.default(from: environment)
+            scene.ecs.add(runtime, to: entity)
+        }
+
+        var iblState = scene.ecs.get(EnvironmentIBLStateComponent.self, for: entity)
+            ?? EnvironmentIBLStateComponent.defaultNeedsRebuild
+        let renderState = EnvironmentRenderStateBuilder.build(
+            environment: environment,
+            runtime: runtime,
+            rendererSettings: settings
+        )
+        let signature = renderState.iblSignature
 
         let activeHandles = activeIBLHandles()
         var didUpdateHandles = false
-        var handleUpdate = sky
-        if handleUpdate.iblEnvironmentHandle == nil {
-            handleUpdate.iblEnvironmentHandle = activeHandles.environment
+        if iblState.environmentTexture == nil {
+            iblState.environmentTexture = activeHandles.environment
             didUpdateHandles = true
         }
-        if handleUpdate.iblIrradianceHandle == nil {
-            handleUpdate.iblIrradianceHandle = activeHandles.irradiance
+        if iblState.irradianceTexture == nil {
+            iblState.irradianceTexture = activeHandles.irradiance
             didUpdateHandles = true
         }
-        if handleUpdate.iblPrefilteredHandle == nil {
-            handleUpdate.iblPrefilteredHandle = activeHandles.prefiltered
+        if iblState.prefilteredTexture == nil {
+            iblState.prefilteredTexture = activeHandles.prefiltered
             didUpdateHandles = true
         }
-        if handleUpdate.iblBrdfHandle == nil {
-            handleUpdate.iblBrdfHandle = activeHandles.brdf
+        if iblState.brdfLUT == nil {
+            iblState.brdfLUT = activeHandles.brdf
+            didUpdateHandles = true
+        }
+
+        let hdriLoaded = renderState.sourceMode != .hdri
+            || (renderState.hdriTextureHandle.flatMap { engineContext.assets.texture(handle: $0) } != nil)
+        if renderState.sourceMode == .hdri, !hdriLoaded {
+            if didUpdateHandles {
+                scene.ecs.add(iblState, to: entity)
+            }
+            return true
+        }
+
+        let environmentTexture = iblState.environmentTexture.flatMap { engineContext.assets.texture(handle: $0) }
+        let irradianceTexture = iblState.irradianceTexture.flatMap { engineContext.assets.texture(handle: $0) }
+        let prefilteredTexture = iblState.prefilteredTexture.flatMap { engineContext.assets.texture(handle: $0) }
+        let brdfTexture = iblState.brdfLUT.flatMap { engineContext.assets.texture(handle: $0) }
+        let texturesMissing = (environmentTexture?.width ?? 0) <= 1
+            || (irradianceTexture?.width ?? 0) <= 1
+            || (prefilteredTexture?.width ?? 0) <= 1
+            || brdfTexture == nil
+        if texturesMissing {
+            iblState.dirty = true
+            iblState.needsRebuild = true
+        }
+
+        let now = CACurrentMediaTime()
+        let signatureChanged = iblState.lastBuiltSignature.map { $0 != signature } ?? true
+        let policyAllowsAutomaticRebuild = environment.ibl.realtimeUpdate || environment.ibl.autoRebuildOnChange
+        if signatureChanged, policyAllowsAutomaticRebuild {
+            iblState.dirty = true
+            _lastSkyInteractionTime = now
+        }
+
+        if didUpdateHandles || texturesMissing || signatureChanged || iblState.dirty {
+            iblState.pendingSignature = signature
+            scene.ecs.add(iblState, to: entity)
+        }
+
+        if _skyRebuildInFlight {
+            _pendingEnvironmentRenderState = renderState
+            iblState.isRebuilding = true
+            iblState.pendingSignature = signature
+            scene.ecs.add(iblState, to: entity)
+            return true
+        }
+
+        let manualRebuild = iblState.rebuildRequested
+        let shouldRebuild = manualRebuild
+            || iblState.needsRebuild
+            || (iblState.dirty && policyAllowsAutomaticRebuild)
+        if !shouldRebuild { return true }
+
+        let bypassCooldown = manualRebuild || iblState.needsRebuild
+        let isDebouncingEdit = !bypassCooldown
+            && (now - _lastSkyInteractionTime) < _environmentIBLEditDebounce
+        let isInCooldown = !bypassCooldown
+            && (now - _lastSkyRebuildStartTime) < _skyRebuildCooldown
+        if isDebouncingEdit || isInCooldown {
+            _pendingEnvironmentRenderState = renderState
+            iblState.pendingSignature = signature
+            scene.ecs.add(iblState, to: entity)
+            return true
+        }
+
+        let snapshot = _pendingEnvironmentRenderState ?? renderState
+        _pendingEnvironmentRenderState = nil
+        let snapshotSignature = snapshot.iblSignature
+        let rebuildQuality: EnvironmentIBLRebuildQuality = manualRebuild ? .final : .interactive
+        let nextIndex = (_activeIBLHandleIndex + 1) % _iblHandleSets.count
+        let finalHandles = _iblHandleSets[nextIndex]
+        let targetHandles = (rebuildQuality == .interactive ? (_iblFastHandles ?? finalHandles) : finalHandles)
+        guard let targetEnv = engineContext.assets.texture(handle: targetHandles.environment),
+              let targetIrr = engineContext.assets.texture(handle: targetHandles.irradiance),
+              let targetPre = engineContext.assets.texture(handle: targetHandles.prefiltered) else {
+            iblState.isRebuilding = false
+            iblState.dirty = true
+            iblState.needsRebuild = true
+            iblState.lastFailureMessage = "Missing preallocated IBL textures."
+            scene.ecs.add(iblState, to: entity)
+            return true
+        }
+
+        let hdriTexture = snapshot.hdriTextureHandle.flatMap { engineContext.assets.texture(handle: $0) }
+        if snapshot.sourceMode == .hdri, hdriTexture == nil {
+            iblState.isRebuilding = false
+            iblState.dirty = true
+            iblState.needsRebuild = true
+            iblState.lastFailureMessage = "HDRI texture could not be resolved."
+            scene.ecs.add(iblState, to: entity)
+            return true
+        }
+
+        let moonAlbedoTexture = snapshot.sourceMode == .procedural
+            ? resolveMoonAlbedoTexture(context: "environmentIBLRebuild")
+            : nil
+        let galaxyTexture = snapshot.sourceMode == .procedural
+            ? resolveMilkyWayBackgroundTexture(context: "environmentIBLRebuild")
+            : nil
+        let cloudAtlasTexture = snapshot.sourceMode == .procedural
+            ? resolveCloudAtlasTexture(context: "environmentIBLRebuild")
+            : nil
+        var skyParams = snapshot.legacySkyParams
+        skyParams.moonTextureEnabled = moonAlbedoTexture == nil ? 0.0 : 1.0
+        skyParams.galaxyTextureEnabled = galaxyTexture == nil ? 0.0 : 1.0
+        skyParams.cloudAtlasEnabled = cloudAtlasTexture == nil ? 0.0 : 1.0
+
+        let request = EnvironmentIBLRebuildRequest(
+            entity: entity,
+            signature: snapshotSignature,
+            sourceMode: snapshot.sourceMode,
+            hdriTexture: hdriTexture,
+            moonAlbedoTexture: moonAlbedoTexture,
+            galaxyTexture: galaxyTexture,
+            cloudAtlasTexture: cloudAtlasTexture,
+            skyParams: skyParams,
+            targetHandles: targetHandles,
+            targetEnvironment: targetEnv,
+            targetIrradiance: targetIrr,
+            targetPrefiltered: targetPre,
+            generationConfig: iblConfig(mode: rebuildQuality),
+            quality: rebuildQuality,
+            requestedAt: now,
+            manual: manualRebuild
+        )
+        _skyRebuildInFlight = true
+        _lastSkyRebuildStartTime = now
+        iblState.lastRebuildTime = now
+        iblState.isRebuilding = true
+        iblState.needsRebuild = texturesMissing
+        iblState.rebuildRequested = false
+        iblState.pendingSignature = snapshotSignature
+        iblState.currentRebuildQuality = rebuildQuality
+        iblState.lastFailureMessage = nil
+        scene.ecs.add(iblState, to: entity)
+
+        EngineLoggerContext.log(
+            "Environment IBL rebuild scheduled (t=\(String(format: "%.3f", now)), quality=\(rebuildQuality.rawValue))",
+            level: .debug,
+            category: .renderer
+        )
+
+        _skyRebuildQueue.async { [weak self] in
+            guard let self = self else { return }
+            let isMainThread = Thread.isMainThread
+            MC_ASSERT(!isMainThread, "Environment IBL rebuild must not run on the main thread.")
+            let threadLabel = isMainThread ? "main" : "background"
+            let frameContext = self._skyRebuildFrameContextStorage.beginFrame()
+            guard let commandBuffer = self._environmentIBLCommandQueue.makeCommandBuffer() else {
+                EngineLoggerContext.log(
+                    "Environment IBL rebuild aborted: failed to create command buffer.",
+                    level: .warning,
+                    category: .renderer
+                )
+                self.enqueueEnvironmentIBLCompletion(.failure(EnvironmentIBLRebuildFailure(
+                    entity: request.entity,
+                    signature: request.signature,
+                    message: "Failed to create IBL command buffer."
+                )))
+                return
+            }
+            commandBuffer.label = "Environment IBL Rebuild"
+            let encodeStart = CACurrentMediaTime()
+
+            switch request.sourceMode {
+            case .hdri:
+                guard let hdriTexture = request.hdriTexture else {
+                    EngineLoggerContext.log(
+                        "Environment IBL rebuild aborted: HDRI texture not resolved.",
+                        level: .warning,
+                        category: .renderer
+                    )
+                    self.enqueueEnvironmentIBLCompletion(.failure(EnvironmentIBLRebuildFailure(
+                        entity: request.entity,
+                        signature: request.signature,
+                        message: "HDRI texture could not be resolved."
+                    )))
+                    return
+                }
+                self.renderSkyToEnvironmentMap(
+                    hdriTexture: hdriTexture,
+                    intensity: 1.0,
+                    targetEnvironment: request.targetEnvironment,
+                    frameContext: frameContext,
+                    commandBuffer: commandBuffer
+                )
+            case .procedural:
+                self.renderProceduralSkyToEnvironmentMap(
+                    params: request.skyParams,
+                    moonAlbedoTexture: request.moonAlbedoTexture,
+                    galaxyTexture: request.galaxyTexture,
+                    cloudAtlasTexture: request.cloudAtlasTexture,
+                    targetEnvironment: request.targetEnvironment,
+                    frameContext: frameContext,
+                    commandBuffer: commandBuffer
+                )
+            }
+
+            self.renderIrradianceMap(
+                sourceEnvironment: request.targetEnvironment,
+                targetIrradiance: request.targetIrradiance,
+                config: request.generationConfig,
+                frameContext: frameContext,
+                commandBuffer: commandBuffer
+            )
+            self.renderPrefilteredSpecularMap(
+                sourceEnvironment: request.targetEnvironment,
+                targetPrefiltered: request.targetPrefiltered,
+                config: request.generationConfig,
+                frameContext: frameContext,
+                commandBuffer: commandBuffer
+            )
+            let encodeDt = CACurrentMediaTime() - encodeStart
+
+            commandBuffer.addCompletedHandler { [weak self] buffer in
+                guard let self = self else { return }
+                let completed = CACurrentMediaTime()
+                let totalCpuWallDt = completed - request.requestedAt
+                EngineLoggerContext.log(
+                    "Environment IBL rebuild timings [quality=\(request.quality.rawValue), thread=\(threadLabel), queue=dedicated, manual=\(request.manual), waitUntilCompleted=none]: totalCpuWall=\(String(format: "%.3f", totalCpuWallDt))s, encode=\(String(format: "%.3f", encodeDt))s",
+                    level: .debug,
+                    category: .renderer
+                )
+                if buffer.status == .error {
+                    let message = buffer.error?.localizedDescription ?? "Environment IBL command buffer failed."
+                    self.enqueueEnvironmentIBLCompletion(.failure(EnvironmentIBLRebuildFailure(
+                        entity: request.entity,
+                        signature: request.signature,
+                        message: message
+                    )))
+                    return
+                }
+                self.enqueueEnvironmentIBLCompletion(.success(EnvironmentIBLRebuildResult(
+                    entity: request.entity,
+                    signature: request.signature,
+                    handles: request.targetHandles,
+                    quality: request.quality,
+                    completedAt: completed
+                )))
+            }
+            commandBuffer.commit()
+        }
+
+        return true
+    }
+
+    private func updateSkyIfNeeded(scene: EngineScene) {
+        if updateEnvironmentIBLIfNeeded(scene: scene) {
+            return
+        }
+
+        guard let skyEntry = scene.ecs.activeSkyLight() else { return }
+        let entity = skyEntry.0
+        let sky = skyEntry.1
+        guard sky.enabled else { return }
+        var iblState = scene.ecs.get(SkyIBLStateComponent.self, for: entity) ?? SkyIBLStateComponent()
+
+        let activeHandles = activeIBLHandles()
+        var didUpdateHandles = false
+        if iblState.iblEnvironmentHandle == nil {
+            iblState.iblEnvironmentHandle = activeHandles.environment
+            didUpdateHandles = true
+        }
+        if iblState.iblIrradianceHandle == nil {
+            iblState.iblIrradianceHandle = activeHandles.irradiance
+            didUpdateHandles = true
+        }
+        if iblState.iblPrefilteredHandle == nil {
+            iblState.iblPrefilteredHandle = activeHandles.prefiltered
+            didUpdateHandles = true
+        }
+        if iblState.iblBrdfHandle == nil {
+            iblState.iblBrdfHandle = activeHandles.brdf
             didUpdateHandles = true
         }
         if didUpdateHandles {
-            scene.ecs.add(handleUpdate, to: entity)
-            sky = handleUpdate
-        }
-
-        if sky.mode == .hdri, sky.hdriHandle == nil {
-            var resolvedHandle: AssetHandle?
-            scene.ecs.viewSky { _, skyComponent in
-                if resolvedHandle == nil {
-                    resolvedHandle = skyComponent.environmentMapHandle
-                }
-            }
-            if let resolvedHandle {
-                var updated = sky
-                updated.hdriHandle = resolvedHandle
-                updated.needsRebuild = true
-                scene.ecs.add(updated, to: entity)
-                sky = updated
-            }
+            scene.ecs.add(iblState, to: entity)
         }
 
         let hdriLoaded = sky.mode != .hdri || (sky.hdriHandle.flatMap { engineContext.assets.texture(handle: $0) } != nil)
         if sky.mode == .hdri, !hdriLoaded { return }
 
-        let environment = sky.iblEnvironmentHandle.flatMap { engineContext.assets.texture(handle: $0) }
-        let irradiance = sky.iblIrradianceHandle.flatMap { engineContext.assets.texture(handle: $0) }
-        let prefiltered = sky.iblPrefilteredHandle.flatMap { engineContext.assets.texture(handle: $0) }
+        let environment = iblState.iblEnvironmentHandle.flatMap { engineContext.assets.texture(handle: $0) }
+        let irradiance = iblState.iblIrradianceHandle.flatMap { engineContext.assets.texture(handle: $0) }
+        let prefiltered = iblState.iblPrefilteredHandle.flatMap { engineContext.assets.texture(handle: $0) }
         let isFallbackIBL = (environment?.width ?? 0) <= 1
             || (irradiance?.width ?? 0) <= 1
             || (prefiltered?.width ?? 0) <= 1
-        if isFallbackIBL && !sky.needsRebuild {
-            sky.needsRebuild = true
-            sky.rebuildRequested = true
-            scene.ecs.add(sky, to: entity)
+        if isFallbackIBL && !iblState.needsRebuild {
+            iblState.needsRebuild = true
+            iblState.rebuildRequested = true
+            scene.ecs.add(iblState, to: entity)
         }
 
         let now = CACurrentMediaTime()
-        if !sky.needsRebuild {
+        if !iblState.needsRebuild {
             let paramsChanged = _lastSkyLiveSnapshot.map { !SkySystem.liveSkyParamsMatch($0, sky) } ?? true
             let wantsCloudMotion = sky.cloudsEnabled && abs(sky.cloudsSpeed) > 0.0001
             let needsCloudTick = wantsCloudMotion && (now - _lastSkyLiveUpdateTime) > 0.35
             let shouldUpdateLive = paramsChanged || needsCloudTick
-            if shouldUpdateLive && !_skyRebuildInFlight && (now - sky.lastRebuildTime) >= _skyRebuildCooldown {
+            if shouldUpdateLive && !_skyRebuildInFlight && (now - iblState.lastRebuildTime) >= _skyRebuildCooldown {
                 if let requested = _lastSkyRequestedSnapshot, SkySystem.liveSkyParamsMatch(requested, sky) {
                     _lastSkyLiveUpdateTime = now
                 } else {
-                var updated = sky
-                updated.needsRebuild = true
-                updated.rebuildRequested = true
-                scene.ecs.add(updated, to: entity)
-                sky = updated
-                _lastSkyRequestedSnapshot = updated
-                _lastSkyLiveUpdateTime = now
-                _lastSkyInteractionTime = now
+                    iblState.needsRebuild = true
+                    iblState.rebuildRequested = true
+                    scene.ecs.add(iblState, to: entity)
+                    _lastSkyRequestedSnapshot = sky
+                    _lastSkyLiveUpdateTime = now
+                    _lastSkyInteractionTime = now
                 }
             }
         }
@@ -787,20 +1372,19 @@ public final class Renderer: NSObject {
             _pendingSkySnapshot = sky
             return
         }
-        if !sky.needsRebuild { return }
-        let allowRebuild = sky.realtimeUpdate || sky.rebuildRequested
+        if !iblState.needsRebuild { return }
+        let allowRebuild = iblState.realtimeUpdate || iblState.rebuildRequested
         if !allowRebuild { return }
         if (now - _lastSkyRebuildStartTime) < _skyRebuildCooldown {
             _pendingSkySnapshot = sky
             return
         }
 
-        var updated = sky
-        updated.lastRebuildTime = now
-        updated.rebuildRequested = false
-        scene.ecs.add(updated, to: entity)
+        iblState.lastRebuildTime = now
+        iblState.rebuildRequested = false
+        scene.ecs.add(iblState, to: entity)
 
-        let snapshot = _pendingSkySnapshot ?? updated
+        let snapshot = _pendingSkySnapshot ?? sky
         _pendingSkySnapshot = nil
         let nextIndex = (_activeIBLHandleIndex + 1) % _iblHandleSets.count
         let finalHandles = _iblHandleSets[nextIndex]
@@ -876,9 +1460,19 @@ public final class Renderer: NSObject {
                     commandBuffer: commandBuffer
                 )
             case .procedural:
-                let params = self.skyParams(from: snapshot)
+                let environmentState = scene.ecs.get(EnvironmentStateComponent.self, for: entity)
+                let moonAlbedoTexture = self.resolveMoonAlbedoTexture(context: "legacySkyIBLRebuild")
+                let galaxyTexture = self.resolveMilkyWayBackgroundTexture(context: "legacySkyIBLRebuild")
+                let cloudAtlasTexture = self.resolveCloudAtlasTexture(context: "legacySkyIBLRebuild")
+                var params = self.skyParams(from: snapshot, environmentState: environmentState)
+                params.moonTextureEnabled = moonAlbedoTexture == nil ? 0.0 : 1.0
+                params.galaxyTextureEnabled = galaxyTexture == nil ? 0.0 : 1.0
+                params.cloudAtlasEnabled = cloudAtlasTexture == nil ? 0.0 : 1.0
                 self.renderProceduralSkyToEnvironmentMap(
                     params: params,
+                    moonAlbedoTexture: moonAlbedoTexture,
+                    galaxyTexture: galaxyTexture,
+                    cloudAtlasTexture: cloudAtlasTexture,
                     targetEnvironment: targetEnv,
                     frameContext: frameContext,
                     commandBuffer: commandBuffer
@@ -918,7 +1512,7 @@ public final class Renderer: NSObject {
                     guard let currentScene = self.delegate?.activeScene(),
                           let currentEntry = currentScene.ecs.activeSkyLight() else { return }
                     let (currentEntity, currentSky) = currentEntry
-                    var regen = currentSky
+                    var regen = currentScene.ecs.get(SkyIBLStateComponent.self, for: currentEntity) ?? SkyIBLStateComponent()
                     if self.skySettingsMatch(currentSky, snapshot) {
                         if buildMode == .interactive {
                             regen.iblEnvironmentHandle = targetHandles.environment
@@ -936,8 +1530,8 @@ public final class Renderer: NSObject {
                             regen.needsRebuild = false
                             regen.rebuildRequested = false
                         }
-                        self._lastSkyLiveSnapshot = regen
-                        self._lastSkyRequestedSnapshot = regen
+                        self._lastSkyLiveSnapshot = snapshot
+                        self._lastSkyRequestedSnapshot = snapshot
                     } else {
                         regen.needsRebuild = true
                     }
@@ -1004,25 +1598,6 @@ extension Renderer: MTKViewDelegate {
         updateScreenSize(view: view)
     }
 
-
-    private func renderToWindow(renderPipelineState: RenderPipelineStateType, view: MTKView, commandBuffer: MTLCommandBuffer, frameContext: RendererFrameContext) {
-        guard let rpd = view.currentRenderPassDescriptor else { return }
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
-        guard let quadMesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
-        let pass = FullscreenPass(
-            pipeline: renderPipelineState,
-            label: "Final Composite -> Drawable",
-            inputs: PostProcessInputs(
-                sampler: .LinearClampToZero,
-                source: engineContext.assets.texture(handle: BuiltinAssets.baseColorRender),
-                bloom: engineContext.assets.texture(handle: BuiltinAssets.bloomPing),
-                settings: settings
-            )
-        )
-        pass.encode(into: encoder, quad: quadMesh, frameContext: frameContext, graphics: engineContext.graphics)
-        encoder.endEncoding()
-    }
-
     private func makeRenderViewContext(sceneView: SceneView, view: MTKView) -> RenderViewContext {
         let resolvedViewport = SIMD2<Float>(
             max(1.0, sceneView.viewportSize.x),
@@ -1078,16 +1653,19 @@ extension Renderer: MTKViewDelegate {
         profiler.record(.update, seconds: CACurrentMediaTime() - updateStart)
         let frameContext = _frameContextStorage.beginFrame()
         let renderStart = CACurrentMediaTime()
-        // Render graph executes scene passes, editor overlays, picking/outline, post-processing, then ImGui overlays.
+        // Render graph executes scene passes, fullscreen/post passes, and final composite into
+        // post.finalColor / BuiltinAssets.finalColorRender. The editor overlay layer samples that
+        // final composite texture and presents it inside the viewport UI.
         let sceneView = delegate?.buildSceneView(renderer: self) ?? SceneView(viewportSize: viewportSize)
+        let activeScene = delegate?.activeScene()
+        let frameSettings = resolvedRendererSettings(for: activeScene)
         _frameContextStorage.updateRendererState(
-            settings: settings,
+            settings: frameSettings,
             viewContext: makeRenderViewContext(sceneView: sceneView, view: view)
         )
         _frameContextStorage.setAssetStateRevision(engineContext.assets.cacheRevisionToken())
         frameContext.setRenderResourceRegistry(_renderResources.buildRegistry())
         let frameDiagnostics = frameContext.diagnostics
-        let activeScene = delegate?.activeScene()
         let snapshotStart = CACurrentMediaTime()
         if let activeScene {
             SceneRenderer.prepareRenderFrameSnapshot(scene: activeScene, frameContext: frameContext)

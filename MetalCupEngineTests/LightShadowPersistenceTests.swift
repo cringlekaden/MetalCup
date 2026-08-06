@@ -6,7 +6,6 @@ struct LightShadowPersistenceTests {
     func castsShadowsPersistsThroughSceneSerialization() {
         let scene = EngineScene(
             name: "TestScene",
-            environmentMapHandle: nil,
             prefabSystem: nil,
             engineContext: nil,
             shouldBuildScene: false
@@ -27,7 +26,6 @@ struct LightShadowPersistenceTests {
 
         let reloaded = EngineScene(
             name: "ReloadedScene",
-            environmentMapHandle: nil,
             prefabSystem: nil,
             engineContext: nil,
             shouldBuildScene: false

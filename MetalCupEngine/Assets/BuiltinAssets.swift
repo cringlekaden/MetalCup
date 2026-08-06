@@ -41,6 +41,17 @@ public enum BuiltinAssets {
     public static let irradianceCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000202")
     public static let prefilteredCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000203")
     public static let brdfLut = AssetHandle(string: "00000000-0000-0000-0000-000000000204")
+    public static let diagnosticOrientationCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000205")
+    public static let diagnosticOrientationIrradianceCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000206")
+    public static let diagnosticOrientationPrefilteredCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000207")
+    public static let moonAlbedo = AssetHandle(string: "00000000-0000-0000-0000-000000000301")
+    public static let milkyWayBackground = AssetHandle(string: "00000000-0000-0000-0000-000000000302")
+    public static let cloudAtlas = AssetHandle(string: "00000000-0000-0000-0000-000000000303")
+    public static let cloudCardCumulus = AssetHandle(string: "00000000-0000-0000-0000-000000000304")
+    public static let cloudCardBroken = AssetHandle(string: "00000000-0000-0000-0000-000000000305")
+    public static let cloudCardWispy = AssetHandle(string: "00000000-0000-0000-0000-000000000306")
+    public static let cloudCardStorm = AssetHandle(string: "00000000-0000-0000-0000-000000000307")
+    public static let weatherCloudAlpha = AssetHandle(string: "00000000-0000-0000-0000-000000000308")
 
     public static func registerMeshes(assetManager: AssetManager, device: MTLDevice, graphics: Graphics) {
         assetManager.registerRuntimeMesh(handle: noneMesh, mesh: NoMesh(device: device, graphics: graphics, assetManager: assetManager))
@@ -109,6 +120,188 @@ public enum BuiltinAssets {
             assetManager.registerRuntimeTexture(handle: brdfLut, texture: texture)
         }
 
+    }
+
+    public static func registerMoonAlbedoTextureIfNeeded(assetManager: AssetManager, resourcesRootURL: URL?, device: MTLDevice) {
+        guard assetManager.texture(handle: moonAlbedo) == nil else { return }
+        guard let resourcesRootURL else { return }
+        guard let url = sandboxAssetURL(
+            resourcesRootURL: resourcesRootURL,
+            pathComponents: ["Textures", "Moon", "lroc_color_2k.jpg"]
+        ) else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        let loader = MTKTextureLoader(device: device)
+        let options: [MTKTextureLoader.Option: Any] = [
+            .origin: MTKTextureLoader.Origin.topLeft,
+            .SRGB: true,
+            .generateMipmaps: false
+        ]
+        guard let texture = try? loader.newTexture(URL: url, options: options) else { return }
+        texture.label = "Builtin.MoonAlbedo.lroc_color_2k"
+        assetManager.registerRuntimeTexture(handle: moonAlbedo, texture: texture)
+    }
+
+    public static func registerMilkyWayBackgroundTextureIfNeeded(assetManager: AssetManager, resourcesRootURL: URL?, device: MTLDevice) {
+        guard assetManager.texture(handle: milkyWayBackground) == nil else { return }
+        guard let resourcesRootURL else { return }
+        guard let url = sandboxAssetURL(
+            resourcesRootURL: resourcesRootURL,
+            pathComponents: ["Textures", "Sky", "MilkyWay", "milkyway_2020_4k.exr"]
+        ) else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        let loader = MTKTextureLoader(device: device)
+        let options: [MTKTextureLoader.Option: Any] = [
+            .origin: MTKTextureLoader.Origin.topLeft,
+            .SRGB: false,
+            .generateMipmaps: false
+        ]
+        guard let texture = try? loader.newTexture(URL: url, options: options) else { return }
+        texture.label = "Builtin.MilkyWay.milkyway_2020_4k"
+        assetManager.registerRuntimeTexture(handle: milkyWayBackground, texture: texture)
+    }
+
+    public static func registerCloudAtlasTextureIfNeeded(assetManager: AssetManager, resourcesRootURL: URL?, device: MTLDevice) {
+        registerLinearSkyTextureIfNeeded(
+            assetManager: assetManager,
+            resourcesRootURL: resourcesRootURL,
+            device: device,
+            handle: cloudAtlas,
+            pathComponents: ["Textures", "Sky", "Clouds", "cloud_atlas_4k.png"],
+            label: "Builtin.CloudAtlas.cloud_atlas_4k"
+        )
+    }
+
+    public static func registerCloudCardTexturesIfNeeded(assetManager: AssetManager, resourcesRootURL: URL?, device: MTLDevice) {
+        registerLinearSkyTextureIfNeeded(
+            assetManager: assetManager,
+            resourcesRootURL: resourcesRootURL,
+            device: device,
+            handle: cloudCardCumulus,
+            pathComponents: ["Textures", "Sky", "Clouds", "Impostors", "cloud_card_cumulus.png"],
+            label: "Builtin.CloudCard.cumulus"
+        )
+        registerLinearSkyTextureIfNeeded(
+            assetManager: assetManager,
+            resourcesRootURL: resourcesRootURL,
+            device: device,
+            handle: cloudCardBroken,
+            pathComponents: ["Textures", "Sky", "Clouds", "Impostors", "cloud_card_broken.png"],
+            label: "Builtin.CloudCard.broken"
+        )
+        registerLinearSkyTextureIfNeeded(
+            assetManager: assetManager,
+            resourcesRootURL: resourcesRootURL,
+            device: device,
+            handle: cloudCardWispy,
+            pathComponents: ["Textures", "Sky", "Clouds", "Impostors", "cloud_card_wispy.png"],
+            label: "Builtin.CloudCard.wispy"
+        )
+        registerLinearSkyTextureIfNeeded(
+            assetManager: assetManager,
+            resourcesRootURL: resourcesRootURL,
+            device: device,
+            handle: cloudCardStorm,
+            pathComponents: ["Textures", "Sky", "Clouds", "Impostors", "cloud_card_storm.png"],
+            label: "Builtin.CloudCard.storm"
+        )
+        registerLinearSkyTextureIfNeeded(
+            assetManager: assetManager,
+            resourcesRootURL: resourcesRootURL,
+            device: device,
+            handle: weatherCloudAlpha,
+            pathComponents: ["Textures", "Sky", "Clouds", "Weather", "weather_clouds_alpha_4k.png"],
+            label: "Builtin.CloudWeather.alpha4k"
+        )
+    }
+
+    private static func registerLinearSkyTextureIfNeeded(assetManager: AssetManager,
+                                                         resourcesRootURL: URL?,
+                                                         device: MTLDevice,
+                                                         handle: AssetHandle,
+                                                         pathComponents: [String],
+                                                         label: String) {
+        guard assetManager.texture(handle: handle) == nil else { return }
+        guard let url = builtInSandboxAssetURL(
+            assetRootURL: assetManager.assetDatabase?.assetRootURL,
+            resourcesRootURL: resourcesRootURL,
+            pathComponents: pathComponents
+        ) else { return }
+
+        let loader = MTKTextureLoader(device: device)
+        let options: [MTKTextureLoader.Option: Any] = [
+            .origin: MTKTextureLoader.Origin.topLeft,
+            .SRGB: false,
+            .generateMipmaps: true
+        ]
+        guard let texture = try? loader.newTexture(URL: url, options: options) else { return }
+        texture.label = label
+        assetManager.registerRuntimeTexture(handle: handle, texture: texture)
+    }
+
+    private static func builtInSandboxAssetURL(assetRootURL: URL?,
+                                               resourcesRootURL: URL?,
+                                               pathComponents: [String]) -> URL? {
+        let fileManager = FileManager.default
+        if let assetRootURL {
+            var projectAssetURL = assetRootURL
+            for component in pathComponents {
+                projectAssetURL = projectAssetURL.appendingPathComponent(component)
+            }
+            if fileManager.fileExists(atPath: projectAssetURL.path) {
+                return projectAssetURL
+            }
+        }
+
+        guard let resourcesRootURL else { return nil }
+        return sandboxAssetURL(resourcesRootURL: resourcesRootURL, pathComponents: pathComponents)
+    }
+
+    private static func sandboxAssetURL(resourcesRootURL: URL, pathComponents: [String]) -> URL? {
+        let fileManager = FileManager.default
+        let baseCandidates = [
+            resourcesRootURL,
+            resourcesRootURL.appendingPathComponent("MetalCupEditor", isDirectory: true),
+            resourcesRootURL.appendingPathComponent("MetalCupEditor/MetalCupEditor", isDirectory: true),
+            resourcesRootURL.deletingLastPathComponent(),
+            resourcesRootURL.deletingLastPathComponent().appendingPathComponent("MetalCupEditor", isDirectory: true),
+            resourcesRootURL.deletingLastPathComponent().appendingPathComponent("MetalCupEditor/MetalCupEditor", isDirectory: true)
+        ]
+
+        for base in baseCandidates {
+            var url = base
+                .appendingPathComponent("Projects", isDirectory: true)
+                .appendingPathComponent("Sandbox", isDirectory: true)
+                .appendingPathComponent("Assets", isDirectory: true)
+            for component in pathComponents {
+                url = url.appendingPathComponent(component)
+            }
+            if fileManager.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+
+        #if DEBUG
+        var sourceRoot = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 {
+            sourceRoot.deleteLastPathComponent()
+        }
+        let developmentTemplateRoot = sourceRoot
+            .appendingPathComponent("MetalCupEditor", isDirectory: true)
+            .appendingPathComponent("MetalCupEditor", isDirectory: true)
+            .appendingPathComponent("Projects", isDirectory: true)
+            .appendingPathComponent("Sandbox", isDirectory: true)
+            .appendingPathComponent("Assets", isDirectory: true)
+        var developmentURL = developmentTemplateRoot
+        for component in pathComponents {
+            developmentURL = developmentURL.appendingPathComponent(component)
+        }
+        if fileManager.fileExists(atPath: developmentURL.path) {
+            return developmentURL
+        }
+        #endif
+        return nil
     }
 
     public static func registerFallbackIBLTextures(assetManager: AssetManager, preferences: Preferences, device: MTLDevice) {

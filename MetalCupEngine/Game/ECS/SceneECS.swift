@@ -48,6 +48,11 @@ public enum SceneECSComponentType: Int32 {
     case animator = 22
     case audioSource = 23
     case audioListener = 24
+    case environmentState = 25
+    case skyIBLState = 26
+    case environment = 27
+    case environmentRuntimeState = 28
+    case environmentIBLState = 29
 }
 
 public struct SceneECSChange {
@@ -80,8 +85,12 @@ public final class SceneECS {
     private var scriptComponents: [Entity: ScriptComponent] = [:]
     private var lightComponents: [Entity: LightComponent] = [:]
     private var lightOrbitComponents: [Entity: LightOrbitComponent] = [:]
-    private var skyComponents: [Entity: SkyComponent] = [:]
     private var skyLightComponents: [Entity: SkyLightComponent] = [:]
+    private var environmentStateComponents: [Entity: EnvironmentStateComponent] = [:]
+    private var skyIBLStateComponents: [Entity: SkyIBLStateComponent] = [:]
+    private var environmentComponents: [Entity: EnvironmentComponent] = [:]
+    private var environmentRuntimeStateComponents: [Entity: EnvironmentRuntimeStateComponent] = [:]
+    private var environmentIBLStateComponents: [Entity: EnvironmentIBLStateComponent] = [:]
     private var reflectionProbeComponents: [Entity: ReflectionProbeComponent] = [:]
     private var skyLightTags: [Entity: SkyLightTag] = [:]
     private var skySunTags: [Entity: SkySunTag] = [:]
@@ -165,8 +174,12 @@ public final class SceneECS {
         scriptComponents.removeAll()
         lightComponents.removeAll()
         lightOrbitComponents.removeAll()
-        skyComponents.removeAll()
         skyLightComponents.removeAll()
+        environmentStateComponents.removeAll()
+        skyIBLStateComponents.removeAll()
+        environmentComponents.removeAll()
+        environmentRuntimeStateComponents.removeAll()
+        environmentIBLStateComponents.removeAll()
         reflectionProbeComponents.removeAll()
         skyLightTags.removeAll()
         skySunTags.removeAll()
@@ -369,12 +382,6 @@ public final class SceneECS {
             if !existed {
                 enqueueChange(.componentAdded, entity: entity, componentType: .lightOrbit)
             }
-        case let value as SkyComponent:
-            let existed = skyComponents[entity] != nil
-            skyComponents[entity] = value
-            if !existed {
-                enqueueChange(.componentAdded, entity: entity, componentType: .sky)
-            }
         case let value as SkyLightComponent:
             let previousEnabled = skyLightComponents[entity]?.enabled
             let existed = skyLightComponents[entity] != nil
@@ -383,6 +390,38 @@ public final class SceneECS {
                 enqueueChange(.componentAdded, entity: entity, componentType: .skyLight)
             }
             enqueueEnabledChangedIfNeeded(previous: previousEnabled, current: value.enabled, entity: entity, componentType: .skyLight)
+        case let value as EnvironmentStateComponent:
+            let existed = environmentStateComponents[entity] != nil
+            environmentStateComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .environmentState)
+            }
+        case let value as SkyIBLStateComponent:
+            let existed = skyIBLStateComponents[entity] != nil
+            skyIBLStateComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .skyIBLState)
+            }
+        case let value as EnvironmentComponent:
+            let previousEnabled = environmentComponents[entity]?.enabled
+            let existed = environmentComponents[entity] != nil
+            environmentComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .environment)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled, current: value.enabled, entity: entity, componentType: .environment)
+        case let value as EnvironmentRuntimeStateComponent:
+            let existed = environmentRuntimeStateComponents[entity] != nil
+            environmentRuntimeStateComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .environmentRuntimeState)
+            }
+        case let value as EnvironmentIBLStateComponent:
+            let existed = environmentIBLStateComponents[entity] != nil
+            environmentIBLStateComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .environmentIBLState)
+            }
         case let value as ReflectionProbeComponent:
             let previousEnabled = reflectionProbeComponents[entity]?.enabled
             let existed = reflectionProbeComponents[entity] != nil
@@ -511,13 +550,29 @@ public final class SceneECS {
             if lightOrbitComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .lightOrbit)
             }
-        case is SkyComponent.Type:
-            if skyComponents.removeValue(forKey: entity) != nil {
-                enqueueChange(.componentRemoved, entity: entity, componentType: .sky)
-            }
         case is SkyLightComponent.Type:
             if skyLightComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .skyLight)
+            }
+        case is EnvironmentStateComponent.Type:
+            if environmentStateComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .environmentState)
+            }
+        case is SkyIBLStateComponent.Type:
+            if skyIBLStateComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .skyIBLState)
+            }
+        case is EnvironmentComponent.Type:
+            if environmentComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .environment)
+            }
+        case is EnvironmentRuntimeStateComponent.Type:
+            if environmentRuntimeStateComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .environmentRuntimeState)
+            }
+        case is EnvironmentIBLStateComponent.Type:
+            if environmentIBLStateComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .environmentIBLState)
             }
         case is ReflectionProbeComponent.Type:
             if reflectionProbeComponents.removeValue(forKey: entity) != nil {
@@ -585,10 +640,18 @@ public final class SceneECS {
             return lightComponents[entity] as? T
         case is LightOrbitComponent.Type:
             return lightOrbitComponents[entity] as? T
-        case is SkyComponent.Type:
-            return skyComponents[entity] as? T
         case is SkyLightComponent.Type:
             return skyLightComponents[entity] as? T
+        case is EnvironmentStateComponent.Type:
+            return environmentStateComponents[entity] as? T
+        case is SkyIBLStateComponent.Type:
+            return skyIBLStateComponents[entity] as? T
+        case is EnvironmentComponent.Type:
+            return environmentComponents[entity] as? T
+        case is EnvironmentRuntimeStateComponent.Type:
+            return environmentRuntimeStateComponents[entity] as? T
+        case is EnvironmentIBLStateComponent.Type:
+            return environmentIBLStateComponents[entity] as? T
         case is ReflectionProbeComponent.Type:
             return reflectionProbeComponents[entity] as? T
         case is SkyLightTag.Type:
@@ -803,17 +866,17 @@ public final class SceneECS {
         return nil
     }
 
-    public func viewSky(_ body: (Entity, SkyComponent) -> Void) {
-        for entity in deterministicOrderedEntities() {
-            guard let sky = skyComponents[entity] else { continue }
-            body(entity, sky)
-        }
-    }
-
     public func viewSkyLights(_ body: (Entity, SkyLightComponent) -> Void) {
         for entity in deterministicOrderedEntities() {
             guard let sky = skyLightComponents[entity] else { continue }
             body(entity, sky)
+        }
+    }
+
+    public func viewEnvironments(_ body: (Entity, EnvironmentComponent) -> Void) {
+        for entity in deterministicOrderedEntities() {
+            guard let environment = environmentComponents[entity] else { continue }
+            body(entity, environment)
         }
     }
 
@@ -837,6 +900,15 @@ public final class SceneECS {
         for entity in deterministicOrderedEntities() {
             if let sky = skyLightComponents[entity] {
                 return (entity, sky)
+            }
+        }
+        return nil
+    }
+
+    public func activeEnvironment() -> (Entity, EnvironmentComponent)? {
+        for entity in deterministicOrderedEntities() {
+            if let environment = environmentComponents[entity] {
+                return (entity, environment)
             }
         }
         return nil
@@ -1002,11 +1074,23 @@ public final class SceneECS {
         if lightOrbitComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .lightOrbit)
         }
-        if skyComponents.removeValue(forKey: entity) != nil {
-            enqueueChange(.componentRemoved, entity: entity, componentType: .sky)
-        }
         if skyLightComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .skyLight)
+        }
+        if environmentStateComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .environmentState)
+        }
+        if skyIBLStateComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .skyIBLState)
+        }
+        if environmentComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .environment)
+        }
+        if environmentRuntimeStateComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .environmentRuntimeState)
+        }
+        if environmentIBLStateComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .environmentIBLState)
         }
         if reflectionProbeComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .reflectionProbe)

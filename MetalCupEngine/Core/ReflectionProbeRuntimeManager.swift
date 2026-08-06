@@ -253,7 +253,11 @@ final class ReflectionProbeRuntimeManager {
             frameToken: snapshot.frameToken,
             signature: UInt64(bitPattern: Int64(hasher.finalize())),
             sceneConstants: snapshot.sceneConstants,
+            activeEnvironmentRenderState: snapshot.activeEnvironmentRenderState,
+            activeEnvironmentIBLState: snapshot.activeEnvironmentIBLState,
             activeSkyLight: snapshot.activeSkyLight,
+            activeEnvironmentState: snapshot.activeEnvironmentState,
+            activeSkyIBLState: snapshot.activeSkyIBLState,
             directionalLights: snapshot.directionalLights,
             localLights: snapshot.localLights,
             directionalShadowLightDirection: snapshot.directionalShadowLightDirection,
@@ -328,6 +332,87 @@ final class ReflectionProbeRuntimeManager {
         return pass
     }
 
+    private func makeReflectionProbeFogPassDescriptor(colorTexture: MTLTexture,
+                                                      face: Int) -> MTLRenderPassDescriptor {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = colorTexture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = ClearColor.Black
+        pass.colorAttachments[0].slice = face
+        pass.colorAttachments[0].level = 0
+        return pass
+    }
+
+    private func makeReflectionProbeSceneColorTexture(size: Int, label: String) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: engineContext.preferences.HDRPixelFormat,
+            width: size,
+            height: size,
+            mipmapped: false
+        )
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .private
+        guard let texture = engineContext.device.makeTexture(descriptor: descriptor) else { return nil }
+        texture.label = label
+        return texture
+    }
+
+    private func resolvedCaptureRendererSettings(scene: EngineScene) -> RendererSettings {
+        var settings = rendererSettingsProvider()
+        if let environmentEntry = scene.ecs.activeEnvironment() {
+            let runtime = scene.ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntry.0)
+            let renderState = EnvironmentRenderStateBuilder.build(
+                environment: environmentEntry.1,
+                runtime: runtime,
+                rendererSettings: settings
+            )
+            renderState.legacyFogPatch.applying(to: &settings)
+            return settings
+        }
+
+        let activeSkyEntry = scene.ecs.activeSkyLight()
+        let environmentState = activeSkyEntry.flatMap { scene.ecs.get(EnvironmentStateComponent.self, for: $0.0) }
+        SkySystem.applyDerivedFogSettings(&settings,
+                                          authored: activeSkyEntry?.1,
+                                          runtime: environmentState)
+        return settings
+    }
+
+    private func encodeReflectionProbeHeightFog(sourceTexture: MTLTexture,
+                                                depthTexture: MTLTexture,
+                                                targetTexture: MTLTexture,
+                                                face: Int,
+                                                captureSnapshot: RenderFrameSnapshot,
+                                                frameContext: RendererFrameContext,
+                                                commandBuffer: MTLCommandBuffer) -> String? {
+        guard let quad = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else {
+            return "Missing fullscreen quad mesh for reflection probe fog capture."
+        }
+        let previousSnapshot = frameContext.renderFrameSnapshot()
+        frameContext.setRenderFrameSnapshot(captureSnapshot)
+        defer { frameContext.setRenderFrameSnapshot(previousSnapshot) }
+
+        let pass = FullscreenPass(
+            pipeline: .HeightFog,
+            label: "Reflection Probe Height Fog",
+            inputs: PostProcessInputs(
+                sampler: .LinearClampToZero,
+                source: sourceTexture,
+                sceneDepth: depthTexture,
+                settings: frameContext.rendererSettings()
+            )
+        )
+        let passDescriptor = makeReflectionProbeFogPassDescriptor(colorTexture: targetTexture, face: face)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else {
+            return "Failed to create reflection probe fog encoder for face \(face)."
+        }
+        RenderPassHelpers.setViewport(encoder, SIMD2<Float>(Float(sourceTexture.width), Float(sourceTexture.height)))
+        pass.encode(into: encoder, quad: quad, frameContext: frameContext, graphics: engineContext.graphics)
+        encoder.endEncoding()
+        return nil
+    }
+
     private func captureReflectionProbe(scene: EngineScene,
                                         snapshot: RenderFrameSnapshot,
                                         state: ReflectionProbeRuntimeState) -> String? {
@@ -337,11 +422,24 @@ final class ReflectionProbeRuntimeManager {
         }
 
         let captureSize = max(Int(state.authoredProbe.captureResolution), 1)
+        let resolvedSettings = resolvedCaptureRendererSettings(scene: scene)
+        // Keep reflection probes free of camera-space post fog for now. Face-local fullscreen fog
+        // creates cubemap discontinuities, while final camera aerial perspective remains a post pass.
+        let shouldApplyHeightFog = false
         guard let depthTexture = makeDepthTexture(
             size: captureSize,
             label: "ReflectionProbe.Depth.\(String(state.entityID.uuidString.prefix(8)))"
         ) else {
             return "Failed to allocate reflection probe depth texture."
+        }
+        let captureSceneColorTexture = shouldApplyHeightFog
+            ? makeReflectionProbeSceneColorTexture(
+                size: captureSize,
+                label: "ReflectionProbe.SceneColor.\(String(state.entityID.uuidString.prefix(8)))"
+            )
+            : nil
+        if shouldApplyHeightFog, captureSceneColorTexture == nil {
+            return "Failed to allocate reflection probe scene color texture."
         }
 
         guard let probeSnapshot = snapshot.reflectionProbes.first(where: { $0.entity.id == state.entityID }) else {
@@ -350,7 +448,7 @@ final class ReflectionProbeRuntimeManager {
 
         let frameContext = captureFrameContextStorage.beginFrame()
         captureFrameContextStorage.updateRendererState(
-            settings: rendererSettingsProvider(),
+            settings: resolvedSettings,
             viewContext: RenderViewContext(
                 viewId: UInt64(bitPattern: Int64(truncatingIfNeeded: state.entityID.hashValue)),
                 viewportSize: SIMD2<Float>(Float(captureSize), Float(captureSize)),
@@ -374,10 +472,16 @@ final class ReflectionProbeRuntimeManager {
 
         for face in 0..<6 {
             let viewMatrix = captureProbeViewMatrix(position: probeSnapshot.worldTransform.position, face: face)
+            let captureSnapshot = SceneRenderer.makeCaptureSnapshot(
+                from: snapshot,
+                viewMatrix: viewMatrix,
+                projectionMatrix: projection,
+                cameraPosition: probeSnapshot.worldTransform.position
+            )
             let passDescriptor = makeReflectionProbeCapturePassDescriptor(
-                colorTexture: capturedTexture,
+                colorTexture: shouldApplyHeightFog ? captureSceneColorTexture! : capturedTexture,
                 depthTexture: depthTexture,
-                face: face
+                face: shouldApplyHeightFog ? 0 : face
             )
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else {
                 return "Failed to create reflection probe encoder for face \(face)."
@@ -395,6 +499,18 @@ final class ReflectionProbeRuntimeManager {
                 frameContext: frameContext
             )
             encoder.endEncoding()
+            if shouldApplyHeightFog,
+               let fogError = encodeReflectionProbeHeightFog(
+                    sourceTexture: captureSceneColorTexture!,
+                    depthTexture: depthTexture,
+                    targetTexture: capturedTexture,
+                    face: face,
+                    captureSnapshot: captureSnapshot,
+                    frameContext: frameContext,
+                    commandBuffer: commandBuffer
+               ) {
+                return fogError
+            }
         }
 
         if capturedTexture.mipmapLevelCount > 1,
@@ -527,7 +643,7 @@ final class ReflectionProbeRuntimeManager {
             height: size,
             mipmapped: false
         )
-        descriptor.usage = [.renderTarget]
+        descriptor.usage = [.renderTarget, .shaderRead]
         descriptor.storageMode = .private
         guard let texture = engineContext.device.makeTexture(descriptor: descriptor) else { return nil }
         texture.label = label

@@ -127,17 +127,13 @@ public class EngineScene {
     private var previousInputKeys: [Bool] = []
     public private(set) var transformAuthorityMode: TransformAuthorityMode = .edit
 
-    public var environmentMapHandle: AssetHandle?
-
     public init(id: UUID = UUID(),
                 name: String,
-                environmentMapHandle: AssetHandle?,
                 prefabSystem: PrefabSystem? = nil,
                 engineContext: EngineContext? = nil,
                 shouldBuildScene: Bool = true) {
         self.id = id
         self.name = name
-        self.environmentMapHandle = environmentMapHandle
         self.ecs = SceneECS()
         self.prefabSystem = prefabSystem
         self.engineContext = engineContext
@@ -238,6 +234,12 @@ public class EngineScene {
             },
             updateSceneConstants: { frame in
                 self.updateSceneConstantsForFrame(frame)
+            },
+            updateEnvironment: { frame, isPlaying, isPaused in
+                EnvironmentSimulationSystem.update(scene: self,
+                                                   frame: frame,
+                                                   isPlaying: isPlaying,
+                                                   isPaused: isPaused)
             },
             updateSky: {
                 SkySystem.update(scene: self)
@@ -777,11 +779,23 @@ public class EngineScene {
                 )
             )
         }
-        let activeSkyLight = ecs.activeSkyLight()?.1
+        let activeSkyEntry = ecs.activeSkyLight()
+        let activeSkyLight = activeSkyEntry?.1
+        let activeEnvironmentState = activeSkyEntry.flatMap { ecs.get(EnvironmentStateComponent.self, for: $0.0) }
+        let activeSkyIBLState = activeSkyEntry.flatMap { ecs.get(SkyIBLStateComponent.self, for: $0.0) }
+        let activeEnvironmentEntry = ecs.activeEnvironment()
+        let activeEnvironmentIBLState = activeEnvironmentEntry.flatMap { ecs.get(EnvironmentIBLStateComponent.self, for: $0.0) }
+        let activeEnvironmentRenderState: EnvironmentRenderState? = activeEnvironmentEntry.map { entity, environment in
+            let runtime = ecs.get(EnvironmentRuntimeStateComponent.self, for: entity)
+            return EnvironmentRenderStateBuilder.build(environment: environment, runtime: runtime)
+        }
         let lightData = _lightManager.snapshotLightData()
         let directionalLights = lightData.filter { $0.type == 2 }
         let localLights = lightData.filter { $0.type != 2 }
-        let shadowLightDirection = resolveDirectionalShadowLightDirection(activeSkyLight: activeSkyLight)
+        let shadowLightDirection = resolveDirectionalShadowLightDirection(
+            activeEnvironmentRenderState: activeEnvironmentRenderState,
+            activeSkyLight: activeSkyLight
+        )
         var hasher = Hasher()
         hasher.combine(frameToken)
         hasher.combine(layerFilterMask.rawValue)
@@ -790,6 +804,8 @@ public class EngineScene {
         hasher.combine(localLights.count)
         hasher.combine(reflectionProbes.count)
         hasher.combine(animationPreparation.skinnedEntityCount)
+        hasher.combine(activeEnvironmentRenderState?.iblSignature)
+        hasher.combine(activeEnvironmentRenderState?.iblLightingIntensity.bitPattern)
         hasher.combine(activeSkyLight != nil)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.x.bitPattern)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.y.bitPattern)
@@ -823,7 +839,11 @@ public class EngineScene {
             frameToken: frameToken,
             signature: UInt64(bitPattern: Int64(hasher.finalize())),
             sceneConstants: _sceneConstants,
+            activeEnvironmentRenderState: activeEnvironmentRenderState,
+            activeEnvironmentIBLState: activeEnvironmentIBLState,
             activeSkyLight: activeSkyLight,
+            activeEnvironmentState: activeEnvironmentState,
+            activeSkyIBLState: activeSkyIBLState,
             directionalLights: directionalLights,
             localLights: localLights,
             directionalShadowLightDirection: shadowLightDirection,
@@ -833,7 +853,18 @@ public class EngineScene {
         )
     }
 
-    private func resolveDirectionalShadowLightDirection(activeSkyLight: SkyLightComponent?) -> SIMD3<Float>? {
+    private func resolveDirectionalShadowLightDirection(activeEnvironmentRenderState: EnvironmentRenderState?,
+                                                       activeSkyLight: SkyLightComponent?) -> SIMD3<Float>? {
+        if let environmentRenderState = activeEnvironmentRenderState,
+           environmentRenderState.enabled,
+           environmentRenderState.sourceMode == .procedural,
+           let sunEntity = ecs.firstEntity(with: SkySunTag.self),
+           let sunLight = ecs.get(LightComponent.self, for: sunEntity),
+           sunLight.type == .directional,
+           sunLight.castsShadows {
+            return -environmentRenderState.sunDirection
+        }
+
         if let sky = activeSkyLight,
            sky.enabled,
            sky.mode == .procedural,
@@ -841,8 +872,9 @@ public class EngineScene {
            let sunLight = ecs.get(LightComponent.self, for: sunEntity),
            sunLight.type == .directional,
            sunLight.castsShadows {
-            return SkySystem.sunRayDirection(azimuthDegrees: sky.azimuthDegrees,
-                                             elevationDegrees: sky.elevationDegrees)
+            let environment = ecs.activeSkyLight().flatMap { ecs.get(EnvironmentStateComponent.self, for: $0.0) }
+            let derivedAtmosphere = SkySystem.derivedAtmosphere(authored: sky, runtime: environment)
+            return derivedAtmosphere.sunRayDirectionWorld
         }
 
         var direction: SIMD3<Float>?
@@ -1064,13 +1096,21 @@ public class EngineScene {
         _sceneConstants.inverseProjectionMatrix = simd_inverse(_sceneConstants.projectionMatrix)
         _sceneConstants.inverseViewProjectionMatrix = simd_inverse(_sceneConstants.projectionMatrix * _sceneConstants.viewMatrix)
         _sceneConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, 1.0)
-        _viewExposureSettings = SceneRenderer.exposureSettings(from: camera, forceAutoExposure: camera.isEditor)
+        _viewExposureSettings = SceneRenderer.exposureSettings(from: camera)
     }
 
     private func updateSceneConstantsForFrame(_ frame: FrameContext) {
         _sceneConstants.totalGameTime = frame.time.totalTime
         let assetManager = engineContext?.assets
         let hasEnvironment: Bool = {
+            if let (_, environment) = ecs.activeEnvironment(), environment.enabled {
+                switch environment.source.mode {
+                case .hdri:
+                    return environment.source.hdriTextureHandle.flatMap { assetManager?.texture(handle: $0) } != nil
+                case .procedural:
+                    return true
+                }
+            }
             guard let (_, sky) = ecs.activeSkyLight(), sky.enabled else { return false }
             switch sky.mode {
             case .hdri:
@@ -1080,9 +1120,9 @@ public class EngineScene {
             }
         }()
         let settings = engineContext?.rendererSettings ?? RendererSettings()
-        let skyIntensity = ecs.activeSkyLight()?.1.intensity ?? 1.0
-        let iblIntensity = (hasEnvironment && settings.iblEnabled != 0) ? settings.iblIntensity * skyIntensity : 0.0
-        _sceneConstants.cameraPositionAndIBL.w = iblIntensity
+        // The environment textures already encode sky/HDRI brightness. Keep w as a simple
+        // shader-visible ready/enabled flag so indirect lighting is not scaled twice.
+        _sceneConstants.cameraPositionAndIBL.w = (hasEnvironment && settings.iblEnabled != 0) ? 1.0 : 0.0
     }
 
     public func onEvent(_ event: Event) {}
@@ -1148,10 +1188,11 @@ public class EngineScene {
     private func syncLights() {
         var lightData: [LightData] = []
         let activeSky = ecs.activeSkyLight()
+        let activeEnvironmentState = activeSky.flatMap { ecs.get(EnvironmentStateComponent.self, for: $0.0) }
         let activeSkyRayDirection: SIMD3<Float>? = {
             guard let (_, sky) = activeSky, sky.enabled, sky.mode == .procedural else { return nil }
-            return SkySystem.sunRayDirection(azimuthDegrees: sky.azimuthDegrees,
-                                             elevationDegrees: sky.elevationDegrees)
+            let derivedAtmosphere = SkySystem.derivedAtmosphere(authored: sky, runtime: activeEnvironmentState)
+            return derivedAtmosphere.sunRayDirectionWorld
         }()
         ecs.viewLights { entity, _, light in
             var data = light.data

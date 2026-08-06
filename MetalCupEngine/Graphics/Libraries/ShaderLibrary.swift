@@ -13,6 +13,7 @@ public enum ShaderType {
     case FinalFragment
     case CubemapVertex
     case CubemapFragment
+    case CubemapOrientationDiagnosticFragment
     case IrradianceFragment
     case PrefilteredVertex
     case PrefilteredFragment
@@ -28,6 +29,9 @@ public enum ShaderType {
     case AOBlurHFragment
     case AOBlurVFragment
     case ProceduralSkyFragment
+    case ProceduralSkyVisibleVertex
+    case ProceduralSkyVisibleFragment
+    case ProceduralSkyCaptureFragment
     case HDRILuminanceFragment
     case PickInstancedVertex
     case PickFragment
@@ -35,6 +39,8 @@ public enum ShaderType {
     case OutlineFragment
     case DebugLineVertex
     case DebugLineFragment
+    case CloudImpostorVertex
+    case CloudImpostorFragment
     case DepthAlphaFragment
     case ShadowAlphaFragment
     case SceneNormalsFragment
@@ -74,6 +80,7 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.FinalFragment, name: "Final Fragment", functionName: "fragment_final")
         register(.CubemapVertex, name: "Cubemap Vertex", functionName: "vertex_cubemap")
         register(.CubemapFragment, name: "Cubemap Fragment", functionName: "fragment_cubemap")
+        register(.CubemapOrientationDiagnosticFragment, name: "Cubemap Orientation Diagnostic Fragment", functionName: "fragment_cubemap_orientation_diagnostic")
         register(.IrradianceFragment, name: "Irradiance Fragment", functionName: "fragment_irradiance")
         register(.PrefilteredFragment, name: "Prefiltered Fragment", functionName: "fragment_prefiltered")
         register(.FSQuadVertex, name: "Fullscreen Quad Vertex", functionName: "vertex_quad")
@@ -88,6 +95,9 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.AOBlurHFragment, name: "AO Blur Horizontal Fragment", functionName: "fragment_ao_blur_h")
         register(.AOBlurVFragment, name: "AO Blur Vertical Fragment", functionName: "fragment_ao_blur_v")
         register(.ProceduralSkyFragment, name: "Procedural Sky Fragment", functionName: "fragment_procedural_sky")
+        register(.ProceduralSkyVisibleVertex, name: "Procedural Sky Visible Vertex", functionName: "vertex_procedural_sky_visible")
+        register(.ProceduralSkyVisibleFragment, name: "Procedural Sky Visible Fragment", functionName: "fragment_procedural_sky_visible")
+        register(.ProceduralSkyCaptureFragment, name: "Procedural Sky Capture Fragment", functionName: "fragment_procedural_sky_capture")
         register(.HDRILuminanceFragment, name: "HDRI Luminance Fragment", functionName: "fragment_hdri_luminance")
         register(.PickInstancedVertex, name: "Pick Instanced Vertex", functionName: "vertex_pick_instanced")
         register(.PickFragment, name: "Pick Fragment", functionName: "fragment_pick_id")
@@ -95,6 +105,8 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.OutlineFragment, name: "Outline Fragment", functionName: "fragment_outline_mask")
         register(.DebugLineVertex, name: "Debug Line Vertex", functionName: "vertex_debug_line")
         register(.DebugLineFragment, name: "Debug Line Fragment", functionName: "fragment_debug_line")
+        register(.CloudImpostorVertex, name: "Cloud Impostor Vertex", functionName: "vertex_cloud_impostor")
+        register(.CloudImpostorFragment, name: "Cloud Impostor Fragment", functionName: "fragment_cloud_impostor")
         register(.DepthAlphaFragment, name: "Depth Alpha Fragment", functionName: "fragment_depth_alpha")
         register(.ShadowAlphaFragment, name: "Shadow Alpha Fragment", functionName: "fragment_shadow_alpha")
         register(.SceneNormalsFragment, name: "Scene Normals Fragment", functionName: "fragment_scene_normals")
