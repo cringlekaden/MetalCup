@@ -725,7 +725,10 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
     }
     // Clamp for stability (prevents NaNs / LUT edge artifacts / fireflies)
     metallic = clamp(metallic, 0.0, 1.0);
-    const float minRoughness = clamp(settings.iblSpecularMinRoughness, 0.02, 0.2);
+    // Phase 2 direct-shading contract: perceptual roughness is bounded once at
+    // the supported 0.06 floor before GGX evaluation. Higher authored floors
+    // remain available for compatibility.
+    const float minRoughness = clamp(settings.iblSpecularMinRoughness, 0.06, 0.2);
     roughness = clamp(roughness, minRoughness, 1.0); // 0.0 can cause sparkle/instability
     albedo = max(albedo, float3(0.0));
     alpha = clamp(alpha, 0.0, 1.0);
@@ -1635,4 +1638,21 @@ kernel void phase2_analytic_light_contract_samples(
     float spot = analyticSpotAngularFalloff(spotCos, cone.y, cone.x);
     float lambertian = max(illuminance, 0.0) / PBR::PI;
     results[sampleIndex] = float4(attenuation, rangeFade, spot, lambertian);
+}
+
+kernel void phase2_direct_pbr_reference_samples(
+    const device float4 *samples [[ buffer(0) ]],
+    const device float4 *baseColors [[ buffer(1) ]],
+    device float4 *results [[ buffer(2) ]],
+    uint sampleIndex [[ thread_position_in_grid ]]) {
+    float normalDotHalf = samples[sampleIndex].x;
+    float roughness = clamp(samples[sampleIndex].y, 0.06, 1.0);
+    float metallic = saturate(samples[sampleIndex].z);
+    float3 f0 = mix(float3(0.04), max(baseColors[sampleIndex].rgb, float3(0.0)), metallic);
+    float distribution = PBR::DistributionGGX(
+        float3(0.0, 1.0, 0.0),
+        normalize(float3(sqrt(max(1.0 - normalDotHalf * normalDotHalf, 0.0)), normalDotHalf, 0.0)),
+        roughness
+    );
+    results[sampleIndex] = float4(distribution, f0);
 }

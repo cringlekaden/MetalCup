@@ -18,6 +18,10 @@ public enum SceneLinearHDRContract {
     //   compatibility controls. Normal authored values are both 1.
     // These units are exposure-relative, not calibrated lux/candela. The accepted
     // dark procedural-sky observation is deferred to Phase 4 without compensation.
+    // Direct material shading supports perceptual roughness down to 0.06. GGX uses
+    // its normalized denominator below that floor without a peak-destroying clamp.
+    // SAO buffers store visibility: 1 is open and 0 is fully occluded; SAO affects
+    // indirect diffuse/specular occlusion only, never analytic direct lighting.
 
     public static func exposureMultiplier(forEV exposureEV: Float) -> Float {
         Float(Foundation.pow(2.0, Double(exposureEV)))

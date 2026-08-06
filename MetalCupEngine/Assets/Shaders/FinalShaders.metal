@@ -264,6 +264,18 @@ static inline float ao_cross_bilateral_weight(float2 sampleUV,
 }
 
 // AO textures store visibility: 1.0 = unoccluded, 0.0 = fully occluded.
+static inline float sao_visibility_from_obscurance(float weightedObscurance,
+                                                   float totalWeight,
+                                                   float intensity,
+                                                   float power) {
+    if (totalWeight <= 0.0) {
+        return 1.0;
+    }
+    float obscurance = saturate(weightedObscurance / totalWeight);
+    float visibility = 1.0 - saturate(obscurance * max(intensity, 0.0));
+    return pow(visibility, max(power, 0.1));
+}
+
 static inline float ao_cross_bilateral_blur(float2 uv,
                                             float2 axisStep,
                                             float blurSharpness,
@@ -929,13 +941,26 @@ fragment float4 fragment_sao_evaluate(const SimpleRasterizerData rd [[ stage_in 
         totalWeight += tapWeight;
     }
 
-    float normalizedObscurance = (totalWeight > 0.0) ? (obscurance / totalWeight) : 0.0;
-    // In this restored formulation the accumulated term behaves more like local
-    // accessibility / visibility than true obscurance. Preserve the contact signal,
-    // but stop inverting it at the end so stored AO remains: 1 = visible, 0 = occluded.
-    float visibility = saturate(normalizedObscurance * intensity);
-    visibility = pow(max(visibility, 1e-4), power);
+    float visibility = sao_visibility_from_obscurance(
+        obscurance,
+        totalWeight,
+        intensity,
+        power
+    );
     return float4(visibility, visibility, visibility, 1.0);
+}
+
+kernel void phase2_sao_visibility_samples(
+    const device float4 *samples [[ buffer(0) ]],
+    device float *results [[ buffer(1) ]],
+    uint sampleIndex [[ thread_position_in_grid ]]) {
+    float4 sample = samples[sampleIndex];
+    results[sampleIndex] = sao_visibility_from_obscurance(
+        sample.x,
+        sample.y,
+        sample.z,
+        sample.w
+    );
 }
 
 fragment float4 fragment_ao_blur_h(const SimpleRasterizerData rd [[ stage_in ]],

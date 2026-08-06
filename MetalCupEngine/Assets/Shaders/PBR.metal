@@ -23,7 +23,11 @@ public:
         float NdotH  = max(dot(N, H), 0.0);
         float NdotH2 = NdotH * NdotH;
         float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-        return a2 / max(PI * denom * denom, 1e-5);
+        // The smallest supported direct-shading roughness (0.06) produces a
+        // valid peak denominator of about 5.28e-10. Keep the numerical guard
+        // below that value so it prevents division by zero without flattening
+        // normalized low-roughness highlights.
+        return a2 / max(PI * denom * denom, 1e-12);
     }
 
     static float GeometrySchlickGGXDirect(float NdotV, float roughness) {
