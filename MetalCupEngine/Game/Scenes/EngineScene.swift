@@ -789,13 +789,15 @@ public class EngineScene {
             let runtime = ecs.get(EnvironmentRuntimeStateComponent.self, for: entity)
             return EnvironmentRenderStateBuilder.build(environment: environment, runtime: runtime)
         }
-        let lightData = _lightManager.snapshotLightData()
-        let directionalLights = lightData.filter { $0.type == 2 }
-        let localLights = lightData.filter { $0.type != 2 }
-        let shadowLightDirection = resolveDirectionalShadowLightDirection(
+        let shadowCaster = resolveDirectionalShadowCaster(
             activeEnvironmentRenderState: activeEnvironmentRenderState,
             activeSkyLight: activeSkyLight
         )
+        let lightData = _lightManager.snapshotLightData(
+            directionalShadowCaster: shadowCaster?.entity
+        )
+        let directionalLights = lightData.filter { $0.type == 2 }
+        let localLights = lightData.filter { $0.type != 2 }
         var hasher = Hasher()
         hasher.combine(frameToken)
         hasher.combine(layerFilterMask.rawValue)
@@ -846,15 +848,21 @@ public class EngineScene {
             activeSkyIBLState: activeSkyIBLState,
             directionalLights: directionalLights,
             localLights: localLights,
-            directionalShadowLightDirection: shadowLightDirection,
+            directionalShadowLightEntityID: shadowCaster?.entity.id,
+            directionalShadowLightDirection: shadowCaster?.rayDirection,
             animationPayload: animationPreparation.payload,
             renderables: renderables,
             reflectionProbes: reflectionProbes
         )
     }
 
-    private func resolveDirectionalShadowLightDirection(activeEnvironmentRenderState: EnvironmentRenderState?,
-                                                       activeSkyLight: SkyLightComponent?) -> SIMD3<Float>? {
+    private struct DirectionalShadowCasterSelection {
+        let entity: Entity
+        let rayDirection: SIMD3<Float>
+    }
+
+    private func resolveDirectionalShadowCaster(activeEnvironmentRenderState: EnvironmentRenderState?,
+                                                activeSkyLight: SkyLightComponent?) -> DirectionalShadowCasterSelection? {
         if let environmentRenderState = activeEnvironmentRenderState,
            environmentRenderState.enabled,
            environmentRenderState.sourceMode == .procedural,
@@ -862,7 +870,10 @@ public class EngineScene {
            let sunLight = ecs.get(LightComponent.self, for: sunEntity),
            sunLight.type == .directional,
            sunLight.castsShadows {
-            return -environmentRenderState.sunDirection
+            return DirectionalShadowCasterSelection(
+                entity: sunEntity,
+                rayDirection: -environmentRenderState.sunDirection
+            )
         }
 
         if let sky = activeSkyLight,
@@ -874,17 +885,23 @@ public class EngineScene {
            sunLight.castsShadows {
             let environment = ecs.activeSkyLight().flatMap { ecs.get(EnvironmentStateComponent.self, for: $0.0) }
             let derivedAtmosphere = SkySystem.derivedAtmosphere(authored: sky, runtime: environment)
-            return derivedAtmosphere.sunRayDirectionWorld
+            return DirectionalShadowCasterSelection(
+                entity: sunEntity,
+                rayDirection: derivedAtmosphere.sunRayDirectionWorld
+            )
         }
 
-        var direction: SIMD3<Float>?
+        var selection: DirectionalShadowCasterSelection?
         ecs.viewLights { entity, _, light in
-            if direction != nil { return }
+            if selection != nil { return }
             guard light.type == .directional, light.castsShadows else { return }
             let worldTransform = ecs.worldTransform(for: entity)
-            direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
+            selection = DirectionalShadowCasterSelection(
+                entity: entity,
+                rayDirection: TransformMath.directionalLightDirection(from: worldTransform.rotation)
+            )
         }
-        return direction
+        return selection
     }
 
     func updateCameras() {
@@ -1185,8 +1202,9 @@ public class EngineScene {
         }
     }
 
-    private func syncLights() {
-        var lightData: [LightData] = []
+    /// Internal so pipeline contract tests can snapshot the same ECS-to-GPU light stream.
+    func syncLights() {
+        var lightRecords: [LightManager.LightRecord] = []
         let activeSky = ecs.activeSkyLight()
         let activeEnvironmentState = activeSky.flatMap { ecs.get(EnvironmentStateComponent.self, for: $0.0) }
         let activeSkyRayDirection: SIMD3<Float>? = {
@@ -1217,9 +1235,9 @@ public class EngineScene {
             data.range = light.range
             data.innerConeCos = light.innerConeCos
             data.outerConeCos = light.outerConeCos
-            lightData.append(data)
+            lightRecords.append(LightManager.LightRecord(entity: entity, data: data))
         }
-        _lightManager.setLights(lightData)
+        _lightManager.setLights(lightRecords)
     }
 
     private func currentFrameForUpdates() -> FrameContext {

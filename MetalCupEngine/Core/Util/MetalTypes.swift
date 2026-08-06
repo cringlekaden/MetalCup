@@ -284,9 +284,22 @@ public struct LightData: sizeable {
     public var specularIntensity: Float = 1.0
     public var innerConeCos: Float = 0.95
     public var outerConeCos: Float = 0.9
-    public var padding: SIMD2<Float> = .zero
+    /// Frame-derived GPU ownership flags. These are not authored or serialized.
+    public var flags: UInt32 = 0
+    public var padding: Float = 0.0
 
     public init() {}
+}
+
+public struct LightDataFlags: OptionSet, Sendable {
+    public let rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    /// This directional light owns the single cascaded directional shadow map.
+    public static let directionalShadowCaster = LightDataFlags(rawValue: 1 << 0)
 }
 
 public struct ForwardPlusClusterParams: sizeable {

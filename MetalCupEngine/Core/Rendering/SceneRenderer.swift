@@ -42,6 +42,7 @@ public struct RenderFrameSnapshot {
     let activeSkyIBLState: SkyIBLStateComponent?
     let directionalLights: [LightData]
     let localLights: [LightData]
+    let directionalShadowLightEntityID: UUID?
     let directionalShadowLightDirection: SIMD3<Float>?
     let animationPayload: AnimationSnapshotPayload?
     let renderables: [Renderable]
@@ -346,6 +347,7 @@ public enum SceneRenderer {
             activeSkyIBLState: snapshot.activeSkyIBLState,
             directionalLights: snapshot.directionalLights,
             localLights: snapshot.localLights,
+            directionalShadowLightEntityID: snapshot.directionalShadowLightEntityID,
             directionalShadowLightDirection: snapshot.directionalShadowLightDirection,
             animationPayload: snapshot.animationPayload,
             renderables: snapshot.renderables,
@@ -374,6 +376,7 @@ public enum SceneRenderer {
             activeSkyIBLState: captureSnapshot.activeSkyIBLState,
             directionalLights: captureSnapshot.directionalLights,
             localLights: captureSnapshot.localLights,
+            directionalShadowLightEntityID: captureSnapshot.directionalShadowLightEntityID,
             directionalShadowLightDirection: captureSnapshot.directionalShadowLightDirection,
             animationPayload: captureSnapshot.animationPayload,
             renderables: captureSnapshot.renderables,

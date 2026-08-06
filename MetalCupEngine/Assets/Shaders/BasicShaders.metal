@@ -1022,7 +1022,9 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
         }
 
         float shadowFactor = 1.0;
-        if (light.type == LightTypeDirectional) {
+        bool ownsDirectionalShadowMap = light.type == LightTypeDirectional
+            && (light.flags & LightDataFlagDirectionalShadowCaster) != 0u;
+        if (ownsDirectionalShadowMap) {
             shadowFactor = computeShadowFactor(rd.worldPosition, N, L, rd.viewDepth, shadows, shadowMap, shadowDepthSampler, shadowCompareSampler);
             if (!hasShadowDebugData) {
                 uint shadowCascadeCount = uint(shadows.shadowMapInvSizeAndCount.z + 0.5);
@@ -1536,4 +1538,44 @@ fragment void fragment_shadow_alpha(RasterizerData rd [[ stage_in ]],
                                    sampler sam [[ sampler(FragmentSamplerIndexLinear) ]],
                                    texture2d<float> albedoMap [[ texture(FragmentTextureIndexAlbedo) ]]) {
     applyAlphaClip(rd, material, sam, albedoMap);
+}
+
+/// Test-only ABI probe compiled through the canonical production shader path.
+kernel void phase2_shadow_owner_samples(const device LightData *lights [[ buffer(0) ]],
+                                        device float4 *results [[ buffer(1) ]],
+                                        uint sampleIndex [[ thread_position_in_grid ]]) {
+    LightData light = lights[sampleIndex];
+    bool ownsMap = light.type == LightTypeDirectional
+        && (light.flags & LightDataFlagDirectionalShadowCaster) != 0u;
+    results[sampleIndex] = float4(ownsMap ? 1.0 : 0.0,
+                                  float(light.flags),
+                                  float(light.type),
+                                  1.0);
+}
+
+struct Phase2ShadowTestVertexOutput {
+    float4 position [[ position ]];
+};
+
+/// Minimal canonical-path depth writer used for offscreen shadow-map occupancy tests.
+vertex Phase2ShadowTestVertexOutput phase2_shadow_test_vertex(
+    const device float4 *positions [[ buffer(0) ]],
+    uint vertexIndex [[ vertex_id ]]) {
+    Phase2ShadowTestVertexOutput output;
+    output.position = positions[vertexIndex];
+    return output;
+}
+
+/// Hard-shadow reference using the same conventional-depth relationship as shadow triage.
+kernel void phase2_hard_shadow_receiver_samples(
+    depth2d_array<float, access::sample> shadowMap [[ texture(0) ]],
+    sampler shadowSampler [[ sampler(0) ]],
+    const device float4 *samples [[ buffer(0) ]],
+    device float4 *results [[ buffer(1) ]],
+    uint sampleIndex [[ thread_position_in_grid ]]) {
+    float4 sample = samples[sampleIndex];
+    uint layer = uint(max(sample.z, 0.0) + 0.5);
+    float storedDepth = shadowMap.sample(shadowSampler, sample.xy, layer);
+    float visibility = (storedDepth + 1e-4 < sample.w) ? 0.0 : 1.0;
+    results[sampleIndex] = float4(storedDepth, sample.w, visibility, float(layer));
 }

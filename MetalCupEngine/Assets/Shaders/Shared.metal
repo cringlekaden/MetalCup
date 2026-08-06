@@ -703,6 +703,8 @@ enum LightType : uint {
     LightTypeDirectional = 2
 };
 
+constant uint LightDataFlagDirectionalShadowCaster = 1u << 0;
+
 enum RendererPerfFlags : uint {
     PerfHalfResBloom = 1 << 0,
     PerfUseAsyncIBLGen = 1 << 1,
@@ -771,7 +773,8 @@ struct LightData {
     float specularIntensity;
     float innerConeCos;
     float outerConeCos;
-    float2 padding;
+    uint flags;
+    float padding;
 };
 
 struct ForwardPlusClusterParams {

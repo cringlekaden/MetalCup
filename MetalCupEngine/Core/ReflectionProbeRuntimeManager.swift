@@ -260,6 +260,7 @@ final class ReflectionProbeRuntimeManager {
             activeSkyIBLState: snapshot.activeSkyIBLState,
             directionalLights: snapshot.directionalLights,
             localLights: snapshot.localLights,
+            directionalShadowLightEntityID: snapshot.directionalShadowLightEntityID,
             directionalShadowLightDirection: snapshot.directionalShadowLightDirection,
             animationPayload: snapshot.animationPayload,
             renderables: snapshot.renderables,
