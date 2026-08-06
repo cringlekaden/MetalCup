@@ -17,6 +17,8 @@ vertex SimpleRasterizerData vertex_quad(const SimpleVertex vert [[ stage_in ]]) 
     return rd;
 }
 
+// Legacy/debug comparison curves. They are deliberately not selectable by the
+// normal Phase 1 output path below.
 static inline float3 tonemap_reinhard(float3 x) {
     return x / (x + 1.0);
 }
@@ -106,6 +108,23 @@ static inline float3 linear_to_srgb(float3 color) {
         srgb_encode_channel(color.g),
         srgb_encode_channel(color.b)
     );
+}
+
+// MetalCup Filmic v1 uses the existing chroma-preserving Hable-style curve and
+// normalizes its white point at scene-linear 16. Exposure is applied exactly once
+// before the curve; SDR is encoded to sRGB exactly once afterward.
+static inline float3 metalcup_final_sdr_output(float3 sceneLinear, float exposureEV) {
+    float3 exposed = max(sceneLinear, 0.0) * exp2(exposureEV);
+    float3 displayLinear = saturate(tonemap_filmic_default(exposed));
+    return linear_to_srgb(displayLinear);
+}
+
+// Test-only diagnostic entry point for numeric output-contract verification.
+kernel void phase1_final_output_samples(device const float4 *sceneLinearAndEV [[ buffer(0) ]],
+                                        device float4 *encodedResults [[ buffer(1) ]],
+                                        uint sampleIndex [[ thread_position_in_grid ]]) {
+    float4 input = sceneLinearAndEV[sampleIndex];
+    encodedResults[sampleIndex] = float4(metalcup_final_sdr_output(input.xyz, input.w), 1.0);
 }
 
 static inline float luminance(float3 c) {
@@ -1040,7 +1059,7 @@ fragment float4 fragment_final(const SimpleRasterizerData rd [[ stage_in ]],
         float transmittance = evaluateHeightFogTransmittance(uv, depthTexture, s, settings, sceneConstants).x;
         return float4(float3(transmittance), 1.0);
     }
-    // Scene and bloom are in linear HDR; tonemap + gamma only here.
+    // Scene and bloom remain scene-linear HDR until this final output stage.
     float3 scene = sceneTexture.sample(s, uv).rgb;
     float3 bloom = float3(0.0);
     if (settings.bloomEnabled != 0) {
@@ -1066,32 +1085,6 @@ fragment float4 fragment_final(const SimpleRasterizerData rd [[ stage_in ]],
         color = mix(color, settings.outlineColor, outlineAlpha);
     }
 
-    float resolvedExposure = max(viewExposure.manualExposure, 1e-4);
-    if (viewExposure.autoExposureEnabled != 0) {
-        uint exposureMip = max(autoExposureTexture.get_num_mip_levels(), 1u) - 1u;
-        float avgLogLuminance = autoExposureTexture.sample(s, float2(0.5), level(float(exposureMip))).r;
-        float avgLuminance = exp2(avgLogLuminance);
-        float compensatedExposure = (0.18 / max(avgLuminance, 1e-4)) * exp2(viewExposure.exposureCompensation);
-        float minExposure = max(viewExposure.autoExposureMin, 1e-4);
-        float maxExposure = max(viewExposure.autoExposureMax, minExposure);
-        resolvedExposure = clamp(compensatedExposure, minExposure, maxExposure);
-    }
-    color = max(color, 0.0) * resolvedExposure;
-
-    if (settings.tonemap == TonemapType::TonemapReinhard) {
-        color = tonemap_reinhard(color);
-    } else if (settings.tonemap == TonemapType::TonemapACES) {
-        color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
-    } else if (settings.tonemap == TonemapType::TonemapHazel) {
-        color = tonemap_hazel(color);
-    } else if (settings.tonemap == TonemapType::TonemapAgX) {
-        color = tonemap_agx(color);
-    } else if (settings.tonemap == TonemapType::TonemapFilmic) {
-        color = tonemap_filmic_default(color);
-    }
-
-    color = linear_to_srgb(saturate(color));
-    float gammaTrim = max(settings.gamma, 1e-4) / 2.2;
-    color = pow(color, 1.0 / gammaTrim);
+    color = metalcup_final_sdr_output(color, viewExposure.exposureEV);
     return float4(color, 1.0);
 }

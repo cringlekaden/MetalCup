@@ -222,11 +222,7 @@ public enum EnvironmentRenderStateBuilder {
             sunIntensity: derived.sunLightIntensity,
             moonDirection: derived.moonDirectionWorld,
             moonColor: max(derived.moonTint, SIMD3<Float>(repeating: 0.0)),
-            iblLightingIntensity: EnvironmentLightingBalance.iblIntensity(
-                environment: environment,
-                resolved: resolved,
-                derived: derived
-            ),
+            iblLightingIntensity: EnvironmentLightingBalance.iblIntensity(environment: environment),
             legacySkyParams: legacySkyParams,
             legacyFogPatch: legacyFogPatch,
             iblSignature: EnvironmentIBLSignature()
@@ -362,57 +358,11 @@ private enum EnvironmentCloudRenderParamBuilder {
     }
 }
 
-private enum EnvironmentLightingBalance {
-    static func iblIntensity(environment: EnvironmentComponent,
-                             resolved: ResolvedEnvironmentInputs,
-                             derived: AtmosphereDerivedSettings) -> Float {
-        guard environment.enabled else { return 0.0 }
-        switch environment.source.mode {
-        case .hdri:
-            return 1.0
-        case .procedural:
-            return proceduralIBLIntensity(environment: environment, resolved: resolved, derived: derived)
-        }
-    }
-
-    private static func proceduralIBLIntensity(environment: EnvironmentComponent,
-                                               resolved: ResolvedEnvironmentInputs,
-                                               derived: AtmosphereDerivedSettings) -> Float {
-        let weatherAmount = clampScalar(resolved.weatherAmount, min: 0.0, max: 1.0)
-        let cloudCoverage = clampScalar(environment.clouds.coverage, min: 0.0, max: 1.0)
-        let haze = clampScalar(environment.atmosphere.haze, min: 0.0, max: 1.0)
-        let density = clampScalar(environment.atmosphere.density, min: 0.25, max: 2.5)
-        let positiveMood = clampScalar(environment.atmosphere.mood, min: 0.0, max: 1.0)
-        let negativeMood = clampScalar(-environment.atmosphere.mood, min: 0.0, max: 1.0)
-
-        let daylight = derived.dayNightFactor
-        let twilight = derived.twilightFactor
-        let night = derived.nightFactor
-        let sunVisible = derived.solarVisibility
-
-        var intensity = 1.15
-            + daylight * 1.45
-            + twilight * 0.55
-            + night * 0.18
-
-        // Overcast/cloudy weather should trade hard direct light for broader sky fill.
-        intensity += cloudCoverage * (0.35 + daylight * 0.45)
-        intensity += weatherAmount * (0.18 + daylight * 0.28)
-
-        // Haze/density brighten the broad sky contribution, but heavy haze should not wash out nights.
-        intensity += haze * density * (0.28 + daylight * 0.24 + twilight * 0.18)
-
-        // If the sun is visible, keep indirect from falling too far below the analytic sun.
-        intensity += sunVisible * daylight * 0.45
-
-        intensity += positiveMood * 0.18
-        intensity -= negativeMood * 0.22
-
-        return clampScalar(intensity, min: 0.75, max: 4.0)
-    }
-
-    private static func clampScalar(_ value: Float, min minValue: Float, max maxValue: Float) -> Float {
-        Swift.min(Swift.max(value, minValue), maxValue)
+enum EnvironmentLightingBalance {
+    /// Captured procedural and HDRI resources already contain their source energy.
+    /// Weather, daylight, haze, and mood must never be multiplied into IBL again.
+    static func iblIntensity(environment: EnvironmentComponent) -> Float {
+        environment.enabled ? 1.0 : 0.0
     }
 }
 

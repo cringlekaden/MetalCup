@@ -143,8 +143,7 @@ static inline float solarAngularDistance(float3 dir, float3 sunDir) {
 }
 
 static inline float solarRelativeRadiance(constant SkyParams &params) {
-    float authoredIntensity = max(params.intensity, 0.001);
-    float derivedDiskRadiance = max(params.atmosphereOpticalParams.w / authoredIntensity, 0.0);
+    float derivedDiskRadiance = max(params.atmosphereOpticalParams.w, 0.0);
     return max(params.sunIntensity, derivedDiskRadiance);
 }
 
@@ -1257,6 +1256,39 @@ static inline float3 evaluate_procedural_sky_radiance(float3 direction,
     return (sky + sun) * max(params.intensity, 0.0) * kProceduralSkyRadianceScale;
 }
 
+static inline float3 evaluate_visible_procedural_sky_radiance(float3 direction,
+                                                               constant SkyParams &params,
+                                                               texture2d<float> moonAlbedoTexture,
+                                                               texture2d<float> galaxyTexture,
+                                                               texture2d<float> cloudAtlasTexture) {
+    return evaluate_procedural_sky_radiance(direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture);
+}
+
+static inline float3 evaluate_capture_procedural_sky_radiance(float3 direction,
+                                                               constant SkyParams &params,
+                                                               texture2d<float> moonAlbedoTexture,
+                                                               texture2d<float> galaxyTexture,
+                                                               texture2d<float> cloudAtlasTexture) {
+    return evaluate_procedural_sky_radiance(direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture);
+}
+
+// Test-only diagnostic entry point. It exercises the production visible and capture
+// evaluators numerically without adding exposure or display mapping.
+kernel void phase1_procedural_sky_linearity_samples(constant SkyParams &params [[ buffer(0) ]],
+                                                     device const float4 *directions [[ buffer(1) ]],
+                                                     device float4 *visibleResults [[ buffer(2) ]],
+                                                     device float4 *captureResults [[ buffer(3) ]],
+                                                     texture2d<float> moonAlbedoTexture [[ texture(0) ]],
+                                                     texture2d<float> galaxyTexture [[ texture(1) ]],
+                                                     texture2d<float> cloudAtlasTexture [[ texture(2) ]],
+                                                     uint sampleIndex [[ thread_position_in_grid ]]) {
+    float3 direction = normalize(directions[sampleIndex].xyz);
+    visibleResults[sampleIndex] = float4(evaluate_visible_procedural_sky_radiance(
+        direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+    captureResults[sampleIndex] = float4(evaluate_capture_procedural_sky_radiance(
+        direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+}
+
 vertex VisibleProceduralSkyRasterizerData vertex_procedural_sky_visible(const SimpleVertex vert [[ stage_in ]],
                                                                         constant SceneConstants &sceneConstants [[ buffer(VertexBufferIndexSceneConstants) ]],
                                                                         constant ModelConstants &modelConstants [[ buffer(VertexBufferIndexModelConstants) ]]) {
@@ -1284,7 +1316,7 @@ fragment float4 fragment_procedural_sky(CubemapRasterizerData rd [[ stage_in ]],
                                         texture2d<float> cloudAtlasTexture [[ texture(FragmentTextureIndexCloudAtlas) ]]) {
     float2 uv = rd.localPosition.xy * float2(0.5, -0.5) + 0.5;
     float3 dir = cubeDirectionFromFaceUV(uint(faceIndex + 0.5), uv);
-    return float4(evaluate_procedural_sky_radiance(dir, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+    return float4(evaluate_capture_procedural_sky_radiance(dir, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
 }
 
 fragment float4 fragment_procedural_sky_visible(VisibleProceduralSkyRasterizerData rd [[ stage_in ]],
@@ -1292,7 +1324,7 @@ fragment float4 fragment_procedural_sky_visible(VisibleProceduralSkyRasterizerDa
                                                 texture2d<float> moonAlbedoTexture [[ texture(FragmentTextureIndexMoonAlbedo) ]],
                                                 texture2d<float> galaxyTexture [[ texture(FragmentTextureIndexGalaxyBackground) ]],
                                                 texture2d<float> cloudAtlasTexture [[ texture(FragmentTextureIndexCloudAtlas) ]]) {
-    return float4(evaluate_procedural_sky_radiance(rd.direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+    return float4(evaluate_visible_procedural_sky_radiance(rd.direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
 }
 
 fragment float4 fragment_procedural_sky_capture(VisibleProceduralSkyRasterizerData rd [[ stage_in ]],
@@ -1302,5 +1334,5 @@ fragment float4 fragment_procedural_sky_capture(VisibleProceduralSkyRasterizerDa
                                                 texture2d<float> cloudAtlasTexture [[ texture(FragmentTextureIndexCloudAtlas) ]]) {
     // Capture uses the same sky radiance seen by the camera so procedural IBL,
     // reflections, and the visible dome stay on the same brightness basis.
-    return float4(evaluate_procedural_sky_radiance(rd.direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+    return float4(evaluate_capture_procedural_sky_radiance(rd.direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
 }

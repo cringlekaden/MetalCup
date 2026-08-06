@@ -891,6 +891,7 @@ public final class Renderer: NSObject {
 
     private func resolvedRendererSettings(for scene: EngineScene?) -> RendererSettings {
         var resolved = settings
+        resolved.applySceneLinearHDROutputInvariants()
         if let environmentEntry = scene?.ecs.activeEnvironment() {
             let runtime = scene?.ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntry.0)
             let renderState = EnvironmentRenderStateBuilder.build(
@@ -899,7 +900,9 @@ public final class Renderer: NSObject {
                 rendererSettings: resolved
             )
             renderState.legacyFogPatch.applying(to: &resolved)
-            resolved.iblIntensity = max(0.0, resolved.iblIntensity) * renderState.iblLightingIntensity
+            // The enabled flag remains separate. Captured environment radiance is the
+            // source of truth and is sampled with unit gain.
+            resolved.iblIntensity = renderState.iblLightingIntensity > 0.0 ? 1.0 : 0.0
             return resolved
         }
 

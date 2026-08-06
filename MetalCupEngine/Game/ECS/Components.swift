@@ -1367,8 +1367,9 @@ public struct CameraComponent {
     public var projectionType: ProjectionType
     public var isPrimary: Bool
     public var isEditor: Bool
+    // Compatibility fields are retained for scene decoding. Phase 1 rendering is manual-only.
     public var autoExposureEnabled: Bool
-    public var manualExposure: Float
+    public var exposureEV: Float
     public var exposureCompensation: Float
     public var autoExposureMin: Float
     public var autoExposureMax: Float
@@ -1382,8 +1383,8 @@ public struct CameraComponent {
         projectionType: ProjectionType = .perspective,
         isPrimary: Bool = true,
         isEditor: Bool = true,
-        autoExposureEnabled: Bool = true,
-        manualExposure: Float = 1.0,
+        autoExposureEnabled: Bool = false,
+        exposureEV: Float = 0.0,
         exposureCompensation: Float = 0.0,
         autoExposureMin: Float = 0.03,
         autoExposureMax: Float = 8.0,
@@ -1397,7 +1398,7 @@ public struct CameraComponent {
         self.isPrimary = isPrimary
         self.isEditor = isEditor
         self.autoExposureEnabled = autoExposureEnabled
-        self.manualExposure = manualExposure
+        self.exposureEV = exposureEV
         self.exposureCompensation = exposureCompensation
         self.autoExposureMin = autoExposureMin
         self.autoExposureMax = autoExposureMax

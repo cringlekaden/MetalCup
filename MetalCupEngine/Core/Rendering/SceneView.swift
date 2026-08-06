@@ -8,21 +8,23 @@ import simd
 public struct SceneViewExposureSettings: sizeable, Equatable {
     public static let expectedMetalStride: Int = 24
 
+    // See Documentation/SceneLinearHDR.md. Auto-exposure fields remain ABI placeholders;
+    // Phase 1 applies `exp2(exposureEV)` exactly once in the final output pass.
     public var autoExposureEnabled: UInt32
-    public var manualExposure: Float
+    public var exposureEV: Float
     public var exposureCompensation: Float
     public var autoExposureMin: Float
     public var autoExposureMax: Float
     public var adaptationSpeed: Float
 
-    public init(autoExposureEnabled: UInt32 = 1,
-                manualExposure: Float = 1.0,
+    public init(autoExposureEnabled: UInt32 = 0,
+                exposureEV: Float = 0.0,
                 exposureCompensation: Float = 0.0,
                 autoExposureMin: Float = 0.03,
                 autoExposureMax: Float = 8.0,
                 adaptationSpeed: Float = 2.0) {
         self.autoExposureEnabled = autoExposureEnabled
-        self.manualExposure = manualExposure
+        self.exposureEV = exposureEV
         self.exposureCompensation = exposureCompensation
         self.autoExposureMin = autoExposureMin
         self.autoExposureMax = autoExposureMax

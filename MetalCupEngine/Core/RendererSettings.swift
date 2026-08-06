@@ -172,17 +172,28 @@ public struct RendererSettings: sizeable {
     public var bloomResolutionScale: UInt32 = BloomResolutionScale.half.rawValue
 
     public var reservedBloom2: UInt32 = 6
+    // Reserved legacy authoring field. Normal output is always MetalCup Filmic v1.
     public var tonemap: UInt32 = TonemapType.filmic.rawValue
     // Reserved to preserve Swift/Metal uniform ABI after removing renderer-global exposure ownership.
     public var reservedExposure0: Float = 1.0
+    // Reserved legacy authoring field. SDR is encoded to sRGB exactly once.
     public var gamma: Float = 2.2
 
     public var iblEnabled: UInt32 = 1
-    // Compatibility/debug-only global IBL override. Normal look-dev should leave this at 1.0
-    // and derive indirect brightness from the sky model plus camera exposure.
+    // Reserved legacy authoring field. Captured environment radiance is sampled at gain 1.
     public var iblIntensity: Float = 1.0
     // Reserved to preserve Swift/Metal uniform ABI for an unused IBL override slot.
     public var reservedIBL0: UInt32 = 0
+
+    public mutating func applySceneLinearHDROutputInvariants() {
+        tonemap = TonemapType.filmic.rawValue
+        gamma = 2.2
+        iblIntensity = 1.0
+    }
+
+    public var effectiveGlobalIBLSamplingGain: Float {
+        iblEnabled != 0 ? 1.0 : 0.0
+    }
 
 
     public var perfFlags: UInt32 = 0

@@ -503,7 +503,7 @@ struct RendererSettings {
 
 struct ViewExposureSettings {
     uint autoExposureEnabled;
-    float manualExposure;
+    float exposureEV;
     float exposureCompensation;
     float autoExposureMin;
     float autoExposureMax;

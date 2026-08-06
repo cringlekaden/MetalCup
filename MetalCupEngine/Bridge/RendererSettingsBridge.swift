@@ -139,26 +139,22 @@ public func MCERendererSetBloomMaxMips(_ contextPtr: UnsafeRawPointer?, _ value:
 
 @_cdecl("MCERendererGetTonemap")
 public func MCERendererGetTonemap(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
-    getSettings(contextPtr).tonemap
+    TonemapType.filmic.rawValue
 }
 
 @_cdecl("MCERendererSetTonemap")
 public func MCERendererSetTonemap(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
-    updateSettings(contextPtr) { settings in
-        settings.tonemap = value
-    }
+    // Reserved compatibility bridge. Normal output is fixed to MetalCup Filmic v1.
 }
 
 @_cdecl("MCERendererGetGamma")
 public func MCERendererGetGamma(_ contextPtr: UnsafeRawPointer?) -> Float {
-    getSettings(contextPtr).gamma
+    2.2
 }
 
 @_cdecl("MCERendererSetGamma")
 public func MCERendererSetGamma(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
-    updateSettings(contextPtr) { settings in
-        settings.gamma = value
-    }
+    // Reserved compatibility bridge. No post-sRGB gamma trim is authored.
 }
 
 @_cdecl("MCERendererGetSceneMSAASampleCount")
@@ -198,16 +194,12 @@ public func MCERendererSetIBLEnabled(_ contextPtr: UnsafeRawPointer?, _ value: U
 
 @_cdecl("MCERendererGetIBLIntensity")
 public func MCERendererGetIBLIntensity(_ contextPtr: UnsafeRawPointer?) -> Float {
-    getSettings(contextPtr).iblIntensity
+    1.0
 }
 
 @_cdecl("MCERendererSetIBLIntensity")
 public func MCERendererSetIBLIntensity(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
-    updateSettings(contextPtr) { settings in
-        // Retain the legacy bridge for compatibility/debugging, but normal workflow should
-        // keep this override at 1.0 and balance indirect light through sky + exposure instead.
-        settings.iblIntensity = value
-    }
+    // Reserved compatibility bridge. Captured environment radiance is sampled at unit gain.
 }
 
 @_cdecl("MCERendererGetIBLQualityPreset")

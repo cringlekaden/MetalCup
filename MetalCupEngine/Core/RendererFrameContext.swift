@@ -68,12 +68,8 @@ public struct RenderViewContext {
         hasher.combine(updatesBatchStats)
         hasher.combine(debugFlags)
         hasher.combine(showEditorOverlays)
-        hasher.combine(exposureSettings.autoExposureEnabled)
-        hasher.combine(exposureSettings.manualExposure.bitPattern)
-        hasher.combine(exposureSettings.exposureCompensation.bitPattern)
-        hasher.combine(exposureSettings.autoExposureMin.bitPattern)
-        hasher.combine(exposureSettings.autoExposureMax.bitPattern)
-        hasher.combine(exposureSettings.adaptationSpeed.bitPattern)
+        // Exposure is final-output state. It must not invalidate view-owned HDR,
+        // culling, environment, bloom-input, or probe resources.
         return UInt64(bitPattern: Int64(hasher.finalize()))
     }
 

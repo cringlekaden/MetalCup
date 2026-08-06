@@ -531,7 +531,9 @@ public enum SkySystem {
         let lowSunRadianceLift = goldenHourFactor * (1.0 - derivedAtmosphere.nightFactor) * (0.12 + aerosolDensity * 0.10 + derivedAtmosphere.sunScatterStrength * 0.08)
         let horizonOpticalDepth = min(max(1.08 + aerosolDensity * 1.85 + lowSunOpticalBoost * 0.52 + derivedAtmosphere.horizonDensity * 0.46 - goldenHourFactor * 0.18, 0.72), 4.35)
         let twilightOzoneAmount = min(max(0.24 + derivedAtmosphere.twilightFactor * 0.52 + derivedAtmosphere.nightFactor * 0.14 - aerosolDensity * 0.08, 0.05), 1.0)
-        let skyRadianceScale = max(0.0, sky.intensity) * (0.96 + derivedAtmosphere.dayNightFactor * 0.04 + lowSunRadianceLift)
+        // This is an atmosphere/body shaping scale, not authored source intensity.
+        // `params.intensity` is applied once by the shared visible/capture evaluator.
+        let skyRadianceScale = 0.96 + derivedAtmosphere.dayNightFactor * 0.04 + lowSunRadianceLift
         let sunDiskRadiance = max(0.0, derivedAtmosphere.sunDiskIntensity * skyRadianceScale * (0.88 + derivedAtmosphere.solarVisibility * 0.12))
         let sunAureoleStrength = min(max(0.14 + aerosolDensity * 0.60 + lowSunOpticalBoost * 0.30 + derivedAtmosphere.sunScatterStrength * 0.30 + goldenHourFactor * 0.20, 0.0), 1.45)
         let groundBounceStrength = min(max(0.04 + derivedAtmosphere.horizonDensity * 0.08 + weatherAmount * 0.03, 0.0), 0.22)

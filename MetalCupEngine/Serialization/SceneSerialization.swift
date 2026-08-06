@@ -836,13 +836,13 @@ public struct CameraComponentDTO: Codable {
     public var isPrimary: Bool
     public var isEditor: Bool
     public var autoExposureEnabled: Bool
-    public var manualExposure: Float
+    public var exposureEV: Float
     public var exposureCompensation: Float
     public var autoExposureMin: Float
     public var autoExposureMax: Float
     public var adaptationSpeed: Float
 
-    public init(schemaVersion: Int = 3, component: CameraComponent) {
+    public init(schemaVersion: Int = 4, component: CameraComponent) {
         self.schemaVersion = schemaVersion
         self.fovDegrees = component.fovDegrees
         self.orthoSize = component.orthoSize
@@ -852,7 +852,7 @@ public struct CameraComponentDTO: Codable {
         self.isPrimary = component.isPrimary
         self.isEditor = component.isEditor
         self.autoExposureEnabled = component.autoExposureEnabled
-        self.manualExposure = component.manualExposure
+        self.exposureEV = component.exposureEV
         self.exposureCompensation = component.exposureCompensation
         self.autoExposureMin = component.autoExposureMin
         self.autoExposureMax = component.autoExposureMax
@@ -869,8 +869,14 @@ public struct CameraComponentDTO: Codable {
         projectionType = try container.decodeIfPresent(UInt32.self, forKey: .projectionType) ?? ProjectionType.perspective.rawValue
         isPrimary = try container.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? true
         isEditor = try container.decodeIfPresent(Bool.self, forKey: .isEditor) ?? false
-        autoExposureEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoExposureEnabled) ?? true
-        manualExposure = try container.decodeIfPresent(Float.self, forKey: .manualExposure) ?? 1.0
+        autoExposureEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoExposureEnabled) ?? false
+        if let encodedEV = try container.decodeIfPresent(Float.self, forKey: .exposureEV) {
+            exposureEV = encodedEV
+        } else if let legacyMultiplier = try container.decodeIfPresent(Float.self, forKey: .manualExposure) {
+            exposureEV = SceneLinearHDRContract.exposureEV(fromLegacyMultiplier: legacyMultiplier)
+        } else {
+            exposureEV = 0.0
+        }
         exposureCompensation = try container.decodeIfPresent(Float.self, forKey: .exposureCompensation) ?? 0.0
         autoExposureMin = try container.decodeIfPresent(Float.self, forKey: .autoExposureMin) ?? 0.03
         autoExposureMax = try container.decodeIfPresent(Float.self, forKey: .autoExposureMax) ?? 8.0
@@ -887,12 +893,48 @@ public struct CameraComponentDTO: Codable {
             isPrimary: isPrimary,
             isEditor: isEditor,
             autoExposureEnabled: autoExposureEnabled,
-            manualExposure: manualExposure,
+            exposureEV: exposureEV,
             exposureCompensation: exposureCompensation,
             autoExposureMin: autoExposureMin,
             autoExposureMax: autoExposureMax,
             adaptationSpeed: adaptationSpeed
         )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(4, forKey: .schemaVersion)
+        try container.encode(fovDegrees, forKey: .fovDegrees)
+        try container.encode(orthoSize, forKey: .orthoSize)
+        try container.encode(nearPlane, forKey: .nearPlane)
+        try container.encode(farPlane, forKey: .farPlane)
+        try container.encode(projectionType, forKey: .projectionType)
+        try container.encode(isPrimary, forKey: .isPrimary)
+        try container.encode(isEditor, forKey: .isEditor)
+        try container.encode(autoExposureEnabled, forKey: .autoExposureEnabled)
+        try container.encode(exposureEV, forKey: .exposureEV)
+        try container.encode(exposureCompensation, forKey: .exposureCompensation)
+        try container.encode(autoExposureMin, forKey: .autoExposureMin)
+        try container.encode(autoExposureMax, forKey: .autoExposureMax)
+        try container.encode(adaptationSpeed, forKey: .adaptationSpeed)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case fovDegrees
+        case orthoSize
+        case nearPlane
+        case farPlane
+        case projectionType
+        case isPrimary
+        case isEditor
+        case autoExposureEnabled
+        case exposureEV
+        case manualExposure
+        case exposureCompensation
+        case autoExposureMin
+        case autoExposureMax
+        case adaptationSpeed
     }
 }
 
@@ -2119,10 +2161,10 @@ public struct RendererSettingsDTO: Codable {
         self.bloomMaxMips = settings.bloomMaxMips
         self.bloomQualityPreset = settings.bloomQualityPreset
         self.bloomResolutionScale = settings.bloomResolutionScale
-        self.tonemap = settings.tonemap
-        self.gamma = settings.gamma
+        self.tonemap = TonemapType.filmic.rawValue
+        self.gamma = 2.2
         self.iblEnabled = settings.iblEnabled
-        self.iblIntensity = settings.iblIntensity
+        self.iblIntensity = 1.0
         self.perfFlags = settings.perfFlags
         self.iblFireflyClamp = settings.iblFireflyClamp
         self.iblFireflyClampEnabled = settings.iblFireflyClampEnabled
@@ -2342,10 +2384,13 @@ public struct RendererSettingsDTO: Codable {
         settings.bloomMaxMips = bloomMaxMips
         settings.bloomQualityPreset = bloomQualityPreset
         settings.bloomResolutionScale = bloomResolutionScale
-        settings.tonemap = tonemap
-        settings.gamma = gamma
+        // Legacy values remain decodable, but normal Phase 1 output has one fixed
+        // transform and one sRGB encode.
+        settings.tonemap = TonemapType.filmic.rawValue
+        settings.gamma = 2.2
         settings.iblEnabled = iblEnabled
-        settings.iblIntensity = iblIntensity
+        // Legacy scene overrides such as 0.05 are reserved and ignored.
+        settings.iblIntensity = 1.0
         settings.perfFlags = perfFlags
         settings.iblFireflyClamp = iblFireflyClamp
         settings.iblFireflyClampEnabled = iblFireflyClampEnabled

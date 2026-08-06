@@ -2559,12 +2559,14 @@ public enum SceneRenderer {
 
     public static func exposureSettings(from camera: CameraComponent) -> SceneViewExposureSettings {
         SceneViewExposureSettings(
-            autoExposureEnabled: camera.autoExposureEnabled ? 1 : 0,
-            manualExposure: max(camera.manualExposure, 0.0001),
-            exposureCompensation: camera.exposureCompensation,
-            autoExposureMin: max(camera.autoExposureMin, 0.0001),
-            autoExposureMax: max(camera.autoExposureMax, max(camera.autoExposureMin, 0.0001)),
-            adaptationSpeed: max(camera.adaptationSpeed, 0.0)
+            // Stale serialized auto-exposure fields are deliberately ignored until the
+            // histogram/temporal reconstruction is implemented.
+            autoExposureEnabled: 0,
+            exposureEV: camera.exposureEV,
+            exposureCompensation: 0.0,
+            autoExposureMin: 0.0,
+            autoExposureMax: 0.0,
+            adaptationSpeed: 0.0
         )
     }
 

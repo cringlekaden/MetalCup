@@ -20,7 +20,7 @@ struct EditorCameraExposurePersistenceTests {
         }
 
         editorCamera.autoExposureEnabled = false
-        editorCamera.manualExposure = 2.25
+        editorCamera.exposureEV = 1.25
         editorCamera.exposureCompensation = -1.0
         editorCamera.autoExposureMin = 0.15
         editorCamera.autoExposureMax = 3.5
@@ -45,7 +45,7 @@ struct EditorCameraExposurePersistenceTests {
 
         #expect(reloadedEditorCamera.isEditor)
         #expect(reloadedEditorCamera.autoExposureEnabled == false)
-        #expect(reloadedEditorCamera.manualExposure == 2.25)
+        #expect(reloadedEditorCamera.exposureEV == 1.25)
         #expect(reloadedEditorCamera.exposureCompensation == -1.0)
         #expect(reloadedEditorCamera.autoExposureMin == 0.15)
         #expect(reloadedEditorCamera.autoExposureMax == 3.5)
