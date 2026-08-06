@@ -5,25 +5,122 @@
 import Foundation
 import MetalKit
 
-public final class ResourceRegistry {
-    // The MTLLibrary that contains compiled shader functions (usually from the app target)
-    public var defaultLibrary: MTLLibrary?
+public enum ShaderSourceState: Equatable {
+    case canonical
+    case projectOverride(relativePath: String)
+    case overrideFailed(relativePath: String, error: String)
 
-    // Root URL for app resources (e.g., /Assets/Resources/). If nil, fall back to Bundle.main.
+    public var displayText: String {
+        switch self {
+        case .canonical:
+            return "Canonical Engine shaders"
+        case .projectOverride(let relativePath):
+            return "Project override active: \(relativePath)"
+        case .overrideFailed(let relativePath, let error):
+            return "Override failed (\(relativePath)): \(error)"
+        }
+    }
+}
+
+public struct ShaderValidationResult: Equatable {
+    public let succeeded: Bool
+    public let sourceDescription: String
+    public let message: String
+
+    public init(succeeded: Bool, sourceDescription: String, message: String) {
+        self.succeeded = succeeded
+        self.sourceDescription = sourceDescription
+        self.message = message
+    }
+}
+
+enum ShaderSourceValidationError: LocalizedError, Equatable {
+    case unavailableCanonicalResources
+    case invalidOverridePath(String)
+    case unreadableDirectory(String)
+    case missingFiles([String])
+    case unexpectedFiles([String])
+    case duplicateFilenames([String])
+    case unreadableSource(String)
+    case missingInclude(file: String, include: String)
+    case includeCycle([String])
+    case compileFailed(String)
+    case missingFunctions([String])
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailableCanonicalResources:
+            return "Canonical Engine shader resources are unavailable."
+        case .invalidOverridePath(let message):
+            return message
+        case .unreadableDirectory(let path):
+            return "Shader directory is unreadable: \(path)"
+        case .missingFiles(let files):
+            return "Shader set is incomplete; missing: \(files.joined(separator: ", "))."
+        case .unexpectedFiles(let files):
+            return "Shader set contains unexpected Metal files: \(files.joined(separator: ", "))."
+        case .duplicateFilenames(let files):
+            return "Shader set contains duplicate filenames: \(files.joined(separator: ", "))."
+        case .unreadableSource(let file):
+            return "Shader source is unreadable or not UTF-8: \(file)."
+        case .missingInclude(let file, let include):
+            return "Shader \(file) includes missing file \(include)."
+        case .includeCycle(let files):
+            return "Shader include cycle: \(files.joined(separator: " -> "))."
+        case .compileFailed(let message):
+            return "Metal compilation failed: \(message)"
+        case .missingFunctions(let names):
+            return "Compiled shader library is missing required functions: \(names.joined(separator: ", "))."
+        }
+    }
+}
+
+public final class ResourceRegistry {
+    public static let canonicalShaderFilenames: [String] = [
+        "BasicShaders.metal",
+        "CloudImpostor.metal",
+        "FinalShaders.metal",
+        "ForwardPlusCulling.metal",
+        "IBLShaders.metal",
+        "InstancedShaders.metal",
+        "PBR.metal",
+        "PickingShaders.metal",
+        "ProceduralSky.metal",
+        "Shared.metal",
+        "SkyboxShaders.metal"
+    ]
+
+    public private(set) var defaultLibrary: MTLLibrary?
+    public private(set) var canonicalShaderRootURL: URL?
+    public private(set) var activeShaderSource: ShaderSourceState = .canonical
+    public private(set) var lastShaderValidationResult: ShaderValidationResult?
+    public private(set) var lastShaderCompileError: String?
+
+    // General application resources remain separate from Engine-owned shaders.
     public var resourcesRootURL: URL?
 
-    // Optional shader roots (highest priority) for runtime compilation.
-    public var shaderRootURLs: [URL] = []
+    private var canonicalLibrary: MTLLibrary?
 
-    public private(set) var lastShaderCompileError: String? = nil
-    private var didAttemptRuntimeCompile: Bool = false
+    public init(canonicalShaderRootURL: URL? = nil) {
+        self.canonicalShaderRootURL = canonicalShaderRootURL?.standardizedFileURL
+    }
 
-    public init() {}
+    public static func bundledCanonicalShaderRootURL() -> URL? {
+        Bundle(for: Renderer.self)
+            .url(forResource: "Shaders", withExtension: nil)?
+            .standardizedFileURL
+    }
 
-    // Resolve a resource URL by name and extension. Looks under resourcesRootURL first, then Bundle.main.
+    public func configureCanonicalShaderRoot(_ url: URL) {
+        canonicalShaderRootURL = url.standardizedFileURL
+    }
+
+    // Resolve a general resource by name. Shader discovery never uses this path.
     public func url(forResource name: String, withExtension ext: String?) -> URL? {
         if let root = resourcesRootURL {
-            let url = ext != nil ? root.appendingPathComponent("\(name).\(ext!)") : root.appendingPathComponent(name)
+            let url = ext != nil
+                ? root.appendingPathComponent("\(name).\(ext!)")
+                : root.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: url.path) {
                 return url
             }
@@ -31,88 +128,195 @@ public final class ResourceRegistry {
         return Bundle.main.url(forResource: name, withExtension: ext)
     }
 
-    public func buildDefaultLibraryIfNeeded(device: MTLDevice, force: Bool = false) {
-        if defaultLibrary != nil && !force { return }
-        if let lib = loadLibraryFromBundle(device: device) {
-            defaultLibrary = lib
+    @discardableResult
+    public func activateCanonicalShaders(device: MTLDevice,
+                                         requiredFunctions: [String]) -> Bool {
+        guard let root = canonicalShaderRootURL else {
+            recordCanonicalFailure(.unavailableCanonicalResources)
+            return false
+        }
+
+        switch compileShaderLibrary(at: root, device: device, requiredFunctions: requiredFunctions) {
+        case .success(let library):
+            canonicalLibrary = library
+            defaultLibrary = library
+            activeShaderSource = .canonical
             lastShaderCompileError = nil
-            return
-        }
-        guard let lib = buildLibraryFromResources(device: device) else {
-            EngineLoggerContext.log(
-                "No shader library built from resources.",
-                level: .warning,
-                category: .renderer
+            lastShaderValidationResult = ShaderValidationResult(
+                succeeded: true,
+                sourceDescription: "Canonical Engine shaders",
+                message: "Compiled and resolved \(requiredFunctions.count) required functions."
             )
-            return
+            return true
+        case .failure(let error):
+            recordCanonicalFailure(error)
+            return false
         }
-        defaultLibrary = lib
-        lastShaderCompileError = nil
     }
 
-    public func resolveFunction(_ name: String, device: MTLDevice, fallbackLibrary: MTLLibrary?) -> MTLFunction? {
-        return resolveFunction(name, device: device, fallbackLibrary: fallbackLibrary, constants: nil)
+    public func useCanonicalShaders() {
+        guard let canonicalLibrary else {
+            recordCanonicalFailure(.unavailableCanonicalResources)
+            return
+        }
+        defaultLibrary = canonicalLibrary
+        activeShaderSource = .canonical
+        lastShaderCompileError = nil
+        lastShaderValidationResult = ShaderValidationResult(
+            succeeded: true,
+            sourceDescription: "Canonical Engine shaders",
+            message: "Canonical Engine shader library active."
+        )
+    }
+
+    @discardableResult
+    public func activateProjectShaderOverride(at shaderRoot: URL,
+                                              relativePath: String,
+                                              device: MTLDevice,
+                                              requiredFunctions: [String]) -> Bool {
+        guard canonicalLibrary != nil else {
+            let error = ShaderSourceValidationError.unavailableCanonicalResources
+            recordOverrideFailure(relativePath: relativePath, error: error)
+            return false
+        }
+
+        switch compileShaderLibrary(at: shaderRoot.standardizedFileURL,
+                                    device: device,
+                                    requiredFunctions: requiredFunctions) {
+        case .success(let library):
+            defaultLibrary = library
+            activeShaderSource = .projectOverride(relativePath: relativePath)
+            lastShaderCompileError = nil
+            lastShaderValidationResult = ShaderValidationResult(
+                succeeded: true,
+                sourceDescription: "Project override: \(relativePath)",
+                message: "Compiled and resolved \(requiredFunctions.count) required functions."
+            )
+            return true
+        case .failure(let error):
+            recordOverrideFailure(relativePath: relativePath, error: error)
+            return false
+        }
+    }
+
+    public func rejectProjectShaderOverride(relativePath: String, message: String) {
+        recordOverrideFailure(
+            relativePath: relativePath,
+            error: .invalidOverridePath(message)
+        )
+    }
+
+    public var activeShaderSourceStatus: String {
+        activeShaderSource.displayText
+    }
+
+    public func resolveFunction(_ name: String,
+                                device: MTLDevice,
+                                fallbackLibrary: MTLLibrary?) -> MTLFunction? {
+        resolveFunction(name,
+                        device: device,
+                        fallbackLibrary: fallbackLibrary,
+                        constants: nil)
     }
 
     public func resolveFunction(_ name: String,
                                 device: MTLDevice,
                                 fallbackLibrary: MTLLibrary?,
                                 constants: MTLFunctionConstantValues?) -> MTLFunction? {
-        let primary = defaultLibrary ?? fallbackLibrary
-        if let fn = makeFunction(from: primary, name: name, constants: constants) {
-            return fn
-        }
-
-        if !didAttemptRuntimeCompile {
-            didAttemptRuntimeCompile = true
-            buildDefaultLibraryIfNeeded(device: device, force: true)
-        }
-
-        let fallback = defaultLibrary ?? fallbackLibrary
-        return makeFunction(from: fallback, name: name, constants: constants)
+        makeFunction(from: defaultLibrary, name: name, constants: constants)
     }
 
-    private func buildLibraryFromResources(device: MTLDevice) -> MTLLibrary? {
-        var candidateRoots: [URL] = []
-        if let root = resourcesRootURL {
-            candidateRoots.append(root)
-        }
-        if let bundleRoot = Bundle.main.resourceURL {
-            let metalCupEditorRoot = bundleRoot.appendingPathComponent("MetalCupEditor", isDirectory: true)
-            if FileManager.default.fileExists(atPath: metalCupEditorRoot.path) {
-                candidateRoots.append(metalCupEditorRoot)
-            }
-        }
-        if candidateRoots.isEmpty { return nil }
+    private func recordCanonicalFailure(_ error: ShaderSourceValidationError) {
+        let message = error.localizedDescription
+        defaultLibrary = nil
+        canonicalLibrary = nil
+        activeShaderSource = .canonical
+        lastShaderCompileError = message
+        lastShaderValidationResult = ShaderValidationResult(
+            succeeded: false,
+            sourceDescription: "Canonical Engine shaders",
+            message: message
+        )
+        EngineLoggerContext.log(message, level: .error, category: .renderer)
+    }
 
-        var shaderRoots = shaderRootURLs
-        shaderRoots.append(contentsOf: candidateRoots.flatMap { root in
-            [
-                root.appendingPathComponent("Shaders", isDirectory: true),
-                root.appendingPathComponent("Assets/Shaders", isDirectory: true),
-                root.appendingPathComponent("Projects/Sandbox/Assets/Shaders", isDirectory: true)
-            ]
-        })
-        let fm = FileManager.default
-        let existingRoot = shaderRoots.first { fm.fileExists(atPath: $0.path) }
-        guard let shaderRoot = existingRoot else { return nil }
+    private func recordOverrideFailure(relativePath: String,
+                                       error: ShaderSourceValidationError) {
+        let message = error.localizedDescription
+        defaultLibrary = canonicalLibrary
+        activeShaderSource = .overrideFailed(relativePath: relativePath, error: message)
+        lastShaderCompileError = message
+        lastShaderValidationResult = ShaderValidationResult(
+            succeeded: false,
+            sourceDescription: "Project override: \(relativePath)",
+            message: message
+        )
+        EngineLoggerContext.log(
+            "Shader override failed for \(relativePath): \(message)",
+            level: .error,
+            category: .renderer
+        )
+    }
 
-        guard let enumerator = fm.enumerator(at: shaderRoot, includingPropertiesForKeys: nil) else { return nil }
+    func compileShaderLibrary(at shaderRoot: URL,
+                              device: MTLDevice,
+                              requiredFunctions: [String]) -> Result<MTLLibrary, ShaderSourceValidationError> {
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(
+            at: shaderRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return .failure(.unreadableDirectory(shaderRoot.path))
+        }
+
         var shaderFiles: [URL] = []
-        for case let url as URL in enumerator {
-            if url.pathExtension.lowercased() == "metal" {
-                shaderFiles.append(url)
-            }
+        for case let url as URL in enumerator where url.pathExtension.lowercased() == "metal" {
+            shaderFiles.append(url.standardizedFileURL)
         }
-        if shaderFiles.isEmpty { return nil }
 
-        shaderFiles.sort { $0.path < $1.path }
-        let fileLookup = buildFileLookup(shaderFiles: shaderFiles)
+        let grouped = Dictionary(grouping: shaderFiles, by: \.lastPathComponent)
+        let duplicates = grouped
+            .filter { $0.value.count > 1 }
+            .map(\.key)
+            .sorted()
+        if !duplicates.isEmpty {
+            return .failure(.duplicateFilenames(duplicates))
+        }
+
+        let actualNames = Set(grouped.keys)
+        let expectedNames = Set(Self.canonicalShaderFilenames)
+        let missing = expectedNames.subtracting(actualNames).sorted()
+        if !missing.isEmpty {
+            return .failure(.missingFiles(missing))
+        }
+        let unexpected = actualNames.subtracting(expectedNames).sorted()
+        if !unexpected.isEmpty {
+            return .failure(.unexpectedFiles(unexpected))
+        }
+
+        let fileLookup = grouped.compactMapValues(\.first)
         var combinedSource = ""
-        var includedFiles = Set<String>()
-        for url in shaderFiles {
-            combinedSource.append(expandIncludes(url: url, fileLookup: fileLookup, includedFiles: &includedFiles))
-            combinedSource.append("\n\n")
+        var emittedFiles = Set<String>()
+        do {
+            for filename in Self.canonicalShaderFilenames {
+                guard let url = fileLookup[filename] else {
+                    return .failure(.missingFiles([filename]))
+                }
+                combinedSource.append(
+                    try expandIncludes(
+                        url: url,
+                        fileLookup: fileLookup,
+                        emittedFiles: &emittedFiles,
+                        includeStack: []
+                    )
+                )
+                combinedSource.append("\n\n")
+            }
+        } catch let error as ShaderSourceValidationError {
+            return .failure(error)
+        } catch {
+            return .failure(.compileFailed(error.localizedDescription))
         }
 
         do {
@@ -122,42 +326,50 @@ public final class ResourceRegistry {
             } else {
                 options.fastMathEnabled = true
             }
-            return try device.makeLibrary(source: combinedSource, options: options)
+            let library = try device.makeLibrary(source: combinedSource, options: options)
+            let missingFunctions = requiredFunctions
+                .filter { library.makeFunction(name: $0) == nil }
+                .sorted()
+            if !missingFunctions.isEmpty {
+                return .failure(.missingFunctions(missingFunctions))
+            }
+            return .success(library)
         } catch {
-            let errorMessage = "Failed to compile shader library: \(error)"
-            lastShaderCompileError = errorMessage
-            EngineLoggerContext.log(
-                errorMessage,
-                level: .error,
-                category: .renderer
-            )
-            return nil
+            return .failure(.compileFailed(error.localizedDescription))
         }
     }
 
-    private func buildFileLookup(shaderFiles: [URL]) -> [String: URL] {
-        var lookup: [String: URL] = [:]
-        for url in shaderFiles {
-            lookup[url.lastPathComponent] = url
+    private func expandIncludes(url: URL,
+                                fileLookup: [String: URL],
+                                emittedFiles: inout Set<String>,
+                                includeStack: [String]) throws -> String {
+        let filename = url.lastPathComponent
+        if includeStack.contains(filename) {
+            throw ShaderSourceValidationError.includeCycle(includeStack + [filename])
         }
-        return lookup
-    }
-
-    private func expandIncludes(url: URL, fileLookup: [String: URL], includedFiles: inout Set<String>) -> String {
-        if includedFiles.contains(url.path) { return "" }
-        includedFiles.insert(url.path)
+        if emittedFiles.contains(url.path) { return "" }
 
         guard let data = try? Data(contentsOf: url),
               let text = String(data: data, encoding: .utf8) else {
-            return ""
+            throw ShaderSourceValidationError.unreadableSource(filename)
         }
 
-        var output = "// \(url.lastPathComponent)\n"
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        for line in lines {
-            if let includeName = parseInclude(from: String(line)),
-               let includeURL = fileLookup[includeName] {
-                output.append(expandIncludes(url: includeURL, fileLookup: fileLookup, includedFiles: &includedFiles))
+        emittedFiles.insert(url.path)
+        var output = "// \(filename)\n"
+        let nextStack = includeStack + [filename]
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if let includeName = parseInclude(from: String(line)) {
+                guard let includeURL = fileLookup[includeName] else {
+                    throw ShaderSourceValidationError.missingInclude(file: filename, include: includeName)
+                }
+                output.append(
+                    try expandIncludes(
+                        url: includeURL,
+                        fileLookup: fileLookup,
+                        emittedFiles: &emittedFiles,
+                        includeStack: nextStack
+                    )
+                )
             } else {
                 output.append(String(line))
                 output.append("\n")
@@ -177,50 +389,9 @@ public final class ResourceRegistry {
         return name.isEmpty ? nil : String(name)
     }
 
-    private func loadLibraryFromBundle(device: MTLDevice) -> MTLLibrary? {
-        let fm = FileManager.default
-        for root in shaderRootURLs {
-            if let lib = loadLibrary(from: root, device: device) {
-                return lib
-            }
-        }
-
-        let bundles: [Bundle] = [Bundle.main, Bundle(for: Renderer.self)]
-        let candidateRoots = bundles.compactMap { $0.resourceURL }
-        let shaderRoots = candidateRoots.flatMap { root in
-            [
-                root,
-                root.appendingPathComponent("MetalCupEditor", isDirectory: true),
-                root.appendingPathComponent("MetalCupEditor/Projects/Sandbox/Assets/Shaders", isDirectory: true),
-                root.appendingPathComponent("Projects/Sandbox/Assets/Shaders", isDirectory: true),
-                root.appendingPathComponent("Shaders", isDirectory: true)
-            ]
-        }
-
-        for root in shaderRoots {
-            guard fm.fileExists(atPath: root.path) else { continue }
-            if let lib = loadLibrary(from: root, device: device) {
-                return lib
-            }
-        }
-        return nil
-    }
-
-    private func loadLibrary(from directory: URL, device: MTLDevice) -> MTLLibrary? {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-            return nil
-        }
-        let metallibs = items.filter { $0.pathExtension.lowercased() == "metallib" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for libURL in metallibs {
-            if let lib = try? device.makeLibrary(URL: libURL) {
-                return lib
-            }
-        }
-        return nil
-    }
-
-    private func makeFunction(from library: MTLLibrary?, name: String, constants: MTLFunctionConstantValues?) -> MTLFunction? {
+    private func makeFunction(from library: MTLLibrary?,
+                              name: String,
+                              constants: MTLFunctionConstantValues?) -> MTLFunction? {
         guard let library else { return nil }
         if let constants {
             return try? library.makeFunction(name: name, constantValues: constants)

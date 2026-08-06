@@ -49,7 +49,67 @@ public enum ShaderType {
     case AONormalsAlphaFragment
 }
 
+public struct ShaderRegistration {
+    public let type: ShaderType
+    public let displayName: String
+    public let functionName: String
+
+    public init(type: ShaderType, displayName: String, functionName: String) {
+        self.type = type
+        self.displayName = displayName
+        self.functionName = functionName
+    }
+}
+
 public class ShaderLibrary: Library<ShaderType, MTLFunction> {
+    public static let defaultManifest: [ShaderRegistration] = [
+        ShaderRegistration(type: .InstancedVertex, displayName: "Scene Instanced Vertex", functionName: "vertex_scene_instanced"),
+        ShaderRegistration(type: .BasicFragment, displayName: "Basic Fragment", functionName: "fragment_basic"),
+        ShaderRegistration(type: .SkyboxVertex, displayName: "Skybox Vertex", functionName: "vertex_skybox"),
+        ShaderRegistration(type: .SkyboxFragment, displayName: "Skybox Fragment", functionName: "fragment_skybox"),
+        ShaderRegistration(type: .FinalVertex, displayName: "Final Vertex", functionName: "vertex_final"),
+        ShaderRegistration(type: .FinalFragment, displayName: "Final Fragment", functionName: "fragment_final"),
+        ShaderRegistration(type: .CubemapVertex, displayName: "Cubemap Vertex", functionName: "vertex_cubemap"),
+        ShaderRegistration(type: .CubemapFragment, displayName: "Cubemap Fragment", functionName: "fragment_cubemap"),
+        ShaderRegistration(type: .CubemapOrientationDiagnosticFragment, displayName: "Cubemap Orientation Diagnostic Fragment", functionName: "fragment_cubemap_orientation_diagnostic"),
+        ShaderRegistration(type: .IrradianceFragment, displayName: "Irradiance Fragment", functionName: "fragment_irradiance"),
+        ShaderRegistration(type: .PrefilteredFragment, displayName: "Prefiltered Fragment", functionName: "fragment_prefiltered"),
+        ShaderRegistration(type: .FSQuadVertex, displayName: "Fullscreen Quad Vertex", functionName: "vertex_quad"),
+        ShaderRegistration(type: .BRDFFragment, displayName: "BRDF Fragment", functionName: "fragment_brdf"),
+        ShaderRegistration(type: .BloomExtractFragment, displayName: "Bloom Extract Fragment", functionName: "fragment_bloom_extract"),
+        ShaderRegistration(type: .HeightFogFragment, displayName: "Height Fog Fragment", functionName: "fragment_height_fog"),
+        ShaderRegistration(type: .AutoExposureExtractFragment, displayName: "Auto Exposure Extract Fragment", functionName: "fragment_auto_exposure_extract"),
+        ShaderRegistration(type: .BloomDownsampleFragment, displayName: "Bloom Downsample Fragment", functionName: "fragment_bloom_downsample"),
+        ShaderRegistration(type: .BlurHFragment, displayName: "Blur Horizontal Fragment", functionName: "fragment_blur_h"),
+        ShaderRegistration(type: .BlurVFragment, displayName: "Blur Vertical Fragment", functionName: "fragment_blur_v"),
+        ShaderRegistration(type: .SAOEvaluateFragment, displayName: "SAO Evaluate Fragment", functionName: "fragment_sao_evaluate"),
+        ShaderRegistration(type: .AOBlurHFragment, displayName: "AO Blur Horizontal Fragment", functionName: "fragment_ao_blur_h"),
+        ShaderRegistration(type: .AOBlurVFragment, displayName: "AO Blur Vertical Fragment", functionName: "fragment_ao_blur_v"),
+        ShaderRegistration(type: .ProceduralSkyFragment, displayName: "Procedural Sky Fragment", functionName: "fragment_procedural_sky"),
+        ShaderRegistration(type: .ProceduralSkyVisibleVertex, displayName: "Procedural Sky Visible Vertex", functionName: "vertex_procedural_sky_visible"),
+        ShaderRegistration(type: .ProceduralSkyVisibleFragment, displayName: "Procedural Sky Visible Fragment", functionName: "fragment_procedural_sky_visible"),
+        ShaderRegistration(type: .ProceduralSkyCaptureFragment, displayName: "Procedural Sky Capture Fragment", functionName: "fragment_procedural_sky_capture"),
+        ShaderRegistration(type: .HDRILuminanceFragment, displayName: "HDRI Luminance Fragment", functionName: "fragment_hdri_luminance"),
+        ShaderRegistration(type: .PickInstancedVertex, displayName: "Pick Instanced Vertex", functionName: "vertex_pick_instanced"),
+        ShaderRegistration(type: .PickFragment, displayName: "Pick Fragment", functionName: "fragment_pick_id"),
+        ShaderRegistration(type: .GridFragment, displayName: "Grid Fragment", functionName: "fragment_grid"),
+        ShaderRegistration(type: .OutlineFragment, displayName: "Outline Fragment", functionName: "fragment_outline_mask"),
+        ShaderRegistration(type: .DebugLineVertex, displayName: "Debug Line Vertex", functionName: "vertex_debug_line"),
+        ShaderRegistration(type: .DebugLineFragment, displayName: "Debug Line Fragment", functionName: "fragment_debug_line"),
+        ShaderRegistration(type: .CloudImpostorVertex, displayName: "Cloud Impostor Vertex", functionName: "vertex_cloud_impostor"),
+        ShaderRegistration(type: .CloudImpostorFragment, displayName: "Cloud Impostor Fragment", functionName: "fragment_cloud_impostor"),
+        ShaderRegistration(type: .DepthAlphaFragment, displayName: "Depth Alpha Fragment", functionName: "fragment_depth_alpha"),
+        ShaderRegistration(type: .ShadowAlphaFragment, displayName: "Shadow Alpha Fragment", functionName: "fragment_shadow_alpha"),
+        ShaderRegistration(type: .SceneNormalsFragment, displayName: "Scene Normals Fragment", functionName: "fragment_scene_normals"),
+        ShaderRegistration(type: .SceneNormalsAlphaFragment, displayName: "Scene Normals Alpha Fragment", functionName: "fragment_scene_normals_alpha"),
+        ShaderRegistration(type: .AONormalsFragment, displayName: "AO Normals Fragment", functionName: "fragment_ao_normals"),
+        ShaderRegistration(type: .AONormalsAlphaFragment, displayName: "AO Normals Alpha Fragment", functionName: "fragment_ao_normals_alpha")
+    ]
+
+    public static var requiredFunctionNames: [String] {
+        defaultManifest.map(\.functionName)
+    }
+
     private var _library: [ShaderType: Shader] = [:]
     private let resourceRegistry: ResourceRegistry
     private let device: MTLDevice
@@ -72,47 +132,13 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
     }
 
     public func registerDefaults() {
-        register(.InstancedVertex, name: "Scene Instanced Vertex", functionName: "vertex_scene_instanced")
-        register(.BasicFragment, name: "Basic Fragment", functionName: "fragment_basic")
-        register(.SkyboxVertex, name: "Skybox Vertex", functionName: "vertex_skybox")
-        register(.SkyboxFragment, name: "Skybox Fragment", functionName: "fragment_skybox")
-        register(.FinalVertex, name: "Final Vertex", functionName: "vertex_final")
-        register(.FinalFragment, name: "Final Fragment", functionName: "fragment_final")
-        register(.CubemapVertex, name: "Cubemap Vertex", functionName: "vertex_cubemap")
-        register(.CubemapFragment, name: "Cubemap Fragment", functionName: "fragment_cubemap")
-        register(.CubemapOrientationDiagnosticFragment, name: "Cubemap Orientation Diagnostic Fragment", functionName: "fragment_cubemap_orientation_diagnostic")
-        register(.IrradianceFragment, name: "Irradiance Fragment", functionName: "fragment_irradiance")
-        register(.PrefilteredFragment, name: "Prefiltered Fragment", functionName: "fragment_prefiltered")
-        register(.FSQuadVertex, name: "Fullscreen Quad Vertex", functionName: "vertex_quad")
-        register(.BRDFFragment, name: "BRDF Fragment", functionName: "fragment_brdf")
-        register(.BloomExtractFragment, name: "Bloom Extract Fragment", functionName: "fragment_bloom_extract")
-        register(.HeightFogFragment, name: "Height Fog Fragment", functionName: "fragment_height_fog")
-        register(.AutoExposureExtractFragment, name: "Auto Exposure Extract Fragment", functionName: "fragment_auto_exposure_extract")
-        register(.BloomDownsampleFragment, name: "Bloom Downsample Fragment", functionName: "fragment_bloom_downsample")
-        register(.BlurHFragment, name: "Blur Horizontal Fragment", functionName: "fragment_blur_h")
-        register(.BlurVFragment, name: "Blur Vertical Fragment", functionName: "fragment_blur_v")
-        register(.SAOEvaluateFragment, name: "SAO Evaluate Fragment", functionName: "fragment_sao_evaluate")
-        register(.AOBlurHFragment, name: "AO Blur Horizontal Fragment", functionName: "fragment_ao_blur_h")
-        register(.AOBlurVFragment, name: "AO Blur Vertical Fragment", functionName: "fragment_ao_blur_v")
-        register(.ProceduralSkyFragment, name: "Procedural Sky Fragment", functionName: "fragment_procedural_sky")
-        register(.ProceduralSkyVisibleVertex, name: "Procedural Sky Visible Vertex", functionName: "vertex_procedural_sky_visible")
-        register(.ProceduralSkyVisibleFragment, name: "Procedural Sky Visible Fragment", functionName: "fragment_procedural_sky_visible")
-        register(.ProceduralSkyCaptureFragment, name: "Procedural Sky Capture Fragment", functionName: "fragment_procedural_sky_capture")
-        register(.HDRILuminanceFragment, name: "HDRI Luminance Fragment", functionName: "fragment_hdri_luminance")
-        register(.PickInstancedVertex, name: "Pick Instanced Vertex", functionName: "vertex_pick_instanced")
-        register(.PickFragment, name: "Pick Fragment", functionName: "fragment_pick_id")
-        register(.GridFragment, name: "Grid Fragment", functionName: "fragment_grid")
-        register(.OutlineFragment, name: "Outline Fragment", functionName: "fragment_outline_mask")
-        register(.DebugLineVertex, name: "Debug Line Vertex", functionName: "vertex_debug_line")
-        register(.DebugLineFragment, name: "Debug Line Fragment", functionName: "fragment_debug_line")
-        register(.CloudImpostorVertex, name: "Cloud Impostor Vertex", functionName: "vertex_cloud_impostor")
-        register(.CloudImpostorFragment, name: "Cloud Impostor Fragment", functionName: "fragment_cloud_impostor")
-        register(.DepthAlphaFragment, name: "Depth Alpha Fragment", functionName: "fragment_depth_alpha")
-        register(.ShadowAlphaFragment, name: "Shadow Alpha Fragment", functionName: "fragment_shadow_alpha")
-        register(.SceneNormalsFragment, name: "Scene Normals Fragment", functionName: "fragment_scene_normals")
-        register(.SceneNormalsAlphaFragment, name: "Scene Normals Alpha Fragment", functionName: "fragment_scene_normals_alpha")
-        register(.AONormalsFragment, name: "AO Normals Fragment", functionName: "fragment_ao_normals")
-        register(.AONormalsAlphaFragment, name: "AO Normals Alpha Fragment", functionName: "fragment_ao_normals_alpha")
+        for registration in Self.defaultManifest {
+            register(
+                registration.type,
+                name: registration.displayName,
+                functionName: registration.functionName
+            )
+        }
     }
 
     override subscript(_ type: ShaderType)->MTLFunction {

@@ -10,6 +10,7 @@ public final class Graphics {
     public let renderPipelineStates: RenderPipelineStateLibrary
     public let depthStencilStates: DepthStencilStateLibrary
     public let samplerStates: SamplerStateLibrary
+    private var didBuildRenderPipelines = false
 
     public init(resourceRegistry: ResourceRegistry, device: MTLDevice, preferences: Preferences) {
         self.shaders = ShaderLibrary(resourceRegistry: resourceRegistry, device: device, fallbackLibrary: resourceRegistry.defaultLibrary)
@@ -27,5 +28,13 @@ public final class Graphics {
 
     public func build() {
         renderPipelineStates.build()
+        didBuildRenderPipelines = true
+    }
+
+    public func refreshForActiveShaderLibrary() {
+        shaders.registerDefaults()
+        if didBuildRenderPipelines {
+            renderPipelineStates.rebuild()
+        }
     }
 }

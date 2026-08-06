@@ -26,21 +26,25 @@ open class Application: NSObject, EventHandler {
             fatalError("Failed to create MTLDevice")
         }
         let queue = device.makeCommandQueue()
-        let defaultLibrary = device.makeDefaultLibrary()
         guard let commandQueue = queue else {
             fatalError("Failed to create MTLCommandQueue")
         }
-        let resources = ResourceRegistry()
+        let resources = ResourceRegistry(
+            canonicalShaderRootURL: ResourceRegistry.bundledCanonicalShaderRootURL()
+        )
         if let folder = specification.resourcesFolderName,
            let url = Bundle.main.url(forResource: folder, withExtension: nil) {
             resources.resourcesRootURL = url.standardizedFileURL
         } else if let bundleRoot = Bundle.main.resourceURL {
             resources.resourcesRootURL = bundleRoot.standardizedFileURL
         }
-        if let assetsRoot = specification.assetsRootURL {
-            resources.shaderRootURLs = [assetsRoot.appendingPathComponent("Shaders", isDirectory: true)]
+        guard resources.activateCanonicalShaders(
+            device: device,
+            requiredFunctions: ShaderLibrary.requiredFunctionNames
+        ), let defaultLibrary = resources.defaultLibrary else {
+            let message = resources.lastShaderCompileError ?? "Unknown canonical shader error."
+            fatalError("Failed to initialize canonical Engine shaders: \(message)")
         }
-        resources.defaultLibrary = defaultLibrary
         self.engineContext = EngineContext(
             device: device,
             commandQueue: commandQueue,
@@ -58,14 +62,6 @@ open class Application: NSObject, EventHandler {
     open func didCreateWindow() {}
 
     private func bootstrap() {
-        // Configure resource registry from spec
-        if engineContext.resources.defaultLibrary == nil {
-            engineContext.resources.defaultLibrary = engineContext.device.makeDefaultLibrary()
-        }
-        if engineContext.resources.defaultLibrary == nil {
-            engineContext.resources.defaultLibrary = engineContext.defaultLibrary
-        }
-
         BuiltinAssets.registerMeshes(
             assetManager: engineContext.assets,
             device: engineContext.device,
@@ -73,11 +69,8 @@ open class Application: NSObject, EventHandler {
         )
 
         willCreateWindow()
-        if engineContext.resources.defaultLibrary == nil {
-            engineContext.resources.buildDefaultLibraryIfNeeded(device: engineContext.device)
-        }
         guard engineContext.resources.defaultLibrary != nil else {
-            fatalError("No default MTLLibrary available. Ensure .metal files are included in the app or engine target.")
+            fatalError("Canonical Engine shader library became unavailable during application bootstrap.")
         }
         window = EngineWindow()
         window.eventHandler = self

@@ -312,6 +312,19 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         }
     }
 
+    public func rebuild() {
+        library.removeAll(keepingCapacity: true)
+        hdrInstancedVariants.removeAll(keepingCapacity: true)
+        depthPrepassVariants.removeAll(keepingCapacity: true)
+        sceneNormalsVariants.removeAll(keepingCapacity: true)
+        aoNormalsVariants.removeAll(keepingCapacity: true)
+        skyboxVariants.removeAll(keepingCapacity: true)
+        proceduralSkyVisibleVariants.removeAll(keepingCapacity: true)
+        proceduralSkyCaptureVariants.removeAll(keepingCapacity: true)
+        farCloudCardVariants.removeAll(keepingCapacity: true)
+        build()
+    }
+
     override subscript(_ type: RenderPipelineStateType) -> MTLRenderPipelineState {
         return library[type]!.renderPipelineState
     }

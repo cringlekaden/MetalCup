@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		374556B42F4CDFDB00CA8C6D /* libJolt.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 374556A02F4CDFA300CA8C6D /* libJolt.a */; };
 		378651F92F32EA3C00321B24 /* MetalCupEngine.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 378651ED2F32EA3C00321B24 /* MetalCupEngine.framework */; };
+		5A4C00012F00000000000001 /* MetalCupEngine/Assets/Shaders in Resources */ = {isa = PBXBuildFile; fileRef = 5A4C00022F00000000000002 /* MetalCupEngine/Assets/Shaders */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -86,6 +87,7 @@
 		37FB4E732F58912F00EB737F /* lto-test.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "lto-test.xcodeproj"; sourceTree = "<group>"; };
 		37FB4EAC2F58912F00EB737F /* CompilerIdCXX.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = CompilerIdCXX.xcodeproj; sourceTree = "<group>"; };
 		37FB4FB12F58912F00EB737F /* JoltPhysics.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = JoltPhysics.xcodeproj; sourceTree = "<group>"; };
+		5A4C00022F00000000000002 /* MetalCupEngine/Assets/Shaders */ = {isa = PBXFileReference; lastKnownFileType = folder; path = MetalCupEngine/Assets/Shaders; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -3481,11 +3483,31 @@
 			);
 			target = 378651EC2F32EA3C00321B24 /* MetalCupEngine */;
 		};
+		5A4C00032F00000000000003 /* Exceptions for "MetalCupEngine" folder in "MetalCupEngine" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Assets/Shaders/BasicShaders.metal,
+				Assets/Shaders/CloudImpostor.metal,
+				Assets/Shaders/FinalShaders.metal,
+				Assets/Shaders/ForwardPlusCulling.metal,
+				Assets/Shaders/IBLShaders.metal,
+				Assets/Shaders/InstancedShaders.metal,
+				Assets/Shaders/PBR.metal,
+				Assets/Shaders/PickingShaders.metal,
+				Assets/Shaders/ProceduralSky.metal,
+				Assets/Shaders/Shared.metal,
+				Assets/Shaders/SkyboxShaders.metal,
+			);
+			target = 378651EC2F32EA3C00321B24 /* MetalCupEngine */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		378651EF2F32EA3C00321B24 /* MetalCupEngine */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5A4C00032F00000000000003 /* Exceptions for "MetalCupEngine" folder in "MetalCupEngine" target */,
+			);
 			path = MetalCupEngine;
 			sourceTree = "<group>";
 		};
@@ -3656,6 +3678,7 @@
 			children = (
 				37F4A6912F4CC9C300F6401D /* Vendor */,
 				378651EF2F32EA3C00321B24 /* MetalCupEngine */,
+				5A4C00022F00000000000002 /* MetalCupEngine/Assets/Shaders */,
 				378651FC2F32EA3C00321B24 /* MetalCupEngineTests */,
 				378651EE2F32EA3C00321B24 /* Products */,
 				378652EE2F32F05F00321B24 /* README.md */,
@@ -4262,6 +4285,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5A4C00012F00000000000001 /* MetalCupEngine/Assets/Shaders in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -125,7 +125,7 @@ public enum BuiltinAssets {
     public static func registerMoonAlbedoTextureIfNeeded(assetManager: AssetManager, resourcesRootURL: URL?, device: MTLDevice) {
         guard assetManager.texture(handle: moonAlbedo) == nil else { return }
         guard let resourcesRootURL else { return }
-        guard let url = sandboxAssetURL(
+        guard let url = bundledAssetURL(
             resourcesRootURL: resourcesRootURL,
             pathComponents: ["Textures", "Moon", "lroc_color_2k.jpg"]
         ) else { return }
@@ -145,7 +145,7 @@ public enum BuiltinAssets {
     public static func registerMilkyWayBackgroundTextureIfNeeded(assetManager: AssetManager, resourcesRootURL: URL?, device: MTLDevice) {
         guard assetManager.texture(handle: milkyWayBackground) == nil else { return }
         guard let resourcesRootURL else { return }
-        guard let url = sandboxAssetURL(
+        guard let url = bundledAssetURL(
             resourcesRootURL: resourcesRootURL,
             pathComponents: ["Textures", "Sky", "MilkyWay", "milkyway_2020_4k.exr"]
         ) else { return }
@@ -255,52 +255,18 @@ public enum BuiltinAssets {
         }
 
         guard let resourcesRootURL else { return nil }
-        return sandboxAssetURL(resourcesRootURL: resourcesRootURL, pathComponents: pathComponents)
+        return bundledAssetURL(resourcesRootURL: resourcesRootURL, pathComponents: pathComponents)
     }
 
-    private static func sandboxAssetURL(resourcesRootURL: URL, pathComponents: [String]) -> URL? {
+    private static func bundledAssetURL(resourcesRootURL: URL, pathComponents: [String]) -> URL? {
         let fileManager = FileManager.default
-        let baseCandidates = [
-            resourcesRootURL,
-            resourcesRootURL.appendingPathComponent("MetalCupEditor", isDirectory: true),
-            resourcesRootURL.appendingPathComponent("MetalCupEditor/MetalCupEditor", isDirectory: true),
-            resourcesRootURL.deletingLastPathComponent(),
-            resourcesRootURL.deletingLastPathComponent().appendingPathComponent("MetalCupEditor", isDirectory: true),
-            resourcesRootURL.deletingLastPathComponent().appendingPathComponent("MetalCupEditor/MetalCupEditor", isDirectory: true)
-        ]
-
-        for base in baseCandidates {
-            var url = base
-                .appendingPathComponent("Projects", isDirectory: true)
-                .appendingPathComponent("Sandbox", isDirectory: true)
-                .appendingPathComponent("Assets", isDirectory: true)
-            for component in pathComponents {
-                url = url.appendingPathComponent(component)
-            }
-            if fileManager.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-
-        #if DEBUG
-        var sourceRoot = URL(fileURLWithPath: #filePath)
-        for _ in 0..<4 {
-            sourceRoot.deleteLastPathComponent()
-        }
-        let developmentTemplateRoot = sourceRoot
-            .appendingPathComponent("MetalCupEditor", isDirectory: true)
-            .appendingPathComponent("MetalCupEditor", isDirectory: true)
-            .appendingPathComponent("Projects", isDirectory: true)
-            .appendingPathComponent("Sandbox", isDirectory: true)
-            .appendingPathComponent("Assets", isDirectory: true)
-        var developmentURL = developmentTemplateRoot
+        var developmentURL = resourcesRootURL.standardizedFileURL
         for component in pathComponents {
             developmentURL = developmentURL.appendingPathComponent(component)
         }
         if fileManager.fileExists(atPath: developmentURL.path) {
             return developmentURL
         }
-        #endif
         return nil
     }
 
