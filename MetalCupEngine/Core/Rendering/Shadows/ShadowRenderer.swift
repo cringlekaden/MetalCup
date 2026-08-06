@@ -5,6 +5,29 @@
 import MetalKit
 import simd
 
+enum DirectionalShadowReferenceMath {
+    static func lightFacing(normal: SIMD3<Float>, surfaceToLight: SIMD3<Float>) -> Float {
+        let normalizedNormal = simd_normalize(normal)
+        let normalizedLight = simd_normalize(surfaceToLight)
+        return max(0, min(1, simd_dot(normalizedNormal, normalizedLight)))
+    }
+
+    static func receiverDepthBiasScale(normal: SIMD3<Float>, surfaceToLight: SIMD3<Float>) -> Float {
+        let slope = 1 - lightFacing(normal: normal, surfaceToLight: surfaceToLight)
+        return 1 + 0.6 * slope * slope
+    }
+
+    static func selectCascade(viewDepth: Float,
+                              splits: SIMD4<Float>,
+                              cascadeCount: Int) -> Int {
+        var cascade = 0
+        if viewDepth > splits.x { cascade = 1 }
+        if viewDepth > splits.y { cascade = 2 }
+        if viewDepth > splits.z { cascade = 3 }
+        return min(cascade, max(cascadeCount - 1, 0))
+    }
+}
+
 final class ShadowRenderer {
     private let engineContext: EngineContext
     private let resources: ShadowResources

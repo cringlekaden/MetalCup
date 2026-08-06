@@ -311,20 +311,211 @@ struct DirectionalShadowPipelineTests {
     }
 
     @Test
-    func identityTransformConflictsWithLegacySerializedDirection() {
-        withKnownIssue("Phase 2A: legacy serialized directions are ignored even when the transform is default") {
-            let intendedRay = simd_normalize(SIMD3<Float>(-0.5, -0.8, -0.3))
-            let transformRay = TransformMath.directionalLightDirection(from: TransformMath.identityQuaternion)
-            #expect(simd_distance(intendedRay, transformRay) < 0.00001)
-        }
+    func legacyDirectionalRayMigratesIdentityTransformOnce() throws {
+        let entityID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000101"))
+        let intendedRay = simd_normalize(SIMD3<Float>(-0.5, -0.8, -0.3))
+        let document = SceneDocument(
+            id: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000100")),
+            name: "Legacy Direction Migration",
+            entities: [
+                EntityDocument(
+                    id: entityID,
+                    components: ComponentsDocument(
+                        transform: TransformComponentDTO(
+                            position: Vector3DTO(.zero),
+                            rotationQuat: Vector4DTO(TransformMath.identityQuaternion),
+                            scale: Vector3DTO(SIMD3<Float>(repeating: 1))
+                        ),
+                        light: LightComponentDTO(
+                            schemaVersion: 1,
+                            type: .directional,
+                            data: LightDataDTO(from: LightData()),
+                            direction: Vector3DTO(intendedRay),
+                            range: 0,
+                            innerConeCos: 0.95,
+                            outerConeCos: 0.9,
+                            castsShadows: true
+                        )
+                    )
+                )
+            ]
+        )
+        let scene = makeScene(name: "Legacy Direction Migration")
+        scene.apply(document: document)
+
+        let entity = try #require(scene.ecs.entity(with: entityID))
+        let transform = try #require(scene.ecs.get(TransformComponent.self, for: entity))
+        let light = try #require(scene.ecs.get(LightComponent.self, for: entity))
+        let migratedRay = TransformMath.directionalLightDirection(from: transform.rotation)
+        #expect(simd_distance(migratedRay, intendedRay) < 0.00001)
+        #expect(simd_distance(light.direction, intendedRay) < 0.00001)
+
+        let saved = scene.toDocument(rendererSettingsOverride: nil)
+        let savedLight = try #require(saved.entities.first?.components.light)
+        #expect(savedLight.schemaVersion == LightComponentDTO.currentSchemaVersion)
+        #expect(simd_distance(savedLight.direction.toSIMD(), intendedRay) < 0.00001)
+
+        let reloaded = makeScene(name: "Modern Direction Reload")
+        reloaded.apply(document: saved)
+        let reloadedEntity = try #require(reloaded.ecs.entity(with: entityID))
+        let reloadedTransform = try #require(reloaded.ecs.get(TransformComponent.self, for: reloadedEntity))
+        #expect(simd_distance(
+            TransformMath.directionalLightDirection(from: reloadedTransform.rotation),
+            intendedRay
+        ) < 0.00001)
     }
 
     @Test
-    func currentSlopeFacingUsesTheOppositeOfSurfaceToLight() {
-        withKnownIssue("Phase 2A: receiver slope bias evaluates N dot -L") {
-            let normal = SIMD3<Float>(0, 1, 0)
-            let surfaceToLight = SIMD3<Float>(0, 1, 0)
-            #expect(Phase2LegacyCharacterization.slopeFacing(normal: normal, surfaceToLight: surfaceToLight) == 1)
+    func modernTransformRemainsAuthoritativeOverRedundantDirection() throws {
+        let entityID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000201"))
+        let transformRay = simd_normalize(SIMD3<Float>(0.25, -0.9, 0.35))
+        let conflictingRay = simd_normalize(SIMD3<Float>(-0.8, -0.1, -0.5))
+        let transformRotation = TransformMath.rotationForDirectionalLight(direction: transformRay)
+        let document = SceneDocument(
+            id: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000200")),
+            name: "Modern Transform Authority",
+            entities: [
+                EntityDocument(
+                    id: entityID,
+                    components: ComponentsDocument(
+                        transform: TransformComponentDTO(
+                            position: Vector3DTO(.zero),
+                            rotationQuat: Vector4DTO(transformRotation),
+                            scale: Vector3DTO(SIMD3<Float>(repeating: 1))
+                        ),
+                        light: LightComponentDTO(
+                            type: .directional,
+                            data: LightDataDTO(from: LightData()),
+                            direction: Vector3DTO(conflictingRay),
+                            range: 0,
+                            innerConeCos: 0.95,
+                            outerConeCos: 0.9
+                        )
+                    )
+                )
+            ]
+        )
+        let scene = makeScene(name: "Modern Transform Authority")
+        scene.apply(document: document)
+
+        let entity = try #require(scene.ecs.entity(with: entityID))
+        let transform = try #require(scene.ecs.get(TransformComponent.self, for: entity))
+        let light = try #require(scene.ecs.get(LightComponent.self, for: entity))
+        #expect(simd_distance(
+            TransformMath.directionalLightDirection(from: transform.rotation),
+            transformRay
+        ) < 0.00001)
+        #expect(simd_distance(light.direction, transformRay) < 0.00001)
+    }
+
+    @Test
+    func receiverSlopeBiasUsesSurfaceToLightAndScalesTowardGrazing() {
+        let normal = SIMD3<Float>(0, 1, 0)
+        let front = SIMD3<Float>(0, 1, 0)
+        let grazing = simd_normalize(SIMD3<Float>(1, 0.01, 0))
+        let back = SIMD3<Float>(0, -1, 0)
+
+        #expect(DirectionalShadowReferenceMath.lightFacing(normal: normal, surfaceToLight: front) == 1)
+        #expect(DirectionalShadowReferenceMath.lightFacing(normal: normal, surfaceToLight: back) == 0)
+        let frontScale = DirectionalShadowReferenceMath.receiverDepthBiasScale(
+            normal: normal,
+            surfaceToLight: front
+        )
+        let grazingScale = DirectionalShadowReferenceMath.receiverDepthBiasScale(
+            normal: normal,
+            surfaceToLight: grazing
+        )
+        let backScale = DirectionalShadowReferenceMath.receiverDepthBiasScale(
+            normal: normal,
+            surfaceToLight: back
+        )
+        #expect(abs(frontScale - 1) < 0.00001)
+        #expect(grazingScale > frontScale)
+        #expect(backScale >= grazingScale)
+        #expect(abs(backScale - 1.6) < 0.00001)
+    }
+
+    @Test
+    func receiverBiasAndCascadeSelectionMatchTheGPU() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let library = try Phase2MetalTestSupport.canonicalLibrary(device: device)
+        let function = try #require(library.makeFunction(name: "phase2_shadow_bias_and_cascade_samples"))
+        let pipeline = try device.makeComputePipelineState(function: function)
+
+        let normals = [
+            SIMD4<Float>(0, 1, 0, 0),
+            SIMD4<Float>(0, 1, 0, 0),
+            SIMD4<Float>(0, 1, 0, 0),
+            SIMD4<Float>(0, 1, 0, 0)
+        ]
+        let surfaceToLights = [
+            SIMD4<Float>(0, 1, 0, 0),
+            SIMD4<Float>(simd_normalize(SIMD3<Float>(1, 0.01, 0)), 0),
+            SIMD4<Float>(0, -1, 0, 0),
+            SIMD4<Float>(0, 1, 0, 0)
+        ]
+        let viewDepths: [Float] = [4, 12, 30, 80]
+        var shadows = ShadowConstants()
+        shadows.cascadeSplits = SIMD4<Float>(10, 25, 50, 100)
+        shadows.cascadeCount = 4
+
+        let normalBuffer = try Phase2MetalTestSupport.makeBuffer(device: device, values: normals)
+        let lightBuffer = try Phase2MetalTestSupport.makeBuffer(device: device, values: surfaceToLights)
+        let depthBuffer = try Phase2MetalTestSupport.makeBuffer(device: device, values: viewDepths)
+        let shadowBuffer = try Phase2MetalTestSupport.makeBuffer(device: device, value: shadows)
+        let resultBuffer = try #require(device.makeBuffer(
+            length: MemoryLayout<SIMD4<Float>>.stride * normals.count,
+            options: .storageModeShared
+        ))
+        try Phase2MetalTestSupport.execute(device: device, pipeline: pipeline, width: normals.count) { encoder in
+            encoder.setBuffer(normalBuffer, offset: 0, index: 0)
+            encoder.setBuffer(lightBuffer, offset: 0, index: 1)
+            encoder.setBuffer(depthBuffer, offset: 0, index: 2)
+            encoder.setBuffer(shadowBuffer, offset: 0, index: 3)
+            encoder.setBuffer(resultBuffer, offset: 0, index: 4)
         }
+
+        let results = resultBuffer.contents().bindMemory(to: SIMD4<Float>.self, capacity: normals.count)
+        for index in normals.indices {
+            let cpuFacing = DirectionalShadowReferenceMath.lightFacing(
+                normal: SIMD3<Float>(normals[index].x, normals[index].y, normals[index].z),
+                surfaceToLight: SIMD3<Float>(
+                    surfaceToLights[index].x,
+                    surfaceToLights[index].y,
+                    surfaceToLights[index].z
+                )
+            )
+            let cpuBias = DirectionalShadowReferenceMath.receiverDepthBiasScale(
+                normal: SIMD3<Float>(normals[index].x, normals[index].y, normals[index].z),
+                surfaceToLight: SIMD3<Float>(
+                    surfaceToLights[index].x,
+                    surfaceToLights[index].y,
+                    surfaceToLights[index].z
+                )
+            )
+            let cpuCascade = DirectionalShadowReferenceMath.selectCascade(
+                viewDepth: viewDepths[index],
+                splits: shadows.cascadeSplits,
+                cascadeCount: 4
+            )
+            #expect(abs(results[index].x - cpuFacing) < 0.00001)
+            #expect(abs(results[index].y - cpuBias) < 0.00001)
+            #expect(Int(results[index].z) == cpuCascade)
+        }
+        #expect(results[0].x == 1)
+        #expect(results[0].y == 1)
+        #expect(results[1].y > results[0].y)
+        #expect(results[2].x == 0)
+        #expect(results[2].y == 1.6)
+        #expect([results[0].z, results[1].z, results[2].z, results[3].z] == [0, 1, 2, 3])
+    }
+
+    private func makeScene(name: String) -> EngineScene {
+        EngineScene(
+            name: name,
+            prefabSystem: nil,
+            engineContext: nil,
+            shouldBuildScene: false
+        )
     }
 }

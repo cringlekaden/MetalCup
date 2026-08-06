@@ -30,6 +30,19 @@ public final class SceneSerializationService {
             }
         }
 
+        func serializedLightDirection(for entity: Entity,
+                                      component: LightComponent) -> SIMD3<Float> {
+            switch component.type {
+            case .point:
+                return component.direction
+            case .spot, .directional:
+                guard let transform = scene.ecs.get(TransformComponent.self, for: entity) else {
+                    return component.direction
+                }
+                return TransformMath.directionalLightDirection(from: transform.rotation)
+            }
+        }
+
         func shouldSerializeEntity(_ entity: Entity) -> Bool {
             guard !includeEditorEntities else { return true }
             if let camera = scene.ecs.get(CameraComponent.self, for: entity), camera.isEditor {
@@ -115,7 +128,7 @@ public final class SceneSerializationService {
                             LightComponentDTO(
                                 type: LightTypeDTO(from: component.type),
                                 data: LightDataDTO(from: component.data),
-                                direction: Vector3DTO(component.direction),
+                                direction: Vector3DTO(serializedLightDirection(for: entity, component: component)),
                                 range: component.range,
                                 innerConeCos: component.innerConeCos,
                                 outerConeCos: component.outerConeCos,
@@ -272,7 +285,7 @@ public final class SceneSerializationService {
                     LightComponentDTO(
                         type: LightTypeDTO(from: component.type),
                         data: LightDataDTO(from: component.data),
-                        direction: Vector3DTO(component.direction),
+                        direction: Vector3DTO(serializedLightDirection(for: entity, component: component)),
                         range: component.range,
                         innerConeCos: component.innerConeCos,
                         outerConeCos: component.outerConeCos,
@@ -390,6 +403,40 @@ public final class SceneSerializationService {
         ecs.add(EnvironmentIBLStateComponent.defaultNeedsRebuild, to: entity)
     }
 
+    private func makeLightComponent(from dto: LightComponentDTO,
+                                    entity: Entity,
+                                    in scene: EngineScene,
+                                    transformSource: TransformMutationSource) -> LightComponent {
+        var transform = scene.ecs.get(TransformComponent.self, for: entity) ?? TransformComponent()
+        if let migratedRotation = dto.migratedDirectionalRotationIfNeeded(
+            currentRotation: transform.rotation
+        ) {
+            transform.rotation = migratedRotation
+            _ = scene.transformAuthority.setLocalTransform(
+                entity: entity,
+                transform: transform,
+                source: transformSource
+            )
+        }
+
+        let resolvedDirection: SIMD3<Float>
+        switch dto.type.toLightType() {
+        case .point:
+            resolvedDirection = dto.direction.toSIMD()
+        case .spot, .directional:
+            resolvedDirection = TransformMath.directionalLightDirection(from: transform.rotation)
+        }
+        return LightComponent(
+            type: dto.type.toLightType(),
+            data: dto.data.toLightData(),
+            direction: resolvedDirection,
+            range: dto.range,
+            innerConeCos: dto.innerConeCos,
+            outerConeCos: dto.outerConeCos,
+            castsShadows: dto.castsShadows
+        )
+    }
+
     public func apply(document: SceneDocument, to scene: EngineScene) {
         scene.prepareForSceneDocumentApply()
         if let engineContext = scene.engineContext {
@@ -474,14 +521,11 @@ public final class SceneSerializationService {
                     scene.ecs.add(collider.toComponent(), to: entity)
                 }
                 if let light = entityDoc.components.light {
-                    let component = LightComponent(
-                        type: light.type.toLightType(),
-                        data: light.data.toLightData(),
-                        direction: light.direction.toSIMD(),
-                        range: light.range,
-                        innerConeCos: light.innerConeCos,
-                        outerConeCos: light.outerConeCos,
-                        castsShadows: light.castsShadows
+                    let component = makeLightComponent(
+                        from: light,
+                        entity: entity,
+                        in: scene,
+                        transformSource: .serialization
                     )
                     scene.ecs.add(component, to: entity)
 #if DEBUG
@@ -624,14 +668,11 @@ public final class SceneSerializationService {
                 scene.ecs.add(collider.toComponent(), to: entity)
             }
             if let light = entityDoc.components.light {
-                let component = LightComponent(
-                    type: light.type.toLightType(),
-                    data: light.data.toLightData(),
-                    direction: light.direction.toSIMD(),
-                    range: light.range,
-                    innerConeCos: light.innerConeCos,
-                    outerConeCos: light.outerConeCos,
-                    castsShadows: light.castsShadows
+                let component = makeLightComponent(
+                    from: light,
+                    entity: entity,
+                    in: scene,
+                    transformSource: .serialization
                 )
                 scene.ecs.add(component, to: entity)
             }
@@ -833,13 +874,11 @@ public final class SceneSerializationService {
                 scene.ecs.add(component, to: entity)
             }
             if let light = entityDoc.components.light {
-                let component = LightComponent(
-                    type: light.type.toLightType(),
-                    data: light.data.toLightData(),
-                    direction: light.direction.toSIMD(),
-                    range: light.range,
-                    innerConeCos: light.innerConeCos,
-                    outerConeCos: light.outerConeCos
+                let component = makeLightComponent(
+                    from: light,
+                    entity: entity,
+                    in: scene,
+                    transformSource: .prefab
                 )
                 scene.ecs.add(component, to: entity)
             }

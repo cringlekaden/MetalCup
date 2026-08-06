@@ -3,6 +3,27 @@ import Testing
 @testable import MetalCupEngine
 
 enum Phase2MetalTestSupport {
+    static func makeBuffer<T>(device: MTLDevice, values: [T]) throws -> MTLBuffer {
+        try values.withUnsafeBytes { bytes in
+            try #require(device.makeBuffer(
+                bytes: bytes.baseAddress!,
+                length: bytes.count,
+                options: .storageModeShared
+            ))
+        }
+    }
+
+    static func makeBuffer<T>(device: MTLDevice, value: T) throws -> MTLBuffer {
+        var value = value
+        return try withUnsafeBytes(of: &value) { bytes in
+            try #require(device.makeBuffer(
+                bytes: bytes.baseAddress!,
+                length: bytes.count,
+                options: .storageModeShared
+            ))
+        }
+    }
+
     static func canonicalLibrary(device: MTLDevice) throws -> MTLLibrary {
         let root = try #require(ResourceRegistry.bundledCanonicalShaderRootURL())
         let registry = ResourceRegistry(canonicalShaderRootURL: root)

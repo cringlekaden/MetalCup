@@ -712,6 +712,9 @@ public struct ColliderShapeDTO: Codable {
 }
 
 public struct LightComponentDTO: Codable {
+    public static let currentSchemaVersion = 2
+    private static let legacyDefaultDirection = SIMD3<Float>(0, -1, 0)
+
     public var schemaVersion: Int
     public var type: LightTypeDTO
     public var data: LightDataDTO
@@ -722,7 +725,7 @@ public struct LightComponentDTO: Codable {
     public var castsShadows: Bool
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = LightComponentDTO.currentSchemaVersion,
         type: LightTypeDTO,
         data: LightDataDTO,
         direction: Vector3DTO,
@@ -739,6 +742,25 @@ public struct LightComponentDTO: Codable {
         self.innerConeCos = innerConeCos
         self.outerConeCos = outerConeCos
         self.castsShadows = castsShadows
+    }
+
+    /// Legacy schema 1 could persist a directional ray without rotating the entity.
+    /// Migrate only an identity/default transform plus a valid, non-default legacy ray.
+    public func migratedDirectionalRotationIfNeeded(currentRotation: SIMD4<Float>) -> SIMD4<Float>? {
+        guard schemaVersion < Self.currentSchemaVersion, type == .directional else { return nil }
+        let normalizedRotation = TransformMath.normalizedQuaternion(currentRotation)
+        guard abs(simd_dot(normalizedRotation, TransformMath.identityQuaternion)) > 0.99999 else { return nil }
+        let legacyDirection = direction.toSIMD()
+        guard legacyDirection.x.isFinite,
+              legacyDirection.y.isFinite,
+              legacyDirection.z.isFinite,
+              simd_length_squared(legacyDirection) > 1e-8 else { return nil }
+        let normalizedDirection = simd_normalize(legacyDirection)
+        guard simd_distance(normalizedDirection, Self.legacyDefaultDirection) > 0.0001,
+              simd_distance(normalizedDirection, TransformMath.localDirectionalLightRayAxis) > 0.0001 else {
+            return nil
+        }
+        return TransformMath.rotationForDirectionalLight(direction: normalizedDirection)
     }
 
     public init(from decoder: Decoder) throws {

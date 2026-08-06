@@ -115,6 +115,15 @@ inline float cascadeNearZ(constant ShadowConstants &shadows, int index) {
     }
 }
 
+inline float shadowReceiverLightFacing(float3 normal, float3 surfaceToLight) {
+    return saturate(dot(normalize(normal), normalize(surfaceToLight)));
+}
+
+inline float shadowReceiverDepthBiasScale(float3 normal, float3 surfaceToLight) {
+    float slopeFactor = 1.0 - shadowReceiverLightFacing(normal, surfaceToLight);
+    return mix(1.0, 1.6, slopeFactor * slopeFactor);
+}
+
 inline float cascadeFarZ(constant ShadowConstants &shadows, int index) {
     switch (index) {
     case 0: return shadows.cascadeFarZ.x;
@@ -204,9 +213,7 @@ inline float computeShadowVisibilityForCascade(float3 worldPosition,
     float nearZ = cascadeNearZ(shadows, cascadeIndex);
     float farZ = cascadeFarZ(shadows, cascadeIndex);
     float depthSpanAbs = max(abs(farZ - nearZ), 1e-4);
-    float lightFacing = saturate(dot(N, normalize(-lightDir)));
-    float slopeFactor = 1.0 - lightFacing;
-    float depthBiasScale = mix(1.0, 1.6, slopeFactor * slopeFactor);
+    float depthBiasScale = shadowReceiverDepthBiasScale(N, lightDir);
     float receiverDepthBias = shadows.shadowBiasParams.x * depthBiasScale;
     float compareDepth = clamp(receiverDepth - receiverDepthBias, 0.0, 1.0);
 
@@ -1578,4 +1585,19 @@ kernel void phase2_hard_shadow_receiver_samples(
     float storedDepth = shadowMap.sample(shadowSampler, sample.xy, layer);
     float visibility = (storedDepth + 1e-4 < sample.w) ? 0.0 : 1.0;
     results[sampleIndex] = float4(storedDepth, sample.w, visibility, float(layer));
+}
+
+kernel void phase2_shadow_bias_and_cascade_samples(
+    const device float4 *normals [[ buffer(0) ]],
+    const device float4 *surfaceToLights [[ buffer(1) ]],
+    const device float *viewDepths [[ buffer(2) ]],
+    constant ShadowConstants &shadows [[ buffer(3) ]],
+    device float4 *results [[ buffer(4) ]],
+    uint sampleIndex [[ thread_position_in_grid ]]) {
+    float3 normal = normals[sampleIndex].xyz;
+    float3 surfaceToLight = surfaceToLights[sampleIndex].xyz;
+    float facing = shadowReceiverLightFacing(normal, surfaceToLight);
+    float biasScale = shadowReceiverDepthBiasScale(normal, surfaceToLight);
+    int cascade = selectShadowCascadeByMetric(max(viewDepths[sampleIndex], 0.001), shadows);
+    results[sampleIndex] = float4(facing, biasScale, float(cascade), 1.0);
 }
