@@ -29,6 +29,17 @@ enum DirectionalShadowReferenceMath {
 }
 
 final class ShadowRenderer {
+    private struct CascadeLayout {
+        let splits: [Float]
+        let lightViews: [matrix_float4x4]
+        let lightProjections: [matrix_float4x4]
+        let lightViewProjections: [matrix_float4x4]
+        let worldUnitsPerTexel: [Float]
+        let halfExtents: [Float]
+        let nearZ: [Float]
+        let farZ: [Float]
+    }
+
     private let engineContext: EngineContext
     private let resources: ShadowResources
     private let cascadeEpsilon: Float = 0.001
@@ -115,82 +126,44 @@ final class ShadowRenderer {
             0.0
         )
 
-        var lightViews: [matrix_float4x4] = Array(repeating: matrix_identity_float4x4, count: cascadeCount)
-        var lightProjections: [matrix_float4x4] = Array(repeating: matrix_identity_float4x4, count: cascadeCount)
-        var lightViewProjs: [matrix_float4x4] = Array(repeating: matrix_identity_float4x4, count: cascadeCount)
-        var cascadeWorldUnitsPerTexel: [Float] = Array(repeating: 0.0, count: cascadeCount)
-        var cascadeHalfExtents: [Float] = Array(repeating: 0.0, count: cascadeCount)
-        var cascadeNearZ: [Float] = Array(repeating: 0.0, count: cascadeCount)
-        var cascadeFarZ: [Float] = Array(repeating: 0.0, count: cascadeCount)
-        var disableFrame = false
-        for cascadeIndex in 0..<cascadeCount {
-            let splitFar = stabilizedSplits[cascadeIndex]
-            let splitNear = (cascadeIndex == 0) ? distanceNear : stabilizedSplits[cascadeIndex - 1]
-            let sphere = stableFrustumSliceBoundingSphere(
-                near: splitNear,
-                far: splitFar,
-                projection: cameraState.projection,
-                viewMatrix: cameraState.viewMatrix
-            )
-            let centerWS = sphere.center
-            let radius = max(sphere.radius, minSphereRadius)
-            let extent = quantizedCascadeExtent(radius: radius, resolution: resolution)
-            let lightView = lightViewMatrix(lightDirection: lightDirection, center: centerWS, radius: extent)
-            let stabilizedView = stabilizeLightView(
-                lightView: lightView,
-                center: centerWS,
-                radius: extent,
-                resolution: resolution
-            )
-            cascadeWorldUnitsPerTexel[cascadeIndex] = (2.0 * extent) / max(Float(resolution), 1.0)
-            cascadeHalfExtents[cascadeIndex] = extent
-            let centerLS = stabilizedView * SIMD4<Float>(centerWS, 1.0)
-            let cascadeDepthSpan = max(splitFar - splitNear, 0.0)
-            let casterDepthExtension = max(cascadeDepthSpan * cascadeDepthExtensionScale, extent)
-            let (nearZ, farZ) = computeLightNearFar(centerZ: centerLS.z, radius: extent, extraDepth: casterDepthExtension)
-            cascadeNearZ[cascadeIndex] = nearZ
-            cascadeFarZ[cascadeIndex] = farZ
-            let lightProj = lightProjectionMatrix(radius: extent, nearZ: nearZ, farZ: farZ)
-            let lightViewProj = lightProj * stabilizedView
-            if !isFinite(stabilizedView) || !isFinite(lightProj) || !isFinite(lightViewProj) {
-                disableFrame = true
-                break
-            }
-
-            lightViews[cascadeIndex] = stabilizedView
-            lightProjections[cascadeIndex] = lightProj
-            lightViewProjs[cascadeIndex] = lightViewProj
-            constants.setLightViewProj(lightViewProj, index: cascadeIndex)
-        }
-
-        if disableFrame {
+        guard let cascadeLayout = makeCascadeLayout(
+            lightDirection: lightDirection,
+            cameraState: cameraState,
+            cascadeCount: cascadeCount,
+            resolution: resolution,
+            distanceNear: distanceNear,
+            stabilizedSplits: stabilizedSplits
+        ) else {
             resetShadowState(frame: frame)
             return
         }
+        for cascadeIndex in 0..<cascadeCount {
+            constants.setLightViewProj(cascadeLayout.lightViewProjections[cascadeIndex], index: cascadeIndex)
+        }
 
         constants.cascadeSplits = SIMD4<Float>(
-            stabilizedSplits.count > 0 ? stabilizedSplits[0] : farDistance,
-            stabilizedSplits.count > 1 ? stabilizedSplits[1] : farDistance,
-            stabilizedSplits.count > 2 ? stabilizedSplits[2] : farDistance,
-            stabilizedSplits.count > 3 ? stabilizedSplits[3] : farDistance
+            cascadeLayout.splits.count > 0 ? cascadeLayout.splits[0] : farDistance,
+            cascadeLayout.splits.count > 1 ? cascadeLayout.splits[1] : farDistance,
+            cascadeLayout.splits.count > 2 ? cascadeLayout.splits[2] : farDistance,
+            cascadeLayout.splits.count > 3 ? cascadeLayout.splits[3] : farDistance
         )
         constants.cascadeWorldUnitsPerTexel = SIMD4<Float>(
-            cascadeWorldUnitsPerTexel.count > 0 ? cascadeWorldUnitsPerTexel[0] : 0.0,
-            cascadeWorldUnitsPerTexel.count > 1 ? cascadeWorldUnitsPerTexel[1] : 0.0,
-            cascadeWorldUnitsPerTexel.count > 2 ? cascadeWorldUnitsPerTexel[2] : 0.0,
-            cascadeWorldUnitsPerTexel.count > 3 ? cascadeWorldUnitsPerTexel[3] : 0.0
+            cascadeLayout.worldUnitsPerTexel.count > 0 ? cascadeLayout.worldUnitsPerTexel[0] : 0.0,
+            cascadeLayout.worldUnitsPerTexel.count > 1 ? cascadeLayout.worldUnitsPerTexel[1] : 0.0,
+            cascadeLayout.worldUnitsPerTexel.count > 2 ? cascadeLayout.worldUnitsPerTexel[2] : 0.0,
+            cascadeLayout.worldUnitsPerTexel.count > 3 ? cascadeLayout.worldUnitsPerTexel[3] : 0.0
         )
         constants.cascadeNearZ = SIMD4<Float>(
-            cascadeNearZ.count > 0 ? cascadeNearZ[0] : 0.0,
-            cascadeNearZ.count > 1 ? cascadeNearZ[1] : 0.0,
-            cascadeNearZ.count > 2 ? cascadeNearZ[2] : 0.0,
-            cascadeNearZ.count > 3 ? cascadeNearZ[3] : 0.0
+            cascadeLayout.nearZ.count > 0 ? cascadeLayout.nearZ[0] : 0.0,
+            cascadeLayout.nearZ.count > 1 ? cascadeLayout.nearZ[1] : 0.0,
+            cascadeLayout.nearZ.count > 2 ? cascadeLayout.nearZ[2] : 0.0,
+            cascadeLayout.nearZ.count > 3 ? cascadeLayout.nearZ[3] : 0.0
         )
         constants.cascadeFarZ = SIMD4<Float>(
-            cascadeFarZ.count > 0 ? cascadeFarZ[0] : 0.0,
-            cascadeFarZ.count > 1 ? cascadeFarZ[1] : 0.0,
-            cascadeFarZ.count > 2 ? cascadeFarZ[2] : 0.0,
-            cascadeFarZ.count > 3 ? cascadeFarZ[3] : 0.0
+            cascadeLayout.farZ.count > 0 ? cascadeLayout.farZ[0] : 0.0,
+            cascadeLayout.farZ.count > 1 ? cascadeLayout.farZ[1] : 0.0,
+            cascadeLayout.farZ.count > 2 ? cascadeLayout.farZ[2] : 0.0,
+            cascadeLayout.farZ.count > 3 ? cascadeLayout.farZ[3] : 0.0
         )
 
         for cascadeIndex in cascadeCount..<4 {
@@ -222,8 +195,8 @@ final class ShadowRenderer {
             RenderPassHelpers.setViewport(encoder, SIMD2<Float>(Float(shadowMap.width), Float(shadowMap.height)))
             let constantsBuffer = frame.frameContext.makeSceneConstantsBuffer(
                 shadowSceneConstants(
-                    viewMatrix: lightViews[cascadeIndex],
-                    projectionMatrix: lightProjections[cascadeIndex],
+                    viewMatrix: cascadeLayout.lightViews[cascadeIndex],
+                    projectionMatrix: cascadeLayout.lightProjections[cascadeIndex],
                     totalTime: snapshot.sceneConstants.totalGameTime
                 ),
                 label: "SceneConstants.ShadowCascade\(cascadeIndex)"
@@ -235,10 +208,10 @@ final class ShadowRenderer {
                     frameContext: frame.frameContext,
                     sceneConstantsBuffer: constantsBuffer,
                     shadowCullVolume: SceneRenderer.ShadowCullVolume(
-                        lightView: lightViews[cascadeIndex],
-                        halfExtent: cascadeHalfExtents[cascadeIndex],
-                        nearZ: cascadeNearZ[cascadeIndex],
-                        farZ: cascadeFarZ[cascadeIndex]
+                        lightView: cascadeLayout.lightViews[cascadeIndex],
+                        halfExtent: cascadeLayout.halfExtents[cascadeIndex],
+                        nearZ: cascadeLayout.nearZ[cascadeIndex],
+                        farZ: cascadeLayout.farZ[cascadeIndex]
                     )
                 )
             }
@@ -249,6 +222,108 @@ final class ShadowRenderer {
             encoder.endEncoding()
         }
 
+    }
+
+    private func makeCascadeLayout(lightDirection: SIMD3<Float>,
+                                   cameraState: CameraState,
+                                   cascadeCount: Int,
+                                   resolution: Int,
+                                   distanceNear: Float,
+                                   stabilizedSplits: [Float]) -> CascadeLayout? {
+        var lightViews: [matrix_float4x4] = []
+        var lightProjections: [matrix_float4x4] = []
+        var lightViewProjections: [matrix_float4x4] = []
+        var worldUnitsPerTexel: [Float] = []
+        var halfExtents: [Float] = []
+        var nearValues: [Float] = []
+        var farValues: [Float] = []
+        for cascadeIndex in 0..<cascadeCount {
+            let splitFar = stabilizedSplits[cascadeIndex]
+            let splitNear = cascadeIndex == 0 ? distanceNear : stabilizedSplits[cascadeIndex - 1]
+            let sphere = stableFrustumSliceBoundingSphere(
+                near: splitNear,
+                far: splitFar,
+                projection: cameraState.projection,
+                viewMatrix: cameraState.viewMatrix
+            )
+            let center = sphere.center
+            let extent = quantizedCascadeExtent(
+                radius: max(sphere.radius, minSphereRadius),
+                resolution: resolution
+            )
+            let stabilizedView = stabilizeLightView(
+                lightView: lightViewMatrix(lightDirection: lightDirection, center: center, radius: extent),
+                center: center,
+                radius: extent,
+                resolution: resolution
+            )
+            let centerLightSpace = stabilizedView * SIMD4<Float>(center, 1)
+            let depthSpan = max(splitFar - splitNear, 0)
+            let depthExtension = max(depthSpan * cascadeDepthExtensionScale, extent)
+            let (nearZ, farZ) = computeLightNearFar(
+                centerZ: centerLightSpace.z,
+                radius: extent,
+                extraDepth: depthExtension
+            )
+            let projection = lightProjectionMatrix(radius: extent, nearZ: nearZ, farZ: farZ)
+            let viewProjection = projection * stabilizedView
+            guard isFinite(stabilizedView), isFinite(projection), isFinite(viewProjection) else {
+                return nil
+            }
+            lightViews.append(stabilizedView)
+            lightProjections.append(projection)
+            lightViewProjections.append(viewProjection)
+            worldUnitsPerTexel.append((2 * extent) / max(Float(resolution), 1))
+            halfExtents.append(extent)
+            nearValues.append(nearZ)
+            farValues.append(farZ)
+        }
+        return CascadeLayout(
+            splits: stabilizedSplits,
+            lightViews: lightViews,
+            lightProjections: lightProjections,
+            lightViewProjections: lightViewProjections,
+            worldUnitsPerTexel: worldUnitsPerTexel,
+            halfExtents: halfExtents,
+            nearZ: nearValues,
+            farZ: farValues
+        )
+    }
+
+    /// Uses the production cascade-layout path so tests can assert finite matrices
+    /// without encoding a frame or exposing renderer-owned textures.
+    func validationCascadeViewProjections(viewMatrix: matrix_float4x4,
+                                          projectionMatrix: matrix_float4x4,
+                                          lightDirection: SIMD3<Float>,
+                                          maxDistance: Float,
+                                          cascadeCount: Int,
+                                          resolution: Int,
+                                          splitLambda: Float) -> [matrix_float4x4]? {
+        guard let projection = deriveProjection(from: projectionMatrix) else { return nil }
+        let count = max(1, min(4, cascadeCount))
+        let near = max(0.01, projection.near)
+        let far = maxDistance > 0 ? min(projection.far, maxDistance) : projection.far
+        let splits = enforceSplitEpsilon(
+            splits: computeCascadeSplits(near: near, far: far, count: count, lambda: splitLambda),
+            near: near,
+            far: far
+        )
+        let cameraState = CameraState(
+            viewMatrix: viewMatrix,
+            position: .zero,
+            forward: SIMD3<Float>(0, 0, -1),
+            nearPlane: projection.near,
+            farPlane: projection.far,
+            projection: projection.projection
+        )
+        return makeCascadeLayout(
+            lightDirection: lightDirection,
+            cameraState: cameraState,
+            cascadeCount: count,
+            resolution: resolution,
+            distanceNear: near,
+            stabilizedSplits: splits
+        )?.lightViewProjections
     }
 
     private func resetShadowState(frame: RenderGraphFrame) {

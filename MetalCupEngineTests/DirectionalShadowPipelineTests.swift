@@ -310,6 +310,61 @@ struct DirectionalShadowPipelineTests {
         }
     }
 
+    @Test(arguments: [1, 3, 4])
+    func productionCascadeLayoutBuildsFiniteWorldToShadowMatrices(cascadeCount: Int) throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let shaderRoot = try #require(ResourceRegistry.bundledCanonicalShaderRootURL())
+        let registry = ResourceRegistry(canonicalShaderRootURL: shaderRoot)
+        #expect(registry.activateCanonicalShaders(
+            device: device,
+            requiredFunctions: ShaderLibrary.requiredFunctionNames
+        ))
+        let library = try #require(registry.defaultLibrary)
+        let context = EngineContext(
+            device: device,
+            commandQueue: queue,
+            defaultLibrary: library,
+            resources: registry
+        )
+        let renderer = ShadowRenderer(engineContext: context)
+        let near: Float = 0.1
+        let far: Float = 100
+        let verticalScale: Float = 1 / tan(50 * .pi / 360)
+        let horizontalScale = verticalScale / (16.0 / 9.0)
+        let depthScale = far / (near - far)
+        let depthTranslation = near * far / (near - far)
+        let projection = matrix_float4x4(columns: (
+            SIMD4<Float>(horizontalScale, 0, 0, 0),
+            SIMD4<Float>(0, verticalScale, 0, 0),
+            SIMD4<Float>(0, 0, depthScale, -1),
+            SIMD4<Float>(0, 0, depthTranslation, 0)
+        ))
+        let rayDirection = simd_normalize(SIMD3<Float>(-0.5, -0.8, -0.3))
+        func isFinite(_ vector: SIMD4<Float>) -> Bool {
+            vector.x.isFinite && vector.y.isFinite && vector.z.isFinite && vector.w.isFinite
+        }
+        let matrices = try #require(renderer.validationCascadeViewProjections(
+            viewMatrix: matrix_identity_float4x4,
+            projectionMatrix: projection,
+            lightDirection: rayDirection,
+            maxDistance: 100,
+            cascadeCount: cascadeCount,
+            resolution: 2048,
+            splitLambda: 0.65
+        ))
+        #expect(matrices.count == cascadeCount)
+        for matrix in matrices {
+            #expect(isFinite(matrix.columns.0))
+            #expect(isFinite(matrix.columns.1))
+            #expect(isFinite(matrix.columns.2))
+            #expect(isFinite(matrix.columns.3))
+            let determinant = simd_determinant(matrix)
+            #expect(determinant.isFinite)
+            #expect(abs(determinant) > 1e-12)
+        }
+    }
+
     @Test
     func legacyDirectionalRayMigratesIdentityTransformOnce() throws {
         let entityID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000101"))
