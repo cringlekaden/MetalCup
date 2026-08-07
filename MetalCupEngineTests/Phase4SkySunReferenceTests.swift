@@ -341,6 +341,152 @@ struct SkySunPBRIntegrationTests {
     }
 }
 
+@Suite("Phase 4B daylight chromaticity characterization")
+struct Phase4BDaylightChromaticityTests {
+    private let elevations: [Float] = [60, 30, 10, 5, 0]
+
+    @Test
+    func recordsProductionRGBBeforeCalibration() {
+        for elevation in elevations {
+            let sun = direction(elevationDegrees: elevation)
+            let parameters = DaytimeAtmosphereModel.Parameters(sourceEV: 0)
+            let zenith = DaytimeAtmosphereModel.sample(
+                direction: SIMD3<Float>(0, 1, 0), sunDirection: sun, parameters: parameters
+            ).capture
+            let horizonToward = DaytimeAtmosphereModel.sample(
+                direction: SIMD3<Float>(1, 0.001, 0), sunDirection: sun, parameters: parameters
+            ).capture
+            let horizonOpposite = DaytimeAtmosphereModel.sample(
+                direction: SIMD3<Float>(-1, 0.001, 0), sunDirection: sun, parameters: parameters
+            ).capture
+            let rightAngle = DaytimeAtmosphereModel.sample(
+                direction: SIMD3<Float>(0, 0.001, 1), sunDirection: sun, parameters: parameters
+            ).capture
+            let lower = DaytimeAtmosphereModel.sample(
+                direction: SIMD3<Float>(0, -1, 0), sunDirection: sun, parameters: parameters
+            ).capture
+            let integration = integrateEnvironment(sunDirection: sun, parameters: parameters)
+            let solar = DaytimeAtmosphereModel.solarIrradiance(
+                sunDirection: sun, parameters: parameters
+            ).rgb
+            let directGray = solar * max(sun.y, 0) * (0.18 / Float.pi)
+            let skyGray = integration.upward * (0.18 / Float.pi)
+            let combinedGray = directGray + skyGray
+            let finalGray = SceneLinearHDRContract.finalSDROutput(
+                sceneLinear: combinedGray, exposureEV: 0
+            )
+            let horizontalTotal = integration.horizontalUpper + integration.horizontalLower
+            let lowerFraction = luminance(integration.horizontalLower)
+                / max(luminance(horizontalTotal), 0.000001)
+
+            print(
+                "PHASE4B_BEFORE elevation=\(elevation) "
+                    + "zenith=\(zenith) zenithXY=\(chromaticityXY(zenith)) "
+                    + "horizonSun=\(horizonToward) horizonOpposite=\(horizonOpposite) "
+                    + "rightAngle=\(rightAngle) upperAverage=\(integration.upperAverage) "
+                    + "lower=\(lower) upwardIrradiance=\(integration.upward) "
+                    + "horizontalUpper=\(integration.horizontalUpper) "
+                    + "horizontalLower=\(integration.horizontalLower) lowerFraction=\(lowerFraction) "
+                    + "solar=\(solar) directGray=\(directGray) skyGray=\(skyGray) "
+                    + "combinedGray=\(combinedGray) finalGray=\(finalGray)"
+            )
+
+            for value in [zenith, horizonToward, horizonOpposite, rightAngle, lower,
+                          integration.upward, horizontalTotal, solar, combinedGray, finalGray] {
+                #expect(value.x.isFinite && value.y.isFinite && value.z.isFinite)
+                #expect(simd_reduce_min(value) >= 0)
+            }
+        }
+
+        // Characterize the reported defect before production calibration: the
+        // pre-tonemap opposite sky is already warm/brown at low elevation, so
+        // the fixed Filmic output transform is not its origin.
+        let lowSun = direction(elevationDegrees: 10)
+        let opposite = DaytimeAtmosphereModel.sample(
+            direction: SIMD3<Float>(-1, 0.001, 0),
+            sunDirection: lowSun,
+            parameters: .init(sourceEV: 0)
+        ).capture
+        #expect(opposite.z / max(opposite.x, 0.000001) < 0.9)
+    }
+
+    @Test
+    func filmicV1PreservesTheNeutralAxis() {
+        for value: Float in [0.001, 0.01, 0.18, 1, 4, 16, 100] {
+            let output = SceneLinearHDRContract.finalSDROutput(
+                sceneLinear: SIMD3<Float>(repeating: value), exposureEV: 0
+            )
+            #expect(abs(output.x - output.y) < 0.000001)
+            #expect(abs(output.y - output.z) < 0.000001)
+        }
+    }
+
+    private func integrateEnvironment(
+        sunDirection: SIMD3<Float>,
+        parameters: DaytimeAtmosphereModel.Parameters,
+        sampleCount: Int = 8_192
+    ) -> Phase4BEnvironmentIntegration {
+        let solidAngle = 4 * Float.pi / Float(sampleCount)
+        let goldenAngle = Float.pi * (3 - sqrt(5 as Float))
+        let upwardNormal = SIMD3<Float>(0, 1, 0)
+        let horizontalNormal = SIMD3<Float>(1, 0, 0)
+        var upward = SIMD3<Float>(repeating: 0)
+        var horizontalUpper = SIMD3<Float>(repeating: 0)
+        var horizontalLower = SIMD3<Float>(repeating: 0)
+        var upperSum = SIMD3<Float>(repeating: 0)
+        var upperCount: Float = 0
+
+        for index in 0..<sampleCount {
+            let y = 1 - 2 * (Float(index) + 0.5) / Float(sampleCount)
+            let radius = sqrt(max(0, 1 - y * y))
+            let phi = Float(index) * goldenAngle
+            let sampleDirection = SIMD3<Float>(cos(phi) * radius, y, sin(phi) * radius)
+            let radiance = DaytimeAtmosphereModel.sample(
+                direction: sampleDirection,
+                sunDirection: sunDirection,
+                parameters: parameters
+            ).capture
+            upward += radiance * max(simd_dot(sampleDirection, upwardNormal), 0) * solidAngle
+            let horizontalWeight = max(simd_dot(sampleDirection, horizontalNormal), 0) * solidAngle
+            if sampleDirection.y >= 0 {
+                horizontalUpper += radiance * horizontalWeight
+                upperSum += radiance
+                upperCount += 1
+            } else {
+                horizontalLower += radiance * horizontalWeight
+            }
+        }
+
+        return Phase4BEnvironmentIntegration(
+            upward: upward,
+            horizontalUpper: horizontalUpper,
+            horizontalLower: horizontalLower,
+            upperAverage: upperSum / max(upperCount, 1)
+        )
+    }
+
+    private func luminance(_ value: SIMD3<Float>) -> Float {
+        simd_dot(value, SIMD3<Float>(0.2126, 0.7152, 0.0722))
+    }
+
+    private func chromaticityXY(_ value: SIMD3<Float>) -> SIMD2<Float> {
+        let xyz = SIMD3<Float>(
+            0.4123908 * value.x + 0.3575843 * value.y + 0.1804808 * value.z,
+            0.2126390 * value.x + 0.7151687 * value.y + 0.0721923 * value.z,
+            0.0193308 * value.x + 0.1191948 * value.y + 0.9505322 * value.z
+        )
+        let sum = xyz.x + xyz.y + xyz.z
+        return sum > 0 ? SIMD2<Float>(xyz.x / sum, xyz.y / sum) : .zero
+    }
+}
+
+private struct Phase4BEnvironmentIntegration {
+    var upward: SIMD3<Float>
+    var horizontalUpper: SIMD3<Float>
+    var horizontalLower: SIMD3<Float>
+    var upperAverage: SIMD3<Float>
+}
+
 private func direction(elevationDegrees: Float, azimuthDegrees: Float = 0) -> SIMD3<Float> {
     let elevation = elevationDegrees * .pi / 180
     let azimuth = azimuthDegrees * .pi / 180
