@@ -1272,6 +1272,44 @@ static inline float3 evaluate_capture_procedural_sky_radiance(float3 direction,
     return evaluate_procedural_sky_radiance(direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture);
 }
 
+// Phase 4 characterization entry point. This exposes the existing production
+// daytime terms independently without changing the visible or capture paths.
+// It intentionally remains useful as a regression readback after the daytime
+// model is reconstructed.
+kernel void phase4_procedural_sky_component_samples(constant SkyParams &params [[ buffer(0) ]],
+                                                     device const float4 *directions [[ buffer(1) ]],
+                                                     device float4 *atmosphereResults [[ buffer(2) ]],
+                                                     device float4 *diskResults [[ buffer(3) ]],
+                                                     device float4 *aureoleResults [[ buffer(4) ]],
+                                                     device float4 *visibleResults [[ buffer(5) ]],
+                                                     device float4 *captureResults [[ buffer(6) ]],
+                                                     texture2d<float> moonAlbedoTexture [[ texture(0) ]],
+                                                     texture2d<float> galaxyTexture [[ texture(1) ]],
+                                                     texture2d<float> cloudAtlasTexture [[ texture(2) ]],
+                                                     uint sampleIndex [[ thread_position_in_grid ]]) {
+    float3 direction = normalize(directions[sampleIndex].xyz);
+    float3 sunDirection = normalize(params.sunDirection);
+    float sunCos = clamp(dot(direction, sunDirection), -1.0, 1.0);
+    float sunAngle = solarAngularDistance(direction, sunDirection);
+    float3 hazeColor = float3(0.0);
+    float sourceScale = max(params.intensity, 0.0) * kProceduralSkyRadianceScale;
+
+    atmosphereResults[sampleIndex] = float4(
+        evaluateAtmosphereLayer(direction, sunDirection, params, hazeColor) * sourceScale,
+        1.0
+    );
+    diskResults[sampleIndex] = float4(evaluateSolarDisk(sunAngle, params) * sourceScale, 1.0);
+    aureoleResults[sampleIndex] = float4(
+        (evaluateSolarAureole(sunCos, sunAngle, params)
+            + evaluateSolarForwardScatter(sunCos, params)) * sourceScale,
+        1.0
+    );
+    visibleResults[sampleIndex] = float4(evaluate_visible_procedural_sky_radiance(
+        direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+    captureResults[sampleIndex] = float4(evaluate_capture_procedural_sky_radiance(
+        direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+}
+
 // Test-only diagnostic entry point. It exercises the production visible and capture
 // evaluators numerically without adding exposure or display mapping.
 kernel void phase1_procedural_sky_linearity_samples(constant SkyParams &params [[ buffer(0) ]],
