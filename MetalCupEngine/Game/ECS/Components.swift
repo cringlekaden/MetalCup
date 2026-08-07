@@ -1641,6 +1641,9 @@ public struct EnvironmentSourceConfig: Equatable {
 
 public struct EnvironmentCelestialConfig: Equatable {
     public var defaultTimeOfDay: Float
+    public var timeControlMode: EnvironmentTimeControlMode
+    public var dayLengthSeconds: Float
+    public var timeScale: Float
     public var moonIntensity: Float
     public var moonSizeDegrees: Float
     public var starIntensity: Float
@@ -1651,6 +1654,9 @@ public struct EnvironmentCelestialConfig: Equatable {
     public var nightBrightness: Float
 
     public init(defaultTimeOfDay: Float = 14.0,
+                timeControlMode: EnvironmentTimeControlMode = .fixed,
+                dayLengthSeconds: Float = 600.0,
+                timeScale: Float = 1.0,
                 moonIntensity: Float = 0.18,
                 moonSizeDegrees: Float = 0.54,
                 starIntensity: Float = 0.75,
@@ -1660,6 +1666,9 @@ public struct EnvironmentCelestialConfig: Equatable {
                 milkyWayRotation: Float = 0.0,
                 nightBrightness: Float = 1.0) {
         self.defaultTimeOfDay = defaultTimeOfDay
+        self.timeControlMode = timeControlMode
+        self.dayLengthSeconds = dayLengthSeconds
+        self.timeScale = timeScale
         self.moonIntensity = moonIntensity
         self.moonSizeDegrees = moonSizeDegrees
         self.starIntensity = starIntensity
@@ -1677,17 +1686,22 @@ public struct EnvironmentAtmosphereConfig: Equatable {
     public var density: Float
     public var temperature: Float
     public var mood: Float
+    /// Scene-source energy in stops. This scales the entire procedural daytime
+    /// atmosphere and solar source by `2^sourceEV`; it is not camera exposure.
+    public var sourceEV: Float
 
     public init(amount: Float = 0.28,
                 haze: Float = 0.28,
                 density: Float = 1.0,
                 temperature: Float = 0.0,
-                mood: Float = 0.0) {
+                mood: Float = 0.0,
+                sourceEV: Float = 0.0) {
         self.amount = amount
         self.haze = haze
         self.density = density
         self.temperature = temperature
         self.mood = mood
+        self.sourceEV = sourceEV
     }
 }
 
@@ -2069,9 +2083,9 @@ public struct EnvironmentRuntimeStateComponent: Equatable {
 
     public init(seededFrom environment: EnvironmentComponent) {
         self.init(currentTimeOfDay: environment.celestial.defaultTimeOfDay,
-                  timeControlMode: .fixed,
-                  dayLengthSeconds: 600.0,
-                  timeScale: 1.0,
+                  timeControlMode: environment.celestial.timeControlMode,
+                  dayLengthSeconds: max(environment.celestial.dayLengthSeconds, 1),
+                  timeScale: max(environment.celestial.timeScale, 0),
                   currentWeatherType: environment.weather.primaryType,
                   targetWeatherType: environment.weather.secondaryType,
                   weatherBlend: environment.weather.blend,
@@ -2091,7 +2105,7 @@ public struct EnvironmentRuntimeStateComponent: Equatable {
 }
 
 public struct EnvironmentIBLSignature: Equatable, Hashable {
-    public static let currentVersion: UInt32 = 10
+    public static let currentVersion: UInt32 = 11
 
     public let version: UInt32
     public let enabled: Bool
@@ -2107,6 +2121,7 @@ public struct EnvironmentIBLSignature: Equatable, Hashable {
     public let atmosphereDensity: Int32
     public let atmosphereTemperature: Int32
     public let atmosphereMood: Int32
+    public let atmosphereSourceEV: Int32
     public let lookMood: Int32
     public let lookWarmth: Int32
     public let lookCinematicAmount: Int32
@@ -2136,6 +2151,7 @@ public struct EnvironmentIBLSignature: Equatable, Hashable {
                 atmosphereDensity: Int32 = 0,
                 atmosphereTemperature: Int32 = 0,
                 atmosphereMood: Int32 = 0,
+                atmosphereSourceEV: Int32 = 0,
                 lookMood: Int32 = 0,
                 lookWarmth: Int32 = 0,
                 lookCinematicAmount: Int32 = 0,
@@ -2164,6 +2180,7 @@ public struct EnvironmentIBLSignature: Equatable, Hashable {
         self.atmosphereDensity = atmosphereDensity
         self.atmosphereTemperature = atmosphereTemperature
         self.atmosphereMood = atmosphereMood
+        self.atmosphereSourceEV = atmosphereSourceEV
         self.lookMood = lookMood
         self.lookWarmth = lookWarmth
         self.lookCinematicAmount = lookCinematicAmount
@@ -2207,6 +2224,10 @@ public struct EnvironmentIBLStateComponent: Equatable {
     public var inFlightGeneration: UInt64?
     public var lastBuiltGeneration: UInt64?
     public var lastSourceChangeTime: Double
+    /// Exact procedural source represented by the currently published IBL.
+    public var lastBuiltTimeOfDay: Float?
+    public var lastBuiltSunDirection: SIMD3<Float>?
+    public var lastBuildDuration: Double?
 
     public static var defaultNeedsRebuild: EnvironmentIBLStateComponent {
         EnvironmentIBLStateComponent()
@@ -2230,7 +2251,10 @@ public struct EnvironmentIBLStateComponent: Equatable {
                 sourceGeneration: UInt64 = 0,
                 inFlightGeneration: UInt64? = nil,
                 lastBuiltGeneration: UInt64? = nil,
-                lastSourceChangeTime: Double = 0.0) {
+                lastSourceChangeTime: Double = 0.0,
+                lastBuiltTimeOfDay: Float? = nil,
+                lastBuiltSunDirection: SIMD3<Float>? = nil,
+                lastBuildDuration: Double? = nil) {
         self.environmentTexture = environmentTexture
         self.irradianceTexture = irradianceTexture
         self.prefilteredTexture = prefilteredTexture
@@ -2250,6 +2274,34 @@ public struct EnvironmentIBLStateComponent: Equatable {
         self.inFlightGeneration = inFlightGeneration
         self.lastBuiltGeneration = lastBuiltGeneration
         self.lastSourceChangeTime = lastSourceChangeTime
+        self.lastBuiltTimeOfDay = lastBuiltTimeOfDay
+        self.lastBuiltSunDirection = lastBuiltSunDirection
+        self.lastBuildDuration = lastBuildDuration
+    }
+}
+
+/// Immutable renderer-facing environment snapshot published once after simulation
+/// resolves an environment frame. Visible sky, generated Sun, shadows, capture,
+/// and IBL scheduling consume this same value instead of independently deriving
+/// solar direction or energy.
+public struct EnvironmentFrameStateComponent {
+    public let renderState: EnvironmentRenderState
+    public let sourceSignature: EnvironmentIBLSignature
+    public let sourceGeneration: UInt64
+    public let iblSourceSignature: EnvironmentIBLSignature?
+    public let iblSourceTimeOfDay: Float?
+    public let iblSourceSunDirection: SIMD3<Float>?
+    public let iblPhase: EnvironmentIBLRebuildPhase
+
+    public init(renderState: EnvironmentRenderState,
+                iblState: EnvironmentIBLStateComponent = .defaultNeedsRebuild) {
+        self.renderState = renderState
+        self.sourceSignature = renderState.iblSignature
+        self.sourceGeneration = iblState.sourceGeneration
+        self.iblSourceSignature = iblState.lastBuiltSignature
+        self.iblSourceTimeOfDay = iblState.lastBuiltTimeOfDay
+        self.iblSourceSunDirection = iblState.lastBuiltSunDirection
+        self.iblPhase = iblState.phase
     }
 }
 

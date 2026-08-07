@@ -53,6 +53,7 @@ public enum SceneECSComponentType: Int32 {
     case environment = 27
     case environmentRuntimeState = 28
     case environmentIBLState = 29
+    case environmentFrameState = 30
 }
 
 public struct SceneECSChange {
@@ -91,6 +92,7 @@ public final class SceneECS {
     private var environmentComponents: [Entity: EnvironmentComponent] = [:]
     private var environmentRuntimeStateComponents: [Entity: EnvironmentRuntimeStateComponent] = [:]
     private var environmentIBLStateComponents: [Entity: EnvironmentIBLStateComponent] = [:]
+    private var environmentFrameStateComponents: [Entity: EnvironmentFrameStateComponent] = [:]
     private var reflectionProbeComponents: [Entity: ReflectionProbeComponent] = [:]
     private var skyLightTags: [Entity: SkyLightTag] = [:]
     private var skySunTags: [Entity: SkySunTag] = [:]
@@ -180,6 +182,7 @@ public final class SceneECS {
         environmentComponents.removeAll()
         environmentRuntimeStateComponents.removeAll()
         environmentIBLStateComponents.removeAll()
+        environmentFrameStateComponents.removeAll()
         reflectionProbeComponents.removeAll()
         skyLightTags.removeAll()
         skySunTags.removeAll()
@@ -422,6 +425,12 @@ public final class SceneECS {
             if !existed {
                 enqueueChange(.componentAdded, entity: entity, componentType: .environmentIBLState)
             }
+        case let value as EnvironmentFrameStateComponent:
+            let existed = environmentFrameStateComponents[entity] != nil
+            environmentFrameStateComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .environmentFrameState)
+            }
         case let value as ReflectionProbeComponent:
             let previousEnabled = reflectionProbeComponents[entity]?.enabled
             let existed = reflectionProbeComponents[entity] != nil
@@ -574,6 +583,10 @@ public final class SceneECS {
             if environmentIBLStateComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .environmentIBLState)
             }
+        case is EnvironmentFrameStateComponent.Type:
+            if environmentFrameStateComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .environmentFrameState)
+            }
         case is ReflectionProbeComponent.Type:
             if reflectionProbeComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .reflectionProbe)
@@ -652,6 +665,8 @@ public final class SceneECS {
             return environmentRuntimeStateComponents[entity] as? T
         case is EnvironmentIBLStateComponent.Type:
             return environmentIBLStateComponents[entity] as? T
+        case is EnvironmentFrameStateComponent.Type:
+            return environmentFrameStateComponents[entity] as? T
         case is ReflectionProbeComponent.Type:
             return reflectionProbeComponents[entity] as? T
         case is SkyLightTag.Type:
@@ -1091,6 +1106,9 @@ public final class SceneECS {
         }
         if environmentIBLStateComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .environmentIBLState)
+        }
+        if environmentFrameStateComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .environmentFrameState)
         }
         if reflectionProbeComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .reflectionProbe)

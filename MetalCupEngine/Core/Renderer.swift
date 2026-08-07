@@ -94,6 +94,8 @@ public final class Renderer: NSObject {
         let quality: EnvironmentIBLRebuildQuality
         let requestedAt: Double
         let manual: Bool
+        let sourceTimeOfDay: Float
+        let sourceSunDirection: SIMD3<Float>
     }
 
     private struct EnvironmentIBLRebuildResult {
@@ -103,6 +105,9 @@ public final class Renderer: NSObject {
         let handles: IBLTextureHandles
         let quality: EnvironmentIBLRebuildQuality
         let completedAt: Double
+        let sourceTimeOfDay: Float
+        let sourceSunDirection: SIMD3<Float>
+        let duration: Double
     }
 
     private struct EnvironmentIBLRebuildFailure {
@@ -878,12 +883,13 @@ public final class Renderer: NSObject {
         var resolved = settings
         resolved.applySceneLinearHDROutputInvariants()
         if let environmentEntry = scene?.ecs.activeEnvironment() {
-            let runtime = scene?.ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntry.0)
-            let renderState = EnvironmentRenderStateBuilder.build(
-                environment: environmentEntry.1,
-                runtime: runtime,
-                rendererSettings: resolved
-            )
+            let renderState = scene?.ecs.get(EnvironmentFrameStateComponent.self,
+                                             for: environmentEntry.0)?.renderState
+                ?? EnvironmentRenderStateBuilder.build(
+                    environment: environmentEntry.1,
+                    runtime: scene?.ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntry.0),
+                    rendererSettings: resolved
+                )
             renderState.legacyFogPatch.applying(to: &resolved)
             // The enabled flag remains separate. Captured environment radiance is the
             // source of truth and is sampled with unit gain.
@@ -937,11 +943,12 @@ public final class Renderer: NSObject {
 
         let activeEnvironmentEntity = scene.ecs.activeEnvironment()?.0
         let runtime = scene.ecs.get(EnvironmentRuntimeStateComponent.self, for: entity)
-        let currentRenderState = EnvironmentRenderStateBuilder.build(
-            environment: environment,
-            runtime: runtime,
-            rendererSettings: settings
-        )
+        let currentRenderState = scene.ecs.get(EnvironmentFrameStateComponent.self, for: entity)?.renderState
+            ?? EnvironmentRenderStateBuilder.build(
+                environment: environment,
+                runtime: runtime,
+                rendererSettings: settings
+            )
         var state = scene.ecs.get(EnvironmentIBLStateComponent.self, for: entity)
             ?? EnvironmentIBLStateComponent.defaultNeedsRebuild
         let resultIsCurrent = EnvironmentIBLRebuildLifecycle.completionIsCurrent(
@@ -951,8 +958,13 @@ public final class Renderer: NSObject {
             completedSignature: result.signature,
             completedGeneration: result.generation
         )
+        let mayPublishLaggingInteractive = EnvironmentIBLRebuildLifecycle.mayPublishLaggingInteractive(
+            state: state,
+            completedGeneration: result.generation,
+            completedQuality: result.quality
+        )
 
-        if resultIsCurrent {
+        if resultIsCurrent || mayPublishLaggingInteractive {
             if let appliedIndex = _iblHandleSets.firstIndex(where: {
                 $0.environment == result.handles.environment
                     && $0.irradiance == result.handles.irradiance
@@ -964,12 +976,15 @@ public final class Renderer: NSObject {
             state.irradianceTexture = result.handles.irradiance
             state.prefilteredTexture = result.handles.prefiltered
             state.brdfLUT = result.handles.brdf
-            state.dirty = false
+            state.dirty = !resultIsCurrent
             state.needsRebuild = false
             state.rebuildRequested = false
             state.isRebuilding = false
             state.lastBuiltSignature = result.signature
             state.lastBuiltGeneration = result.generation
+            state.lastBuiltTimeOfDay = result.sourceTimeOfDay
+            state.lastBuiltSunDirection = result.sourceSunDirection
+            state.lastBuildDuration = result.duration
             state.inFlightGeneration = nil
             state.currentRebuildQuality = nil
             state.lastBuiltQuality = result.quality
@@ -978,7 +993,7 @@ public final class Renderer: NSObject {
                 state.phase = .interactiveReady
                 // Keep the exact desired signature pending until the automatic
                 // final-quality pass publishes matching resources.
-                state.pendingSignature = result.signature
+                state.pendingSignature = resultIsCurrent ? result.signature : currentRenderState.iblSignature
             } else {
                 state.phase = .finalReady
                 state.pendingSignature = nil
@@ -1037,11 +1052,12 @@ public final class Renderer: NSObject {
 
         var iblState = scene.ecs.get(EnvironmentIBLStateComponent.self, for: entity)
             ?? EnvironmentIBLStateComponent.defaultNeedsRebuild
-        let renderState = EnvironmentRenderStateBuilder.build(
-            environment: environment,
-            runtime: runtime,
-            rendererSettings: settings
-        )
+        let renderState = scene.ecs.get(EnvironmentFrameStateComponent.self, for: entity)?.renderState
+            ?? EnvironmentRenderStateBuilder.build(
+                environment: environment,
+                runtime: runtime,
+                rendererSettings: settings
+            )
         let signature = renderState.iblSignature
 
         let activeHandles = activeIBLHandles()
@@ -1102,7 +1118,10 @@ public final class Renderer: NSObject {
             _pendingEnvironmentRenderState = renderState
         }
         let signatureChanged = iblState.lastBuiltSignature != signature
-        let policyAllowsAutomaticRebuild = environment.ibl.realtimeUpdate || environment.ibl.autoRebuildOnChange
+        // Source radiance owns rebuild invalidation. The legacy policy booleans are
+        // retained for decoding only; procedural time and authored source edits
+        // always progress through interactive then settled final quality.
+        let policyAllowsAutomaticRebuild = true
 
         if didUpdateHandles || texturesMissing || signatureChanged || iblState.dirty {
             iblState.pendingSignature = signature
@@ -1208,7 +1227,9 @@ public final class Renderer: NSObject {
             generationConfig: iblConfig(mode: rebuildQuality),
             quality: rebuildQuality,
             requestedAt: now,
-            manual: manualRebuild
+            manual: manualRebuild,
+            sourceTimeOfDay: snapshot.finalTimeOfDay,
+            sourceSunDirection: snapshot.sunDirection
         )
         _skyRebuildInFlight = true
         _lastSkyRebuildStartTime = now
@@ -1328,7 +1349,10 @@ public final class Renderer: NSObject {
                     generation: request.generation,
                     handles: request.targetHandles,
                     quality: request.quality,
-                    completedAt: completed
+                    completedAt: completed,
+                    sourceTimeOfDay: request.sourceTimeOfDay,
+                    sourceSunDirection: request.sourceSunDirection,
+                    duration: totalCpuWallDt
                 )))
             }
             commandBuffer.commit()

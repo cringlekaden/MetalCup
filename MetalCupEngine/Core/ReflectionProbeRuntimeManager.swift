@@ -363,12 +363,13 @@ final class ReflectionProbeRuntimeManager {
     private func resolvedCaptureRendererSettings(scene: EngineScene) -> RendererSettings {
         var settings = rendererSettingsProvider()
         if let environmentEntry = scene.ecs.activeEnvironment() {
-            let runtime = scene.ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntry.0)
-            let renderState = EnvironmentRenderStateBuilder.build(
-                environment: environmentEntry.1,
-                runtime: runtime,
-                rendererSettings: settings
-            )
+            let renderState = scene.ecs.get(EnvironmentFrameStateComponent.self,
+                                            for: environmentEntry.0)?.renderState
+                ?? EnvironmentRenderStateBuilder.build(
+                    environment: environmentEntry.1,
+                    runtime: scene.ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntry.0),
+                    rendererSettings: settings
+                )
             renderState.legacyFogPatch.applying(to: &settings)
             return settings
         }

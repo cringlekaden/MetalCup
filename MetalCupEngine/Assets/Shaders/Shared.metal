@@ -605,11 +605,11 @@ struct SkyParams {
     float cloudsSunInfluence;
     float cloudAtlasEnabled;
     float cloudAtlasStyle;
-    // x = Rayleigh strength, y = Mie strength, z = Mie anisotropy, w = aerosol density.
+    // Phase 4 daytime: x = density, y = aerosol, z = Mie anisotropy, w = ozone.
     float4 atmosphereScatteringParams;
-    // x = horizon optical depth, y = ozone/twilight amount, z = sky radiance scale, w = sun disk radiance.
+    // Phase 4 daytime: x = reference solar illuminance, y = multiple scattering, z = ground albedo, w reserved.
     float4 atmosphereOpticalParams;
-    // x = sun aureole strength, y = ground bounce strength, z/w reserved.
+    // Reserved for legacy/night ABI compatibility. Daytime aureole derives from Mie scattering.
     float4 sunAureoleParams;
 };
 

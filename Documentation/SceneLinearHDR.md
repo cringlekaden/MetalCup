@@ -52,3 +52,26 @@ After the exact source signature settles, the renderer automatically publishes a
 final-quality generation. Every job carries its exact signature and monotonic
 generation, so stale work cannot replace newer resources. On failure, the last
 valid published resources remain active.
+
+## Phase 4 daytime atmosphere and solar-energy contract
+
+`DaytimeAtmosphereModel` and the matching functions in `ProceduralSky.metal`
+define the daytime source. The model uses an Earth-like 6360 km planet under a
+6460 km atmosphere, 8 km Rayleigh and 1.2 km aerosol scale heights, normalized
+Rayleigh/Henyey-Greenstein phase functions, explicit RGB optical depths, ozone,
+ground albedo, and a documented multiple-scattering approximation. These values
+are physically motivated, but the RGB energy normalization remains scene-relative.
+
+At source EV 0, the unattenuated solar disk has projected Rec.709 illuminance
+`2`. The disk radius is `0.266 degrees`, and its projected solid angle is
+`pi * sin(radius)^2`. This normalization gives an order-one direct response while
+keeping the disk finite in `RGBA16Float` through source EV +1. `sourceEV` scales
+the complete daytime source once by `2^sourceEV`; it is distinct from camera EV.
+
+The visible sky is atmosphere body + scattered aureole + unscattered disk. The
+procedural IBL capture is atmosphere body + aureole only. The generated analytic
+directional Sun is the transmitted disk's projected RGB integral, decomposed as
+`color * illuminance`; this prevents the disk from being integrated twice. Its
+direction, the visible disk, and directional-shadow ray all derive from the same
+environment render state. No environment, weather, IBL, material, exposure, or
+output-stage gain compensates the result.

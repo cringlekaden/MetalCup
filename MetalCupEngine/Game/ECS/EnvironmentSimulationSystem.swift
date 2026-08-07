@@ -58,6 +58,7 @@ public enum EnvironmentSimulationSystem {
                 state.currentTimeOfDay = normalizedTimeOfDay(override)
             }
             ecs.add(state, to: entity)
+            publishFrameState(environment: environment, runtime: state, entity: entity, in: ecs)
             return true
         }
 
@@ -82,7 +83,18 @@ public enum EnvironmentSimulationSystem {
         state.windPhase = positiveWrappedPhase(state.windPhase + windMagnitude * cloudSpeed * simulationDelta)
 
         ecs.add(state, to: entity)
+        publishFrameState(environment: environment, runtime: state, entity: entity, in: ecs)
         return true
+    }
+
+    private static func publishFrameState(environment: EnvironmentComponent,
+                                          runtime: EnvironmentRuntimeStateComponent,
+                                          entity: Entity,
+                                          in ecs: SceneECS) {
+        let renderState = EnvironmentRenderStateBuilder.build(environment: environment, runtime: runtime)
+        let iblState = ecs.get(EnvironmentIBLStateComponent.self, for: entity)
+            ?? EnvironmentIBLStateComponent.defaultNeedsRebuild
+        ecs.add(EnvironmentFrameStateComponent(renderState: renderState, iblState: iblState), to: entity)
     }
 
     private static func updateLegacySkyEnvironment(in ecs: SceneECS,

@@ -44,6 +44,12 @@ public final class SceneSerializationService {
         }
 
         func shouldSerializeEntity(_ entity: Entity) -> Bool {
+            // SkySystem owns this transient directional light. Persisting it would
+            // turn a runtime derivative of Environment into a second authored Sun
+            // on the next load.
+            if scene.ecs.has(SkySunTag.self, entity) {
+                return false
+            }
             guard !includeEditorEntities else { return true }
             if let camera = scene.ecs.get(CameraComponent.self, for: entity), camera.isEditor {
                 return false

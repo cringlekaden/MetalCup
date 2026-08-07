@@ -520,11 +520,11 @@ public struct SkyParams: sizeable {
     public var cloudsSunInfluence: Float = 1.0
     public var cloudAtlasEnabled: Float = 0.0
     public var cloudAtlasStyle: Float = 0.0
-    /// x = Rayleigh strength, y = Mie strength, z = Mie anisotropy, w = aerosol density.
+    /// Phase 4 daytime: x = density, y = aerosol, z = Mie anisotropy, w = ozone.
     public var atmosphereScatteringParams: SIMD4<Float> = SIMD4<Float>(1.0, 0.25, 0.8, 0.25)
-    /// x = horizon optical depth, y = ozone/twilight amount, z = sky radiance scale, w = sun disk radiance.
+    /// Phase 4 daytime: x = reference solar illuminance, y = multiple scattering, z = ground albedo, w reserved.
     public var atmosphereOpticalParams: SIMD4<Float> = SIMD4<Float>(1.5, 0.35, 1.0, 5.0)
-    /// x = sun aureole strength, y = ground bounce strength, z/w reserved.
+    /// Reserved for legacy/night ABI compatibility. Daytime aureole derives from Mie scattering.
     public var sunAureoleParams: SIMD4<Float> = SIMD4<Float>(0.35, 0.08, 0.0, 0.0)
 }
 

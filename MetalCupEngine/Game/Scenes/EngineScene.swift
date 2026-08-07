@@ -786,6 +786,9 @@ public class EngineScene {
         let activeEnvironmentEntry = ecs.activeEnvironment()
         let activeEnvironmentIBLState = activeEnvironmentEntry.flatMap { ecs.get(EnvironmentIBLStateComponent.self, for: $0.0) }
         let activeEnvironmentRenderState: EnvironmentRenderState? = activeEnvironmentEntry.map { entity, environment in
+            if let frameState = ecs.get(EnvironmentFrameStateComponent.self, for: entity) {
+                return frameState.renderState
+            }
             let runtime = ecs.get(EnvironmentRuntimeStateComponent.self, for: entity)
             return EnvironmentRenderStateBuilder.build(environment: environment, runtime: runtime)
         }

@@ -3,9 +3,9 @@ import Testing
 import simd
 @testable import MetalCupEngine
 
-@Suite("Phase 4 legacy procedural-sky characterization")
+@Suite("Phase 4 procedural-sky energy partition")
 struct Phase4LegacyCharacterization {
-    private static let elevations: [Float] = [90, 60, 30, 10, 5, 0, -2, -6]
+    static let elevations: [Float] = [90, 60, 30, 10, 5, 0, -2, -6]
 
     @Test
     func generatedSunDirectionAlreadyMatchesTheVisibleDisk() {
@@ -19,7 +19,7 @@ struct Phase4LegacyCharacterization {
     }
 
     @Test
-    func legacyVisibleAndCaptureBothContainTheSolarDisk() throws {
+    func captureExcludesOnlyTheUnscatteredSolarDisk() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let library = try Phase3MetalTestSupport.library(device: device)
         let pipeline = try device.makeComputePipelineState(function: #require(
@@ -32,7 +32,7 @@ struct Phase4LegacyCharacterization {
         let visible = results.visible[0].xyz
         let capture = results.capture[0].xyz
         let disk = results.disk[0].xyz
-        #expect(simd_distance(visible, capture) < 0.00001)
+        #expect(simd_distance(visible - capture, disk) < 0.01)
         #expect(luminance(disk) > 0.1)
     }
 
@@ -46,7 +46,6 @@ struct Phase4LegacyCharacterization {
 
         for elevation in Self.elevations {
             let sky = makeSky(elevationDegrees: elevation)
-            let derived = SkySystem.derivedAtmosphere(authored: sky, runtime: nil)
             var params = SkySystem.shaderParams(authored: sky, runtime: nil)
             let referenceDirections = sampleDirections(params: params)
             let integrationDirections = hemisphereDirections(count: 2048)
@@ -65,12 +64,15 @@ struct Phase4LegacyCharacterization {
             let diskCenter = results.disk[1].xyz
             let projectedSolidAngle = Float.pi * pow(sin(params.sunAngularRadius), 2)
             let diskProjectedIntegral = diskCenter * projectedSolidAngle
-            let analyticIrradiance = derived.sunLightColor * derived.sunLightIntensity
+            let analyticIrradiance = DaytimeAtmosphereModel.topSolarIrradianceRGB()
+                * params.solarExtinctionTint
+                * params.solarVisibility
+                * params.intensity
             let directToSky = luminance(analyticIrradiance) / max(luminance(skyIrradiance), 0.000001)
             let maximum = results.visible.reduce(Float(0)) { max($0, simd_reduce_max($1.xyz)) }
 
             print(
-                "PHASE4_LEGACY elevation=\(elevation) "
+                "PHASE4_REPAIRED elevation=\(elevation) "
                     + "zenith=\(results.visible[0].xyz) "
                     + "disk=\(results.visible[1].xyz) "
                     + "horizonSun=\(results.visible[2].xyz) "
@@ -90,18 +92,17 @@ struct Phase4LegacyCharacterization {
             #expect(analyticIrradiance.x.isFinite && analyticIrradiance.y.isFinite && analyticIrradiance.z.isFinite)
             #expect(maximum < 65_504)
             for index in referenceDirections.indices {
-                #expect(simd_distance(results.visible[index].xyz, results.capture[index].xyz) < 0.00001)
+                #expect(simd_distance(results.visible[index].xyz - results.capture[index].xyz,
+                                      results.disk[index].xyz) < 0.02)
             }
 
             if elevation == 60 {
-                // Confirmed legacy defect: the generated analytic Sun is not the
-                // projected integral of the visible solar disk.
-                #expect(luminance(analyticIrradiance) > luminance(diskProjectedIntegral) * 100)
+                #expect(simd_distance(analyticIrradiance, diskProjectedIntegral) < 0.01)
             }
         }
     }
 
-    private func makeSky(elevationDegrees: Float) -> SkyLightComponent {
+    func makeSky(elevationDegrees: Float) -> SkyLightComponent {
         SkyLightComponent(
             mode: .procedural,
             timeOfDay: 12,
@@ -114,7 +115,7 @@ struct Phase4LegacyCharacterization {
         )
     }
 
-    private func sampleDirections(params: SkyParams) -> [SIMD4<Float>] {
+    func sampleDirections(params: SkyParams) -> [SIMD4<Float>] {
         let sun = simd_normalize(params.sunDirection)
         var horizontal = SIMD3<Float>(sun.x, 0, sun.z)
         if simd_length_squared(horizontal) < 0.000001 {
@@ -135,7 +136,7 @@ struct Phase4LegacyCharacterization {
         ]
     }
 
-    private func hemisphereDirections(count: Int) -> [SIMD3<Float>] {
+    func hemisphereDirections(count: Int) -> [SIMD3<Float>] {
         let goldenAngle = Float.pi * (3 - sqrt(5 as Float))
         return (0..<count).map { index in
             let y = (Float(index) + 0.5) / Float(count)
@@ -145,7 +146,7 @@ struct Phase4LegacyCharacterization {
         }
     }
 
-    private func sample(device: MTLDevice,
+    func sample(device: MTLDevice,
                         pipeline: MTLComputePipelineState,
                         params: inout SkyParams,
                         directions: [SIMD4<Float>]) throws -> SkyComponentSamples {
@@ -190,12 +191,12 @@ struct Phase4LegacyCharacterization {
         )
     }
 
-    private func luminance(_ color: SIMD3<Float>) -> Float {
+    func luminance(_ color: SIMD3<Float>) -> Float {
         simd_dot(color, SIMD3<Float>(0.2126, 0.7152, 0.0722))
     }
 }
 
-private struct SkyComponentSamples {
+struct SkyComponentSamples {
     var atmosphere: [SIMD4<Float>]
     var disk: [SIMD4<Float>]
     var aureole: [SIMD4<Float>]

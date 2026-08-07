@@ -612,6 +612,46 @@ public enum SkySystem {
         params.atmosphereScatteringParams = SIMD4<Float>(rayleighStrength, mieStrength, mieAnisotropy, aerosolDensity)
         params.atmosphereOpticalParams = SIMD4<Float>(horizonOpticalDepth, twilightOzoneAmount, skyRadianceScale, sunDiskRadiance)
         params.sunAureoleParams = SIMD4<Float>(sunAureoleStrength, groundBounceStrength, 0.0, 0.0)
+        // Phase 4 daytime contract. Legacy SkyLight authoring is mapped into the
+        // same production model so there is no second evaluator hidden behind
+        // the compatibility component.
+        let sourceEV = log2(max(sky.intensity, 0.0001))
+        let daytime = DaytimeAtmosphereModel.Parameters(
+            sourceEV: sourceEV,
+            densityScale: max(0.05, min(sky.turbidity / 2.5, 4.0)),
+            aerosolScale: 0.55 + aerosolDensity * 1.9,
+            ozoneScale: max(sky.ozoneStrength, 0),
+            multipleScatteringStrength: 0.85 + saturate(sky.atmosphereAmount) * 0.55,
+            groundAlbedo: DaytimeAtmosphereModel.groundAlbedo,
+            solarAngularRadiusRadians: DaytimeAtmosphereModel.solarAngularRadiusDegrees * .pi / 180
+        )
+        let solar = DaytimeAtmosphereModel.solarIrradiance(
+            sunDirection: derivedAtmosphere.sunDirectionWorld,
+            parameters: daytime
+        )
+        let topDisk = DaytimeAtmosphereModel.topSolarDiskRadianceRGB(
+            radiusRadians: daytime.solarAngularRadiusRadians
+        )
+        let diskLuminance = max(DaytimeAtmosphereModel.rec709Luminance(topDisk), 1e-7)
+        params.sunAngularRadius = daytime.solarAngularRadiusRadians
+        params.sunColor = topDisk / diskLuminance
+        params.sunIntensity = diskLuminance
+        params.intensity = DaytimeAtmosphereModel.sourceScale(sourceEV: daytime.sourceEV)
+        params.solarVisibility = solar.horizonVisibility
+        params.solarExtinctionTint = solar.transmittance
+        params.atmosphereScatteringParams = SIMD4<Float>(
+            daytime.densityScale,
+            daytime.aerosolScale,
+            DaytimeAtmosphereModel.mieAnisotropy,
+            daytime.ozoneScale
+        )
+        params.atmosphereOpticalParams = SIMD4<Float>(
+            DaytimeAtmosphereModel.referenceTopSolarIlluminance,
+            daytime.multipleScatteringStrength,
+            daytime.groundAlbedo,
+            0
+        )
+        params.sunAureoleParams = .zero
         return params
     }
 
@@ -734,7 +774,8 @@ public enum SkySystem {
         }
 
         let runtime = ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntity)
-        let renderState = EnvironmentRenderStateBuilder.build(environment: environment, runtime: runtime)
+        let renderState = ecs.get(EnvironmentFrameStateComponent.self, for: environmentEntity)?.renderState
+            ?? EnvironmentRenderStateBuilder.build(environment: environment, runtime: runtime)
         let sunEntity = ecs.firstEntity(with: SkySunTag.self) ?? createSunLight(in: ecs, name: "Sun")
         let lightRayDirection = -renderState.sunDirection
 
@@ -745,6 +786,10 @@ public enum SkySystem {
         light.data.brightness = renderState.sunIntensity
         light.data.diffuseIntensity = 1.0
         light.data.specularIntensity = 1.0
+        // The Environment-owned Sun is also the single cascaded-map owner while
+        // its transmitted irradiance is nonzero. Phase 2's selected-caster path
+        // then uses this exact transform for both matrices and receiver masking.
+        light.castsShadows = renderState.sunIntensity > 1e-6
         ecs.add(light, to: sunEntity)
 
         var transform = ecs.get(TransformComponent.self, for: sunEntity) ?? TransformComponent()
@@ -774,15 +819,21 @@ public enum SkySystem {
         let sunEntity = ecs.firstEntity(with: SkySunTag.self) ?? createSunLight(in: ecs, name: "Sun")
         let environment = ecs.get(EnvironmentStateComponent.self, for: skyEntity)
         let derivedAtmosphere = derivedAtmosphere(authored: sky, runtime: environment)
+        let params = shaderParams(authored: sky, runtime: environment)
         let lightRayDirection = derivedAtmosphere.sunRayDirectionWorld
+        let solarRGB = DaytimeAtmosphereModel.topSolarIrradianceRGB()
+            * params.solarExtinctionTint
+            * params.solarVisibility
+            * params.intensity
+        let solarIlluminance = max(DaytimeAtmosphereModel.rec709Luminance(solarRGB), 0)
 
         var light = ecs.get(LightComponent.self, for: sunEntity) ?? LightComponent(type: .directional)
         light.type = .directional
         light.direction = lightRayDirection
-        // The auto-driven sun is owned by the active sky: direct light color and strength now
-        // come from the shared derived atmosphere model instead of a separate manual balance.
-        light.data.color = max(derivedAtmosphere.sunLightColor, SIMD3<Float>(repeating: 0.0))
-        light.data.brightness = derivedAtmosphere.sunLightIntensity
+        light.data.color = solarIlluminance > 1e-7
+            ? max(solarRGB / solarIlluminance, SIMD3<Float>(repeating: 0.0))
+            : .zero
+        light.data.brightness = solarIlluminance
         light.data.diffuseIntensity = 1.0
         light.data.specularIntensity = 1.0
         ecs.add(light, to: sunEntity)

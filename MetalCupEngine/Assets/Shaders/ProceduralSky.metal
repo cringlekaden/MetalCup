@@ -54,149 +54,118 @@ static inline float3 hosek_wilkie_sky(float3 dir, float3 sunDir, float turbidity
     return max(sky, float3(0.0));
 }
 
+// Phase 4 scene-relative daytime atmosphere. Constants match
+// DaytimeAtmosphereModel.swift. These are physically motivated Earth-like
+// optical depths and normalized phase functions, not a spectral/lux claim.
+static constant float3 kDaytimeSolarChroma = float3(1.0, 0.97, 0.92);
+static constant float3 kDaytimeRayleighOpticalDepth = float3(0.055, 0.130, 0.320);
+static constant float3 kDaytimeOzoneOpticalDepth = float3(0.010, 0.025, 0.006);
+
 static inline float rayleighPhase(float cosTheta) {
-    return 0.75 * (1.0 + cosTheta * cosTheta);
+    return (3.0 / (16.0 * M_PI_F)) * (1.0 + cosTheta * cosTheta);
 }
 
 static inline float miePhaseHG(float cosTheta, float g) {
     float gg = g * g;
-    float denom = max(1.0 + gg - 2.0 * g * cosTheta, 0.04);
-    return (1.0 - gg) / pow(denom, 1.5);
+    float denom = max(pow(1.0 + gg - 2.0 * g * cosTheta, 1.5), 1e-6);
+    return (1.0 - gg) / (4.0 * M_PI_F * denom);
 }
 
-static inline float airMassApprox(float mu) {
-    return 1.0 / max(mu + 0.08, 0.06);
+static inline float skySmoothstep(float edge0, float edge1, float value) {
+    float t = saturate1((value - edge0) / max(edge1 - edge0, 1e-7));
+    return t * t * (3.0 - 2.0 * t);
 }
 
-static inline float horizonOpticalDepthApprox(float3 dir, constant SkyParams &params) {
-    float horizon = 1.0 - saturate1(dir.y);
-    float horizonShape = pow(horizon, 1.35);
-    return max(params.atmosphereOpticalParams.x, 0.0) * (0.10 + 0.90 * horizonShape) * airMassApprox(saturate1(dir.y)) * 0.22;
+static inline float daytimeOpticalAirMass(float elevationRadians) {
+    float degrees = clamp(elevationRadians * 180.0 / M_PI_F, 0.0, 90.0);
+    float sine = max(sin(elevationRadians), 0.0);
+    return min(1.0 / max(sine + 0.50572 * pow(degrees + 6.07995, -1.6364), 0.025), 40.0);
+}
+
+static inline float3 daytimeTopSolarIrradiance(constant SkyParams &params) {
+    float referenceIlluminance = max(params.atmosphereOpticalParams.x, 0.0);
+    return kDaytimeSolarChroma * (referenceIlluminance / max(sky_luminance(kDaytimeSolarChroma), 1e-7));
+}
+
+static inline float3 daytimeTotalOpticalDepth(constant SkyParams &params) {
+    float density = max(params.atmosphereScatteringParams.x, 0.05);
+    float aerosol = max(params.atmosphereScatteringParams.y, 0.0);
+    float ozone = max(params.atmosphereScatteringParams.w, 0.0);
+    float3 mieDepth = float3((0.025 + 0.055 * aerosol) * density);
+    return kDaytimeRayleighOpticalDepth * density + mieDepth + kDaytimeOzoneOpticalDepth * ozone;
+}
+
+static inline float daytimeIlluminationGate(float sunElevation) {
+    return skySmoothstep(-6.0 * M_PI_F / 180.0, 1.0 * M_PI_F / 180.0, sunElevation);
 }
 
 static inline float3 evaluateAnalyticSkyBody(float3 dir,
                                              float3 sunDir,
                                              constant SkyParams &params,
                                              thread float3 &resolvedHazeColor) {
-    float cosTheta = saturate1(dir.y);
-    float horizon = 1.0 - cosTheta;
-    float upperSky = pow(cosTheta, 0.42);
-    float sunForwardSigned = clamp(dot(dir, sunDir), -1.0, 1.0);
-    float sunForward = saturate1(sunForwardSigned);
-    float twilight = saturate1(params.twilightFactor);
-    float night = saturate1(params.nightFactor);
-    float dayVisibility = saturate1(params.dayNightFactor + twilight * 0.38);
-
-    float4 scattering = params.atmosphereScatteringParams;
-    float rayleighStrength = max(scattering.x, 0.0);
-    float mieStrength = max(scattering.y, 0.0);
-    float mieAnisotropy = clamp(scattering.z, 0.20, 0.95);
-    float aerosolDensity = saturate1(scattering.w);
-    float ozoneAmount = saturate1(params.atmosphereOpticalParams.y);
-    float skyRadianceScale = max(params.atmosphereOpticalParams.z, 0.0);
-    float groundBounce = max(params.sunAureoleParams.y, 0.0);
-
-    float opticalDepth = horizonOpticalDepthApprox(dir, params);
-    float3 zenithTint = positive3(params.zenithTint);
-    float3 horizonTint = positive3(params.horizonTint);
-    float3 solarTint = positive3(params.solarExtinctionTint);
-    float3 antiSolarTint = positive3(params.antiSolarTint);
-
-    float3 physicalZenith = mix(float3(0.13, 0.32, 0.86), zenithTint, 0.24);
-    float3 physicalHorizon = mix(float3(0.72, 0.80, 0.90), horizonTint, 0.26);
-    float3 extinctionTint = mix(float3(1.0, 0.92, 0.82), solarTint, 0.30 + twilight * 0.42);
-
-    float3 wavelengthExtinction = exp(-opticalDepth * mix(float3(0.10, 0.18, 0.34),
-                                                          float3(0.16, 0.22, 0.30),
-                                                          aerosolDensity));
-    float lowSun = saturate1((1.0 - params.dayNightFactor) * (1.0 - night) + twilight * 0.72);
-    float rayleigh = rayleighPhase(sunForwardSigned) * rayleighStrength;
-    float mie = miePhaseHG(sunForwardSigned, mieAnisotropy) * mieStrength * (0.060 + lowSun * 0.018);
-    float nearSun = pow(sunForward, mix(8.0, 3.2, aerosolDensity));
-
-    float3 rayleighBody = mix(physicalHorizon, physicalZenith, upperSky) * float3(0.36, 0.62, 1.0) * rayleigh;
-    float3 mieBody = extinctionTint * mie * (0.58 + horizon * 0.50 + lowSun * 0.18);
-    float3 sky = rayleighBody * wavelengthExtinction + mieBody;
-
-    float horizonWash = smoothstep(0.18, 1.0, horizon) * (0.16 + aerosolDensity * 0.34 + twilight * 0.16 + lowSun * 0.10);
-    resolvedHazeColor = mix(physicalHorizon, extinctionTint, 0.24 + nearSun * 0.36 + twilight * 0.20 + lowSun * 0.12);
-    sky = mix(sky, resolvedHazeColor, saturate1(horizonWash));
-
-    float warmHorizonGate = smoothstep(0.18, 0.96, horizon) * nearSun * lowSun * (0.55 + aerosolDensity * 0.45);
-    float3 goldenHorizon = mix(extinctionTint, positive3(params.duskTint), 0.22 + twilight * 0.18);
-    sky += goldenHorizon * warmHorizonGate * (0.16 + mieStrength * 0.12);
-
-    float antiSolar = saturate1(-sunForwardSigned * 0.5 + 0.5);
-    sky += antiSolarTint * antiSolar * twilight * (0.032 + upperSky * 0.052);
-    sky += physicalHorizon * groundBounce * (0.38 + 0.72 * horizon + lowSun * 0.20);
-
-    float ozoneMask = ozoneAmount * upperSky * (0.35 + twilight * 0.45);
-    sky *= mix(float3(1.0), float3(0.82, 0.92, 1.08), saturate1(ozoneMask));
-    sky *= mix(0.16, 1.0, dayVisibility) * mix(1.0, 0.72, night);
-    sky *= skyRadianceScale;
-
-    return max(sky, float3(0.0));
+    float density = max(params.atmosphereScatteringParams.x, 0.05);
+    float ozone = max(params.atmosphereScatteringParams.w, 0.0);
+    float sunElevation = asin(clamp(sunDir.y, -1.0, 1.0));
+    float sunAirMass = daytimeOpticalAirMass(max(sunElevation, 0.0));
+    float viewAirMass = daytimeOpticalAirMass(asin(max(dir.y, 0.001)));
+    float3 rayleighDepth = kDaytimeRayleighOpticalDepth * density;
+    float3 mieDepth = float3((0.025 + 0.055 * max(params.atmosphereScatteringParams.y, 0.0)) * density);
+    float3 totalDepth = rayleighDepth + mieDepth + kDaytimeOzoneOpticalDepth * ozone;
+    float3 sunTransmittance = exp(-totalDepth * sunAirMass);
+    float3 viewTransmittance = exp(-totalDepth * viewAirMass);
+    float3 rayleighScatter = 1.0 - exp(-rayleighDepth * viewAirMass);
+    float cosAngle = clamp(dot(dir, sunDir), -1.0, 1.0);
+    float3 topIrradiance = daytimeTopSolarIrradiance(params) * daytimeIlluminationGate(sunElevation);
+    float3 rayleigh = topIrradiance * sqrt(max(sunTransmittance, float3(0.0)))
+        * rayleighScatter * (rayleighPhase(cosAngle) * 2.8);
+    float meanLoss = 1.0 - dot(viewTransmittance, float3(1.0 / 3.0));
+    float multipleStrength = max(params.atmosphereOpticalParams.y, 0.0);
+    float3 multiple = topIrradiance * (0.045 + 0.115 * saturate1(meanLoss)) * multipleStrength;
+    float horizon = 1.0 - saturate1(dir.y);
+    float groundAlbedo = saturate1(params.atmosphereOpticalParams.z);
+    float3 groundBounce = topIrradiance * groundAlbedo * (0.025 + 0.075 * horizon);
+    float3 sky = max(rayleigh + multiple + groundBounce, float3(0.0));
+    if (dir.y < 0.0) {
+        sky *= 0.22 + 0.18 * saturate1(-dir.y);
+    }
+    resolvedHazeColor = max(multiple + groundBounce, float3(0.0));
+    return sky;
 }
 
 static inline float solarAngularDistance(float3 dir, float3 sunDir) {
     return acos(clamp(dot(dir, sunDir), -1.0, 1.0));
 }
 
-static inline float solarRelativeRadiance(constant SkyParams &params) {
-    float derivedDiskRadiance = max(params.atmosphereOpticalParams.w, 0.0);
-    return max(params.sunIntensity, derivedDiskRadiance);
-}
-
-static inline float3 solarTransmittanceTint(constant SkyParams &params) {
-    float twilight = saturate1(params.twilightFactor);
-    float visibility = saturate1(params.solarVisibility);
-    float3 solarTint = positive3(params.solarExtinctionTint);
-    float3 diskWhite = float3(1.0, 0.985, 0.94);
-    return mix(diskWhite, solarTint, 0.28 + twilight * 0.46 + (1.0 - visibility) * 0.18);
-}
-
 static inline float3 evaluateSolarDisk(float sunAngle, constant SkyParams &params) {
     float sunRadius = max(params.sunAngularRadius, 0.0001);
-    float visibility = saturate1(params.solarVisibility) * (1.0 - saturate1(params.nightFactor));
-    float edgeSoftness = mix(0.11, 0.22, saturate1(params.atmosphereScatteringParams.w));
-    float disk = 1.0 - smoothstep(sunRadius * (1.0 - edgeSoftness),
-                                  sunRadius * (1.0 + edgeSoftness),
-                                  sunAngle);
-    float core = exp(-pow(sunAngle / max(sunRadius * 0.62, 0.0001), 2.0));
-    float radiance = solarRelativeRadiance(params) * visibility;
-    float3 tint = solarTransmittanceTint(params);
-    return tint * radiance * (disk * 0.82 + core * 0.34);
+    float disk = 1.0 - skySmoothstep(sunRadius * 0.96, sunRadius * 1.04, sunAngle);
+    return positive3(params.sunColor) * max(params.sunIntensity, 0.0)
+        * positive3(params.solarExtinctionTint) * saturate1(params.solarVisibility) * disk;
 }
 
-static inline float3 evaluateSolarAureole(float sunCos, float sunAngle, constant SkyParams &params) {
-    float sunRadius = max(params.sunAngularRadius, 0.0001);
-    float visibility = saturate1(params.solarVisibility) * (1.0 - saturate1(params.nightFactor));
-    float aerosolDensity = saturate1(params.atmosphereScatteringParams.w);
-    float lowSun = saturate1((1.0 - params.dayNightFactor) * (1.0 - saturate1(params.nightFactor)) + saturate1(params.twilightFactor) * 0.72);
-    float aureoleStrength = max(params.sunAureoleParams.x, 0.0) * max(params.sunHaloIntensity, 0.0);
-    float angularFalloff = exp(-sunAngle / max(sunRadius * max(params.sunHaloSize, 0.1) * mix(1.25, 1.75, lowSun), 0.0001));
-    float mieForward = miePhaseHG(sunCos, clamp(params.atmosphereScatteringParams.z, 0.20, 0.95)) * (0.018 + lowSun * 0.008);
-    float nearSunGate = smoothstep(0.12, 1.0, sunCos);
-    float lowSunBoost = 0.78 + saturate1(params.twilightFactor) * 0.62 + aerosolDensity * 0.34 + lowSun * 0.26;
-    float3 tint = mix(solarTransmittanceTint(params), positive3(params.solarExtinctionTint), 0.28 + saturate1(params.twilightFactor) * 0.24);
-    return tint * visibility * aureoleStrength * lowSunBoost * nearSunGate * (angularFalloff * 0.86 + mieForward);
+static inline float3 evaluateSolarAureole(float3 dir, float sunCos, float sunAngle, constant SkyParams &params) {
+    float density = max(params.atmosphereScatteringParams.x, 0.05);
+    float aerosol = max(params.atmosphereScatteringParams.y, 0.0);
+    float sunElevation = asin(clamp(params.sunDirection.y, -1.0, 1.0));
+    float sunAirMass = daytimeOpticalAirMass(max(sunElevation, 0.0));
+    float viewAirMass = daytimeOpticalAirMass(asin(max(dir.y, 0.001)));
+    float3 mieDepth = float3((0.025 + 0.055 * aerosol) * density);
+    float3 mieScatter = 1.0 - exp(-mieDepth * viewAirMass);
+    float3 incidentTint = sqrt(max(exp(-daytimeTotalOpticalDepth(params) * sunAirMass), float3(0.0)));
+    float phase = miePhaseHG(sunCos, clamp(params.atmosphereScatteringParams.z, 0.0, 0.95));
+    return daytimeTopSolarIrradiance(params) * incidentTint * mieScatter
+        * (phase * 0.42) * daytimeIlluminationGate(sunElevation);
 }
 
 static inline float3 evaluateSolarForwardScatter(float sunCos, constant SkyParams &params) {
-    float visibility = saturate1(params.solarVisibility) * (1.0 - saturate1(params.nightFactor));
-    float aerosolDensity = saturate1(params.atmosphereScatteringParams.w);
-    float mieStrength = max(params.atmosphereScatteringParams.y, 0.0);
-    float aureoleStrength = max(params.sunAureoleParams.x, 0.0);
-    float forward = pow(saturate1(sunCos), mix(18.0, 7.0, aerosolDensity));
-    float twilightBoost = 0.55 + saturate1(params.twilightFactor) * 0.55;
-    return positive3(params.solarExtinctionTint) * visibility * forward * mieStrength * aureoleStrength * twilightBoost * 0.10;
+    return float3(0.0);
 }
 
 static inline float3 evaluateSolarRadiance(float3 dir, float3 sunDir, constant SkyParams &params) {
     float sunCos = clamp(dot(dir, sunDir), -1.0, 1.0);
     float sunAngle = solarAngularDistance(dir, sunDir);
     float3 disk = evaluateSolarDisk(sunAngle, params);
-    float3 aureole = evaluateSolarAureole(sunCos, sunAngle, params);
+    float3 aureole = evaluateSolarAureole(dir, sunCos, sunAngle, params);
     float3 forwardScatter = evaluateSolarForwardScatter(sunCos, params);
     return max(disk + aureole + forwardScatter, float3(0.0));
 }
@@ -738,7 +707,7 @@ static inline float3 evaluateAtmosphereLayer(float3 dir,
                                              constant SkyParams &params,
                                              thread float3 &resolvedHazeColor) {
     float3 sky = evaluateAnalyticSkyBody(dir, sunDir, params, resolvedHazeColor);
-    return sky * mix(float3(1.0), positive3(params.skyTint), 0.22);
+    return sky;
 }
 
 static inline float3 evaluateSunLayer(float3 dir, float3 sunDir, constant SkyParams &params) {
@@ -1158,13 +1127,15 @@ static inline CloudCompositeSample evaluateProceduralClouds(float3 dir,
     return composite;
 }
 
-// Visible procedural sky and captured procedural sky intentionally share this
-// same HDR radiance model so the camera background tracks the sky used for IBL.
+// Visible and captured procedural sky share one component evaluator. The capture
+// intentionally excludes only the unscattered solar disk because its projected
+// integral is represented once by the generated analytic directional Sun.
 static inline float3 evaluate_procedural_sky_radiance(float3 direction,
                                                       constant SkyParams &params,
                                                       texture2d<float> moonAlbedoTexture,
                                                       texture2d<float> galaxyTexture,
-                                                      texture2d<float> cloudAtlasTexture) {
+                                                      texture2d<float> cloudAtlasTexture,
+                                                      bool includeDirectSolarDisk) {
     float3 dir = normalize(direction);
     float3 sunDir = normalize(params.sunDirection);
 
@@ -1175,10 +1146,10 @@ static inline float3 evaluate_procedural_sky_radiance(float3 direction,
 
     float3 hazeColor = float3(0.0);
     float3 sky = evaluateAtmosphereLayer(dir, sunDir, params, hazeColor);
-
-    // Physically-inspired solar presentation: a compact HDR disk, a tight core,
-    // and directional Mie aureole shared by the visible sky and procedural IBL capture.
-    float3 sun = evaluateSunLayer(dir, sunDir, params);
+    float sunCos = clamp(dot(dir, sunDir), -1.0, 1.0);
+    float sunAngle = solarAngularDistance(dir, sunDir);
+    sky += evaluateSolarAureole(dir, sunCos, sunAngle, params);
+    float3 sun = includeDirectSolarDisk ? evaluateSolarDisk(sunAngle, params) : float3(0.0);
 
     // Night/celestial layers are kept explicit so opaque bodies, background stars,
     // and glow contributions do not accidentally collapse into one additive pass.
@@ -1261,7 +1232,12 @@ static inline float3 evaluate_visible_procedural_sky_radiance(float3 direction,
                                                                texture2d<float> moonAlbedoTexture,
                                                                texture2d<float> galaxyTexture,
                                                                texture2d<float> cloudAtlasTexture) {
-    return evaluate_procedural_sky_radiance(direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture);
+    return evaluate_procedural_sky_radiance(direction,
+                                             params,
+                                             moonAlbedoTexture,
+                                             galaxyTexture,
+                                             cloudAtlasTexture,
+                                             true);
 }
 
 static inline float3 evaluate_capture_procedural_sky_radiance(float3 direction,
@@ -1269,7 +1245,12 @@ static inline float3 evaluate_capture_procedural_sky_radiance(float3 direction,
                                                                texture2d<float> moonAlbedoTexture,
                                                                texture2d<float> galaxyTexture,
                                                                texture2d<float> cloudAtlasTexture) {
-    return evaluate_procedural_sky_radiance(direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture);
+    return evaluate_procedural_sky_radiance(direction,
+                                             params,
+                                             moonAlbedoTexture,
+                                             galaxyTexture,
+                                             cloudAtlasTexture,
+                                             false);
 }
 
 // Phase 4 characterization entry point. This exposes the existing production
@@ -1300,7 +1281,7 @@ kernel void phase4_procedural_sky_component_samples(constant SkyParams &params [
     );
     diskResults[sampleIndex] = float4(evaluateSolarDisk(sunAngle, params) * sourceScale, 1.0);
     aureoleResults[sampleIndex] = float4(
-        (evaluateSolarAureole(sunCos, sunAngle, params)
+        (evaluateSolarAureole(direction, sunCos, sunAngle, params)
             + evaluateSolarForwardScatter(sunCos, params)) * sourceScale,
         1.0
     );

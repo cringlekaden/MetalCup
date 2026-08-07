@@ -1841,6 +1841,9 @@ public struct EnvironmentSourceDTO: Codable {
 public struct EnvironmentCelestialDTO: Codable {
     public var schemaVersion: Int
     public var defaultTimeOfDay: Float
+    public var timeControlMode: UInt32
+    public var dayLengthSeconds: Float
+    public var timeScale: Float
     public var moonIntensity: Float
     public var moonSizeDegrees: Float
     public var starIntensity: Float
@@ -1850,8 +1853,11 @@ public struct EnvironmentCelestialDTO: Codable {
     public var milkyWayRotation: Float
     public var nightBrightness: Float
 
-    public init(schemaVersion: Int = 2,
+    public init(schemaVersion: Int = 3,
                 defaultTimeOfDay: Float,
+                timeControlMode: UInt32 = EnvironmentTimeControlMode.fixed.rawValue,
+                dayLengthSeconds: Float = 600.0,
+                timeScale: Float = 1.0,
                 moonIntensity: Float,
                 moonSizeDegrees: Float,
                 starIntensity: Float,
@@ -1862,6 +1868,9 @@ public struct EnvironmentCelestialDTO: Codable {
                 nightBrightness: Float = 1.0) {
         self.schemaVersion = schemaVersion
         self.defaultTimeOfDay = defaultTimeOfDay
+        self.timeControlMode = timeControlMode
+        self.dayLengthSeconds = dayLengthSeconds
+        self.timeScale = timeScale
         self.moonIntensity = moonIntensity
         self.moonSizeDegrees = moonSizeDegrees
         self.starIntensity = starIntensity
@@ -1875,6 +1884,9 @@ public struct EnvironmentCelestialDTO: Codable {
     public init(config: EnvironmentCelestialConfig) {
         self.init(
             defaultTimeOfDay: config.defaultTimeOfDay,
+            timeControlMode: config.timeControlMode.rawValue,
+            dayLengthSeconds: config.dayLengthSeconds,
+            timeScale: config.timeScale,
             moonIntensity: config.moonIntensity,
             moonSizeDegrees: config.moonSizeDegrees,
             starIntensity: config.starIntensity,
@@ -1889,6 +1901,9 @@ public struct EnvironmentCelestialDTO: Codable {
     public func toConfig() -> EnvironmentCelestialConfig {
         EnvironmentCelestialConfig(
             defaultTimeOfDay: defaultTimeOfDay,
+            timeControlMode: EnvironmentTimeControlMode(rawValue: timeControlMode) ?? .fixed,
+            dayLengthSeconds: dayLengthSeconds,
+            timeScale: timeScale,
             moonIntensity: moonIntensity,
             moonSizeDegrees: moonSizeDegrees,
             starIntensity: starIntensity,
@@ -1903,6 +1918,9 @@ public struct EnvironmentCelestialDTO: Codable {
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case defaultTimeOfDay
+        case timeControlMode
+        case dayLengthSeconds
+        case timeScale
         case moonIntensity
         case moonSizeDegrees
         case starIntensity
@@ -1918,6 +1936,9 @@ public struct EnvironmentCelestialDTO: Codable {
         let defaults = EnvironmentCelestialConfig()
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         defaultTimeOfDay = try container.decodeIfPresent(Float.self, forKey: .defaultTimeOfDay) ?? defaults.defaultTimeOfDay
+        timeControlMode = try container.decodeIfPresent(UInt32.self, forKey: .timeControlMode) ?? defaults.timeControlMode.rawValue
+        dayLengthSeconds = try container.decodeIfPresent(Float.self, forKey: .dayLengthSeconds) ?? defaults.dayLengthSeconds
+        timeScale = try container.decodeIfPresent(Float.self, forKey: .timeScale) ?? defaults.timeScale
         moonIntensity = try container.decodeIfPresent(Float.self, forKey: .moonIntensity) ?? defaults.moonIntensity
         moonSizeDegrees = try container.decodeIfPresent(Float.self, forKey: .moonSizeDegrees) ?? defaults.moonSizeDegrees
         starIntensity = try container.decodeIfPresent(Float.self, forKey: .starIntensity) ?? defaults.starIntensity
@@ -1936,19 +1957,22 @@ public struct EnvironmentAtmosphereDTO: Codable {
     public var density: Float
     public var temperature: Float
     public var mood: Float
+    public var sourceEV: Float
 
-    public init(schemaVersion: Int = 1,
+    public init(schemaVersion: Int = 2,
                 amount: Float,
                 haze: Float,
                 density: Float,
                 temperature: Float,
-                mood: Float) {
+                mood: Float,
+                sourceEV: Float = 0.0) {
         self.schemaVersion = schemaVersion
         self.amount = amount
         self.haze = haze
         self.density = density
         self.temperature = temperature
         self.mood = mood
+        self.sourceEV = sourceEV
     }
 
     public init(config: EnvironmentAtmosphereConfig) {
@@ -1957,7 +1981,8 @@ public struct EnvironmentAtmosphereDTO: Codable {
             haze: config.haze,
             density: config.density,
             temperature: config.temperature,
-            mood: config.mood
+            mood: config.mood,
+            sourceEV: config.sourceEV
         )
     }
 
@@ -1967,8 +1992,24 @@ public struct EnvironmentAtmosphereDTO: Codable {
             haze: haze,
             density: density,
             temperature: temperature,
-            mood: mood
+            mood: mood,
+            sourceEV: sourceEV
         )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, amount, haze, density, temperature, mood, sourceEV
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        amount = try container.decode(Float.self, forKey: .amount)
+        haze = try container.decode(Float.self, forKey: .haze)
+        density = try container.decode(Float.self, forKey: .density)
+        temperature = try container.decode(Float.self, forKey: .temperature)
+        mood = try container.decode(Float.self, forKey: .mood)
+        sourceEV = try container.decodeIfPresent(Float.self, forKey: .sourceEV) ?? 0.0
     }
 }
 

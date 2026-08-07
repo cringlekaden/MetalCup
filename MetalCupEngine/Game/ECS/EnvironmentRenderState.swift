@@ -129,6 +129,7 @@ public struct EnvironmentRenderState {
     public var atmosphereDensity: Float
     public var atmosphereTemperature: Float
     public var atmosphereMood: Float
+    public var atmosphereSourceEV: Float
     public var lookMood: Float
     public var lookWarmth: Float
     public var lookCinematicAmount: Float
@@ -151,6 +152,11 @@ public struct EnvironmentRenderState {
     public var nightBrightness: Float
     /// World-space unit vector from the scene toward the visible sun.
     public var sunDirection: SIMD3<Float>
+    public var solarElevationDegrees: Float
+    public var solarAzimuthDegrees: Float
+    public var solarAngularRadiusRadians: Float
+    public var skySourceScale: Float
+    public var solarIrradianceRGB: SIMD3<Float>
     public var sunColor: SIMD3<Float>
     public var sunIntensity: Float
     public var moonDirection: SIMD3<Float>
@@ -170,6 +176,32 @@ public enum EnvironmentRenderStateBuilder {
         let legacyRuntime = LegacyEnvironmentSkyAdapter.makeRuntimeState(resolved: resolved)
         let derived = SkySystem.derivedAtmosphere(authored: legacySky, runtime: legacyRuntime)
         var legacySkyParams = SkySystem.shaderParams(authored: legacySky, runtime: legacyRuntime)
+        let atmosphere = DaytimeAtmosphereModel.Parameters(environment: environment)
+        let solar = DaytimeAtmosphereModel.solarIrradiance(sunDirection: derived.sunDirectionWorld,
+                                                            parameters: atmosphere)
+        let topDisk = DaytimeAtmosphereModel.topSolarDiskRadianceRGB(
+            radiusRadians: atmosphere.solarAngularRadiusRadians
+        )
+        let topDiskLuminance = max(DaytimeAtmosphereModel.rec709Luminance(topDisk), 1e-7)
+        legacySkyParams.sunAngularRadius = atmosphere.solarAngularRadiusRadians
+        legacySkyParams.sunColor = topDisk / topDiskLuminance
+        legacySkyParams.sunIntensity = topDiskLuminance
+        legacySkyParams.intensity = DaytimeAtmosphereModel.sourceScale(sourceEV: atmosphere.sourceEV)
+        legacySkyParams.solarVisibility = solar.horizonVisibility
+        legacySkyParams.solarExtinctionTint = solar.transmittance
+        legacySkyParams.atmosphereScatteringParams = SIMD4<Float>(
+            atmosphere.densityScale,
+            atmosphere.aerosolScale,
+            DaytimeAtmosphereModel.mieAnisotropy,
+            atmosphere.ozoneScale
+        )
+        legacySkyParams.atmosphereOpticalParams = SIMD4<Float>(
+            DaytimeAtmosphereModel.referenceTopSolarIlluminance,
+            atmosphere.multipleScatteringStrength,
+            atmosphere.groundAlbedo,
+            0
+        )
+        legacySkyParams.sunAureoleParams = .zero
         let cloudRenderParams = EnvironmentCloudRenderParamBuilder.make(authored: legacySky,
                                                                          runtime: legacyRuntime,
                                                                          derivedAtmosphere: derived)
@@ -197,6 +229,7 @@ public enum EnvironmentRenderStateBuilder {
             atmosphereDensity: environment.atmosphere.density,
             atmosphereTemperature: environment.atmosphere.temperature,
             atmosphereMood: environment.atmosphere.mood,
+            atmosphereSourceEV: environment.atmosphere.sourceEV,
             lookMood: environment.look.mood,
             lookWarmth: environment.look.warmth,
             lookCinematicAmount: environment.look.cinematicAmount,
@@ -218,8 +251,13 @@ public enum EnvironmentRenderStateBuilder {
             milkyWayRotation: environment.celestial.milkyWayRotation,
             nightBrightness: environment.celestial.nightBrightness,
             sunDirection: derived.sunDirectionWorld,
-            sunColor: max(derived.sunLightColor, SIMD3<Float>(repeating: 0.0)),
-            sunIntensity: derived.sunLightIntensity,
+            solarElevationDegrees: asin(min(max(derived.sunDirectionWorld.y, -1), 1)) * 180 / .pi,
+            solarAzimuthDegrees: atan2(derived.sunDirectionWorld.z, derived.sunDirectionWorld.x) * 180 / .pi,
+            solarAngularRadiusRadians: atmosphere.solarAngularRadiusRadians,
+            skySourceScale: DaytimeAtmosphereModel.sourceScale(sourceEV: atmosphere.sourceEV),
+            solarIrradianceRGB: solar.rgb,
+            sunColor: solar.color,
+            sunIntensity: solar.illuminance,
             moonDirection: derived.moonDirectionWorld,
             moonColor: max(derived.moonTint, SIMD3<Float>(repeating: 0.0)),
             iblLightingIntensity: EnvironmentLightingBalance.iblIntensity(environment: environment),
@@ -275,6 +313,7 @@ public extension EnvironmentIBLSignature {
             atmosphereDensity: exactFloatBits(max(state.atmosphereDensity, 0)),
             atmosphereTemperature: exactFloatBits(state.atmosphereTemperature),
             atmosphereMood: exactFloatBits(state.atmosphereMood),
+            atmosphereSourceEV: exactFloatBits(state.atmosphereSourceEV),
             lookMood: exactFloatBits(state.lookMood),
             lookWarmth: exactFloatBits(state.lookWarmth),
             lookCinematicAmount: exactFloatBits(max(state.lookCinematicAmount, 0)),
@@ -470,6 +509,10 @@ private enum LegacyEnvironmentSkyAdapter {
         applyPreviewCompatibility(to: &sky,
                                   atmosphereHaze: atmosphereHaze,
                                   atmosphereDensity: atmosphereDensity)
+        // The daytime atmosphere owns its source energy. Legacy weather/mood intensity
+        // compensation is not part of the normal Environment path.
+        sky.intensity = DaytimeAtmosphereModel.sourceScale(sourceEV: environment.atmosphere.sourceEV)
+        sky.sunSizeDegrees = DaytimeAtmosphereModel.solarAngularRadiusDegrees
         return sky
     }
 
