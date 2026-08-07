@@ -239,6 +239,7 @@ struct SceneLinearHDROutputTests {
         ]
 
         var visibleByIntensity: [Float: [SIMD4<Float>]] = [:]
+        var captureByIntensity: [Float: [SIMD4<Float>]] = [:]
         for intensity in intensities {
             var params = try #require(paramsByIntensity[intensity])
             let results = try executeSkyCompute(
@@ -248,27 +249,41 @@ struct SceneLinearHDROutputTests {
                 directions: directions
             )
             visibleByIntensity[intensity] = results.visible
-            for sampleIndex in directions.indices {
+            captureByIntensity[intensity] = results.capture
+            for sampleIndex in [0, 2] {
                 expectClose(
                     SIMD3<Float>(results.visible[sampleIndex].x, results.visible[sampleIndex].y, results.visible[sampleIndex].z),
                     SIMD3<Float>(results.capture[sampleIndex].x, results.capture[sampleIndex].y, results.capture[sampleIndex].z),
                     tolerance: 0.00001
                 )
             }
+            let visibleDisk = SIMD3<Float>(results.visible[1].x, results.visible[1].y, results.visible[1].z)
+            let capturedDiskDirection = SIMD3<Float>(results.capture[1].x, results.capture[1].y, results.capture[1].z)
+            #expect(simd_reduce_max(visibleDisk - capturedDiskDirection) > 1)
         }
 
         let unitVisible = try #require(visibleByIntensity[1.0])
+        let unitCapture = try #require(captureByIntensity[1.0])
         for sample in unitVisible {
             let radiance = SIMD3<Float>(sample.x, sample.y, sample.z)
             #expect(simd_length(radiance) > 0.0001)
             #expect(radiance.x.isFinite && radiance.y.isFinite && radiance.z.isFinite)
         }
         for intensity in intensities {
-            let samples = try #require(visibleByIntensity[intensity])
+            let visibleSamples = try #require(visibleByIntensity[intensity])
+            let captureSamples = try #require(captureByIntensity[intensity])
             for sampleIndex in directions.indices {
-                let unit = SIMD3<Float>(unitVisible[sampleIndex].x, unitVisible[sampleIndex].y, unitVisible[sampleIndex].z)
-                let actual = SIMD3<Float>(samples[sampleIndex].x, samples[sampleIndex].y, samples[sampleIndex].z)
-                expectClose(actual, unit * intensity, tolerance: max(0.0001, simd_reduce_max(abs(unit * intensity)) * 0.0002))
+                let unitVisibleRGB = SIMD3<Float>(unitVisible[sampleIndex].x, unitVisible[sampleIndex].y, unitVisible[sampleIndex].z)
+                let visibleRGB = SIMD3<Float>(visibleSamples[sampleIndex].x, visibleSamples[sampleIndex].y, visibleSamples[sampleIndex].z)
+                expectClose(visibleRGB,
+                            unitVisibleRGB * intensity,
+                            tolerance: max(0.0001, simd_reduce_max(abs(unitVisibleRGB * intensity)) * 0.0002))
+
+                let unitCaptureRGB = SIMD3<Float>(unitCapture[sampleIndex].x, unitCapture[sampleIndex].y, unitCapture[sampleIndex].z)
+                let captureRGB = SIMD3<Float>(captureSamples[sampleIndex].x, captureSamples[sampleIndex].y, captureSamples[sampleIndex].z)
+                expectClose(captureRGB,
+                            unitCaptureRGB * intensity,
+                            tolerance: max(0.0001, simd_reduce_max(abs(unitCaptureRGB * intensity)) * 0.0002))
             }
         }
     }

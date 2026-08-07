@@ -14,7 +14,7 @@ struct IBLRebuildLifecycleTests {
         environment.celestial.defaultTimeOfDay += 0.000001
         let timeChanged = EnvironmentRenderStateBuilder.build(environment: environment, runtime: nil).iblSignature
         #expect(timeChanged != base)
-        #expect(EnvironmentIBLSignature.currentVersion == 10)
+        #expect(EnvironmentIBLSignature.currentVersion == 11)
     }
 
     @Test
