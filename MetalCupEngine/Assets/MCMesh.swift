@@ -1186,6 +1186,136 @@ class CubeMesh: MCMesh {
     }
 }
 
+/// Unit UV sphere used by deterministic material-reference scenes. The geometry
+/// is generated at runtime so validation projects remain portable and texture-free.
+class SphereMesh: MCMesh {
+    override func createMesh() {
+        let latitudeSegments = 24
+        let longitudeSegments = 48
+        for latitude in 0..<latitudeSegments {
+            let v0 = Float(latitude) / Float(latitudeSegments)
+            let v1 = Float(latitude + 1) / Float(latitudeSegments)
+            for longitude in 0..<longitudeSegments {
+                let u0 = Float(longitude) / Float(longitudeSegments)
+                let u1 = Float(longitude + 1) / Float(longitudeSegments)
+                let p00 = Self.referenceVertex(u: u0, v: v0)
+                let p01 = Self.referenceVertex(u: u1, v: v0)
+                let p10 = Self.referenceVertex(u: u0, v: v1)
+                let p11 = Self.referenceVertex(u: u1, v: v1)
+                emit(p00)
+                emit(p01)
+                emit(p11)
+                emit(p00)
+                emit(p11)
+                emit(p10)
+            }
+        }
+    }
+
+    static func referenceVertex(u: Float, v: Float) -> SurfaceVertex {
+        let theta = v * Float.pi
+        let phi = u * 2 * Float.pi
+        let sinTheta = sin(theta)
+        let position = SIMD3<Float>(sinTheta * cos(phi), cos(theta), sinTheta * sin(phi))
+        let tangent = SIMD3<Float>(-sin(phi), 0, cos(phi))
+        return SurfaceVertex(position: position,
+                             normal: simd_normalize(position),
+                             tangent: SIMD4<Float>(tangent, 1),
+                             texCoord: SIMD2<Float>(u, v))
+    }
+
+    private func emit(_ vertex: SurfaceVertex) {
+        addVertex(position: vertex.position,
+                  color: SIMD4<Float>(repeating: 1),
+                  texCoord: vertex.texCoord,
+                  normal: vertex.normal,
+                  tangent: vertex.tangent)
+    }
+}
+
+/// Unit rounded box used beside spheres to expose normal continuity and broad
+/// environment reflections without relying on authored mesh files.
+class RoundedCubeMesh: MCMesh {
+    private static let subdivisionCount = 10
+    private static let cornerRadius: Float = 0.18
+
+    override func createMesh() {
+        let faces: [(normal: SIMD3<Float>, u: SIMD3<Float>, v: SIMD3<Float>)] = [
+            (SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 0, -1), SIMD3<Float>(0, 1, 0)),
+            (SIMD3<Float>(-1, 0, 0), SIMD3<Float>(0, 0, 1), SIMD3<Float>(0, 1, 0)),
+            (SIMD3<Float>(0, 1, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 0, -1)),
+            (SIMD3<Float>(0, -1, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 0, 1)),
+            (SIMD3<Float>(0, 0, 1), SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0)),
+            (SIMD3<Float>(0, 0, -1), SIMD3<Float>(-1, 0, 0), SIMD3<Float>(0, 1, 0))
+        ]
+        for face in faces {
+            emitFace(normal: face.normal, uAxis: face.u, vAxis: face.v)
+        }
+    }
+
+    private func emitFace(normal faceNormal: SIMD3<Float>,
+                          uAxis: SIMD3<Float>,
+                          vAxis: SIMD3<Float>) {
+        for vIndex in 0..<Self.subdivisionCount {
+            let v0 = -1 + 2 * Float(vIndex) / Float(Self.subdivisionCount)
+            let v1 = -1 + 2 * Float(vIndex + 1) / Float(Self.subdivisionCount)
+            for uIndex in 0..<Self.subdivisionCount {
+                let u0 = -1 + 2 * Float(uIndex) / Float(Self.subdivisionCount)
+                let u1 = -1 + 2 * Float(uIndex + 1) / Float(Self.subdivisionCount)
+                let p00 = Self.referenceVertex(faceNormal: faceNormal, uAxis: uAxis, vAxis: vAxis, u: u0, v: v0)
+                let p10 = Self.referenceVertex(faceNormal: faceNormal, uAxis: uAxis, vAxis: vAxis, u: u1, v: v0)
+                let p11 = Self.referenceVertex(faceNormal: faceNormal, uAxis: uAxis, vAxis: vAxis, u: u1, v: v1)
+                let p01 = Self.referenceVertex(faceNormal: faceNormal, uAxis: uAxis, vAxis: vAxis, u: u0, v: v1)
+                emit(p00)
+                emit(p10)
+                emit(p11)
+                emit(p00)
+                emit(p11)
+                emit(p01)
+            }
+        }
+    }
+
+    static func referenceVertex(faceNormal: SIMD3<Float>,
+                                uAxis: SIMD3<Float>,
+                                vAxis: SIMD3<Float>,
+                                u: Float,
+                                v: Float) -> SurfaceVertex {
+        let cubePoint = faceNormal + uAxis * u + vAxis * v
+        let innerExtent = 1 - cornerRadius
+        let innerPoint = simd_clamp(cubePoint,
+                                    SIMD3<Float>(repeating: -innerExtent),
+                                    SIMD3<Float>(repeating: innerExtent))
+        let offset = cubePoint - innerPoint
+        let surfaceNormal = simd_normalize(offset)
+        let position = innerPoint + surfaceNormal * cornerRadius
+        let projectedTangent = uAxis - surfaceNormal * simd_dot(uAxis, surfaceNormal)
+        let tangent = simd_length_squared(projectedTangent) > 1e-8
+            ? simd_normalize(projectedTangent)
+            : simd_normalize(simd_cross(vAxis, surfaceNormal))
+        let handedness: Float = simd_dot(simd_cross(surfaceNormal, tangent), vAxis) >= 0 ? 1 : -1
+        return SurfaceVertex(position: position,
+                             normal: surfaceNormal,
+                             tangent: SIMD4<Float>(tangent, handedness),
+                             texCoord: SIMD2<Float>((u + 1) * 0.5, (v + 1) * 0.5))
+    }
+
+    private func emit(_ vertex: SurfaceVertex) {
+        addVertex(position: vertex.position,
+                  color: SIMD4<Float>(repeating: 1),
+                  texCoord: vertex.texCoord,
+                  normal: vertex.normal,
+                  tangent: vertex.tangent)
+    }
+}
+
+struct SurfaceVertex {
+    var position: SIMD3<Float>
+    var normal: SIMD3<Float>
+    var tangent: SIMD4<Float>
+    var texCoord: SIMD2<Float>
+}
+
 class FullscreenQuadMesh: MCMesh {
     override func createMesh() {
         addSimpleVertex(position: SIMD3<Float>(-1, -1, 0))

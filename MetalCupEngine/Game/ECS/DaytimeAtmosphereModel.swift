@@ -22,13 +22,15 @@ public enum DaytimeAtmosphereModel {
     public static let solarAngularRadiusDegrees: Float = 0.266
     public static let referenceTopSolarIlluminance: Float = 2.0
     public static let mieAnisotropy: Float = 0.8
-    public static let groundAlbedo: Float = 0.10
+    public static let groundAlbedo: Float = 0.08
 
-    /// Approximate linear-sRGB solar chromaticity at the top of the atmosphere.
-    public static let solarChroma = SIMD3<Float>(1.0, 0.97, 0.92)
-    /// Vertically integrated optical depths for an Earth-like clear atmosphere.
-    public static let rayleighOpticalDepth = SIMD3<Float>(0.055, 0.130, 0.320)
-    public static let ozoneOpticalDepth = SIMD3<Float>(0.010, 0.025, 0.006)
+    /// Scene-relative D65 daylight at the top of the atmosphere. Sunset color is
+    /// produced by atmospheric transmittance rather than an authored warm tint.
+    public static let solarChroma = SIMD3<Float>(repeating: 1)
+    /// Vertically integrated optical depths for the calibrated clear-day model.
+    /// Ratios are intentionally explicit because they own the daylight chroma.
+    public static let rayleighOpticalDepth = SIMD3<Float>(0.025, 0.075, 0.220)
+    public static let ozoneOpticalDepth = SIMD3<Float>(0.003, 0.008, 0.002)
 
     public struct Parameters: Equatable {
         public var sourceEV: Float
@@ -141,7 +143,7 @@ public enum DaytimeAtmosphereModel {
         let sunAirMass = opticalAirMass(elevationRadians: max(sunElevation, 0))
         let viewAirMass = opticalAirMass(elevationRadians: asin(max(view.y, 0.001)))
         let rayleighDepth = rayleighOpticalDepth * parameters.densityScale
-        let mieDepth = SIMD3<Float>(repeating: (0.025 + 0.055 * parameters.aerosolScale) * parameters.densityScale)
+        let mieDepth = SIMD3<Float>(repeating: (0.018 + 0.022 * parameters.aerosolScale) * parameters.densityScale)
         let ozoneDepth = ozoneOpticalDepth * parameters.ozoneScale
         let totalDepth = rayleighDepth + mieDepth + ozoneDepth
         let sunTransmittance = componentExp(-totalDepth * sunAirMass)
@@ -152,22 +154,33 @@ public enum DaytimeAtmosphereModel {
         let topIrradiance = topSolarIrradianceRGB() * sourceScale * twilight
         let incidentTint = componentSqrt(max(sunTransmittance, SIMD3<Float>(repeating: 0)))
         let rayleigh = topIrradiance * incidentTint * rayleighScatter
-            * (rayleighPhase(cosAngle) * 2.8)
+            * (rayleighPhase(cosAngle) * 3.2)
         let meanLoss = 1 - (viewTransmittance.x + viewTransmittance.y + viewTransmittance.z) / 3
-        let multiple = topIrradiance
+        let scatteringDepth = rayleighDepth + mieDepth
+        let scatteringAlbedo = scatteringDepth / max(totalDepth, SIMD3<Float>(repeating: 1e-5))
+        let scatteredSolar = (SIMD3<Float>(repeating: 1) - sunTransmittance) * scatteringAlbedo
+        let scatteredLuminance = max(rec709Luminance(scatteredSolar), 1e-5)
+        let multipleTint = scatteredSolar / scatteredLuminance
+        let multiple = topIrradiance * multipleTint
             * (0.045 + 0.115 * min(max(meanLoss, 0), 1))
-            * parameters.multipleScatteringStrength
+            * parameters.multipleScatteringStrength * 1.2
         let horizon = 1 - min(max(view.y, 0), 1)
-        let groundBounce = topIrradiance
+        let groundBounce = topIrradiance * sunTransmittance
             * parameters.groundAlbedo
+            * max(sun.y, 0)
             * (0.025 + 0.075 * horizon)
-        var atmosphere = max(rayleigh + multiple + groundBounce, SIMD3<Float>(repeating: 0))
-        if view.y < 0 {
-            atmosphere *= 0.22 + 0.18 * min(max(-view.y, 0), 1)
-        }
+        let upperAtmosphere = max(rayleigh + multiple + groundBounce, SIMD3<Float>(repeating: 0))
+        let lowerGround = max(
+            topIrradiance * sunTransmittance * max(sun.y, 0)
+                * (parameters.groundAlbedo / .pi)
+                + multiple * parameters.groundAlbedo * 0.5,
+            SIMD3<Float>(repeating: 0)
+        )
+        let upperBlend = smoothstep(-0.02, 0.02, view.y)
+        let atmosphere = lowerGround + (upperAtmosphere - lowerGround) * upperBlend
 
         let aureole = max(topIrradiance * incidentTint * mieScatter
-            * (miePhase(cosAngle, anisotropy: mieAnisotropy) * 0.42),
+            * (miePhase(cosAngle, anisotropy: mieAnisotropy) * 0.45),
             SIMD3<Float>(repeating: 0))
 
         let sunAngle = acos(cosAngle)
@@ -189,7 +202,7 @@ public enum DaytimeAtmosphereModel {
 
     private static func totalOpticalDepth(parameters: Parameters) -> SIMD3<Float> {
         rayleighOpticalDepth * parameters.densityScale
-            + SIMD3<Float>(repeating: (0.025 + 0.055 * parameters.aerosolScale) * parameters.densityScale)
+            + SIMD3<Float>(repeating: (0.018 + 0.022 * parameters.aerosolScale) * parameters.densityScale)
             + ozoneOpticalDepth * parameters.ozoneScale
     }
 

@@ -62,11 +62,26 @@ Rayleigh/Henyey-Greenstein phase functions, explicit RGB optical depths, ozone,
 ground albedo, and a documented multiple-scattering approximation. These values
 are physically motivated, but the RGB energy normalization remains scene-relative.
 
+The Phase 4B clear-day calibration uses neutral D65 top-of-atmosphere source RGB,
+explicit Rayleigh optical-depth ratios `(0.025, 0.075, 0.220)`, neutral aerosol
+extinction, and ozone optical depths `(0.003, 0.008, 0.002)`. Multiple scattering
+inherits chromaticity from spectrally scattered solar energy rather than adding a
+neutral or authored warm term. The neutral ground albedo is `0.08`; upper-sky
+ground bounce uses transmitted sunlight, and the lower hemisphere is a bounded
+Lambertian ground response rather than a scaled copy of horizon radiance. A narrow
+direction-space blend from `y = -0.02` through `y = +0.02` keeps the mathematical
+horizon finite and continuous. Camera fog and aerial perspective remain responsible
+for the final visual horizon treatment in Phase 5.
+
 At source EV 0, the unattenuated solar disk has projected Rec.709 illuminance
 `2`. The disk radius is `0.266 degrees`, and its projected solid angle is
 `pi * sin(radius)^2`. This normalization gives an order-one direct response while
 keeping the disk finite in `RGBA16Float` through source EV +1. `sourceEV` scales
 the complete daytime source once by `2^sourceEV`; it is distinct from camera EV.
+The normalization remains `2` after Phase 4B: raising it to `2.2` would leave less
+than one percent of half-float disk headroom at source EV +1, while camera EV +1
+already provides the appropriate photographic output exposure without changing
+sky, Sun, or IBL energy.
 
 The visible sky is atmosphere body + scattered aureole + unscattered disk. The
 procedural IBL capture is atmosphere body + aureole only. The generated analytic

@@ -57,9 +57,9 @@ static inline float3 hosek_wilkie_sky(float3 dir, float3 sunDir, float turbidity
 // Phase 4 scene-relative daytime atmosphere. Constants match
 // DaytimeAtmosphereModel.swift. These are physically motivated Earth-like
 // optical depths and normalized phase functions, not a spectral/lux claim.
-static constant float3 kDaytimeSolarChroma = float3(1.0, 0.97, 0.92);
-static constant float3 kDaytimeRayleighOpticalDepth = float3(0.055, 0.130, 0.320);
-static constant float3 kDaytimeOzoneOpticalDepth = float3(0.010, 0.025, 0.006);
+static constant float3 kDaytimeSolarChroma = float3(1.0);
+static constant float3 kDaytimeRayleighOpticalDepth = float3(0.025, 0.075, 0.220);
+static constant float3 kDaytimeOzoneOpticalDepth = float3(0.003, 0.008, 0.002);
 
 static inline float rayleighPhase(float cosTheta) {
     return (3.0 / (16.0 * M_PI_F)) * (1.0 + cosTheta * cosTheta);
@@ -91,7 +91,7 @@ static inline float3 daytimeTotalOpticalDepth(constant SkyParams &params) {
     float density = max(params.atmosphereScatteringParams.x, 0.05);
     float aerosol = max(params.atmosphereScatteringParams.y, 0.0);
     float ozone = max(params.atmosphereScatteringParams.w, 0.0);
-    float3 mieDepth = float3((0.025 + 0.055 * aerosol) * density);
+    float3 mieDepth = float3((0.018 + 0.022 * aerosol) * density);
     return kDaytimeRayleighOpticalDepth * density + mieDepth + kDaytimeOzoneOpticalDepth * ozone;
 }
 
@@ -109,7 +109,7 @@ static inline float3 evaluateAnalyticSkyBody(float3 dir,
     float sunAirMass = daytimeOpticalAirMass(max(sunElevation, 0.0));
     float viewAirMass = daytimeOpticalAirMass(asin(max(dir.y, 0.001)));
     float3 rayleighDepth = kDaytimeRayleighOpticalDepth * density;
-    float3 mieDepth = float3((0.025 + 0.055 * max(params.atmosphereScatteringParams.y, 0.0)) * density);
+    float3 mieDepth = float3((0.018 + 0.022 * max(params.atmosphereScatteringParams.y, 0.0)) * density);
     float3 totalDepth = rayleighDepth + mieDepth + kDaytimeOzoneOpticalDepth * ozone;
     float3 sunTransmittance = exp(-totalDepth * sunAirMass);
     float3 viewTransmittance = exp(-totalDepth * viewAirMass);
@@ -117,17 +117,24 @@ static inline float3 evaluateAnalyticSkyBody(float3 dir,
     float cosAngle = clamp(dot(dir, sunDir), -1.0, 1.0);
     float3 topIrradiance = daytimeTopSolarIrradiance(params) * daytimeIlluminationGate(sunElevation);
     float3 rayleigh = topIrradiance * sqrt(max(sunTransmittance, float3(0.0)))
-        * rayleighScatter * (rayleighPhase(cosAngle) * 2.8);
+        * rayleighScatter * (rayleighPhase(cosAngle) * 3.2);
     float meanLoss = 1.0 - dot(viewTransmittance, float3(1.0 / 3.0));
     float multipleStrength = max(params.atmosphereOpticalParams.y, 0.0);
-    float3 multiple = topIrradiance * (0.045 + 0.115 * saturate1(meanLoss)) * multipleStrength;
+    float3 scatteringDepth = rayleighDepth + mieDepth;
+    float3 scatteringAlbedo = scatteringDepth / max(totalDepth, float3(1e-5));
+    float3 scatteredSolar = (1.0 - sunTransmittance) * scatteringAlbedo;
+    float3 multipleTint = scatteredSolar / max(sky_luminance(scatteredSolar), 1e-5);
+    float3 multiple = topIrradiance * multipleTint
+        * (0.045 + 0.115 * saturate1(meanLoss)) * multipleStrength * 1.2;
     float horizon = 1.0 - saturate1(dir.y);
     float groundAlbedo = saturate1(params.atmosphereOpticalParams.z);
-    float3 groundBounce = topIrradiance * groundAlbedo * (0.025 + 0.075 * horizon);
-    float3 sky = max(rayleigh + multiple + groundBounce, float3(0.0));
-    if (dir.y < 0.0) {
-        sky *= 0.22 + 0.18 * saturate1(-dir.y);
-    }
+    float3 groundBounce = topIrradiance * sunTransmittance * groundAlbedo
+        * max(sunDir.y, 0.0) * (0.025 + 0.075 * horizon);
+    float3 upperSky = max(rayleigh + multiple + groundBounce, float3(0.0));
+    float3 lowerGround = max(topIrradiance * sunTransmittance * max(sunDir.y, 0.0)
+        * (groundAlbedo / M_PI_F) + multiple * groundAlbedo * 0.5, float3(0.0));
+    float upperBlend = skySmoothstep(-0.02, 0.02, dir.y);
+    float3 sky = mix(lowerGround, upperSky, upperBlend);
     resolvedHazeColor = max(multiple + groundBounce, float3(0.0));
     return sky;
 }
@@ -149,12 +156,12 @@ static inline float3 evaluateSolarAureole(float3 dir, float sunCos, float sunAng
     float sunElevation = asin(clamp(params.sunDirection.y, -1.0, 1.0));
     float sunAirMass = daytimeOpticalAirMass(max(sunElevation, 0.0));
     float viewAirMass = daytimeOpticalAirMass(asin(max(dir.y, 0.001)));
-    float3 mieDepth = float3((0.025 + 0.055 * aerosol) * density);
+    float3 mieDepth = float3((0.018 + 0.022 * aerosol) * density);
     float3 mieScatter = 1.0 - exp(-mieDepth * viewAirMass);
     float3 incidentTint = sqrt(max(exp(-daytimeTotalOpticalDepth(params) * sunAirMass), float3(0.0)));
     float phase = miePhaseHG(sunCos, clamp(params.atmosphereScatteringParams.z, 0.0, 0.95));
     return daytimeTopSolarIrradiance(params) * incidentTint * mieScatter
-        * (phase * 0.42) * daytimeIlluminationGate(sunElevation);
+        * (phase * 0.45) * daytimeIlluminationGate(sunElevation);
 }
 
 static inline float3 evaluateSolarForwardScatter(float sunCos, constant SkyParams &params) {

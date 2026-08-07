@@ -14,6 +14,8 @@ public enum BuiltinAssets {
     public static let fullscreenQuadMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000005")
     public static let planeMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000006")
     public static let editorPlaneMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000007")
+    public static let sphereMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000008")
+    public static let roundedCubeMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000009")
 
     // Renderer targets
     public static let baseColorRender = AssetHandle(string: "00000000-0000-0000-0000-000000000101")
@@ -61,6 +63,8 @@ public enum BuiltinAssets {
         assetManager.registerRuntimeMesh(handle: fullscreenQuadMesh, mesh: FullscreenQuadMesh(device: device, graphics: graphics, assetManager: assetManager))
         assetManager.registerRuntimeMesh(handle: planeMesh, mesh: PlaneMesh(device: device, graphics: graphics, assetManager: assetManager))
         assetManager.registerRuntimeMesh(handle: editorPlaneMesh, mesh: EditorPlaneMesh(device: device, graphics: graphics, assetManager: assetManager))
+        assetManager.registerRuntimeMesh(handle: sphereMesh, mesh: SphereMesh(device: device, graphics: graphics, assetManager: assetManager))
+        assetManager.registerRuntimeMesh(handle: roundedCubeMesh, mesh: RoundedCubeMesh(device: device, graphics: graphics, assetManager: assetManager))
     }
 
     public static func registerIBLTextures(assetManager: AssetManager, preferences: Preferences, device: MTLDevice, environmentSize: Int, irradianceSize: Int, prefilteredSize: Int, brdfLutSize: Int) {

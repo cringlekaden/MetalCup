@@ -341,12 +341,57 @@ struct SkySunPBRIntegrationTests {
     }
 }
 
-@Suite("Phase 4B daylight chromaticity characterization")
+@Suite("Built-in neutral material reference geometry")
+struct BuiltinMaterialReferenceGeometryTests {
+    @Test
+    func sphereNormalsAndTangentsAreFiniteOrthonormal() {
+        for v: Float in [0, 0.125, 0.25, 0.5, 0.75, 0.875, 1] {
+            for u: Float in [0, 0.125, 0.25, 0.5, 0.75, 1] {
+                let vertex = SphereMesh.referenceVertex(u: u, v: v)
+                #expect(abs(simd_length(vertex.normal) - 1) < 0.00001)
+                #expect(abs(simd_length(vertex.tangent.xyz) - 1) < 0.00001)
+                #expect(abs(simd_dot(vertex.normal, vertex.tangent.xyz)) < 0.00001)
+                #expect(vertex.position.x.isFinite && vertex.position.y.isFinite && vertex.position.z.isFinite)
+            }
+        }
+        #expect(BuiltinAssets.sphereMesh != BuiltinAssets.cubeMesh)
+    }
+
+    @Test
+    func roundedBoxNormalsAndTangentsRemainFiniteAcrossFacesAndCorners() {
+        let faces: [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] = [
+            (SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 0, -1), SIMD3<Float>(0, 1, 0)),
+            (SIMD3<Float>(-1, 0, 0), SIMD3<Float>(0, 0, 1), SIMD3<Float>(0, 1, 0)),
+            (SIMD3<Float>(0, 1, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 0, -1)),
+            (SIMD3<Float>(0, -1, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 0, 1)),
+            (SIMD3<Float>(0, 0, 1), SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0)),
+            (SIMD3<Float>(0, 0, -1), SIMD3<Float>(-1, 0, 0), SIMD3<Float>(0, 1, 0))
+        ]
+        for (normal, uAxis, vAxis) in faces {
+            for u: Float in [-1, -0.82, 0, 0.82, 1] {
+                for v: Float in [-1, -0.82, 0, 0.82, 1] {
+                    let vertex = RoundedCubeMesh.referenceVertex(
+                        faceNormal: normal, uAxis: uAxis, vAxis: vAxis, u: u, v: v
+                    )
+                    #expect(abs(simd_length(vertex.normal) - 1) < 0.00001)
+                    #expect(abs(simd_length(vertex.tangent.xyz) - 1) < 0.00001)
+                    #expect(abs(simd_dot(vertex.normal, vertex.tangent.xyz)) < 0.00001)
+                    #expect(abs(vertex.tangent.w) == 1)
+                    #expect(vertex.position.x.isFinite && vertex.position.y.isFinite && vertex.position.z.isFinite)
+                }
+            }
+        }
+        #expect(BuiltinAssets.roundedCubeMesh != BuiltinAssets.cubeMesh)
+        #expect(BuiltinAssets.roundedCubeMesh != BuiltinAssets.sphereMesh)
+    }
+}
+
+@Suite("Phase 4B daylight chromaticity and neutral-reference calibration")
 struct Phase4BDaylightChromaticityTests {
     private let elevations: [Float] = [60, 30, 10, 5, 0]
 
     @Test
-    func recordsProductionRGBBeforeCalibration() {
+    func calibratedProductionRGBRemainsFiniteAndDocumented() {
         for elevation in elevations {
             let sun = direction(elevationDegrees: elevation)
             let parameters = DaytimeAtmosphereModel.Parameters(sourceEV: 0)
@@ -380,7 +425,7 @@ struct Phase4BDaylightChromaticityTests {
                 / max(luminance(horizontalTotal), 0.000001)
 
             print(
-                "PHASE4B_BEFORE elevation=\(elevation) "
+                "PHASE4B_AFTER elevation=\(elevation) "
                     + "zenith=\(zenith) zenithXY=\(chromaticityXY(zenith)) "
                     + "horizonSun=\(horizonToward) horizonOpposite=\(horizonOpposite) "
                     + "rightAngle=\(rightAngle) upperAverage=\(integration.upperAverage) "
@@ -398,16 +443,182 @@ struct Phase4BDaylightChromaticityTests {
             }
         }
 
-        // Characterize the reported defect before production calibration: the
-        // pre-tonemap opposite sky is already warm/brown at low elevation, so
-        // the fixed Filmic output transform is not its origin.
+        // Golden-hour direct light is warm while the opposite upper sky retains
+        // cooler separation. This detects a return to the old uniform brown cast.
         let lowSun = direction(elevationDegrees: 10)
         let opposite = DaytimeAtmosphereModel.sample(
             direction: SIMD3<Float>(-1, 0.001, 0),
             sunDirection: lowSun,
             parameters: .init(sourceEV: 0)
         ).capture
-        #expect(opposite.z / max(opposite.x, 0.000001) < 0.9)
+        let direct = DaytimeAtmosphereModel.solarIrradiance(
+            sunDirection: lowSun, parameters: .init(sourceEV: 0)
+        ).rgb
+        #expect(opposite.z / max(opposite.x, 0.000001) > 1.3)
+        #expect(direct.x / max(direct.z, 0.000001) > 2.5)
+    }
+
+    @Test
+    func highSunZenithIsBlueAndDirectDaylightIsBroadlyNeutral() {
+        let sun = direction(elevationDegrees: 60)
+        let parameters = DaytimeAtmosphereModel.Parameters(sourceEV: 0)
+        let zenith = DaytimeAtmosphereModel.sample(
+            direction: SIMD3<Float>(0, 1, 0), sunDirection: sun, parameters: parameters
+        ).capture
+        let solar = DaytimeAtmosphereModel.solarIrradiance(
+            sunDirection: sun, parameters: parameters
+        ).rgb
+        #expect(zenith.z / zenith.x > 3)
+        #expect(zenith.y / zenith.x > 1.5)
+        #expect(solar.x / solar.z < 1.3)
+        #expect(solar.y / solar.z < 1.2)
+    }
+
+    @Test
+    func lowerHemisphereIsBoundedAndDoesNotDominateHorizontalIrradiance() {
+        for elevation in elevations {
+            let integration = integrateEnvironment(
+                sunDirection: direction(elevationDegrees: elevation),
+                parameters: .init(sourceEV: 0)
+            )
+            let total = integration.horizontalUpper + integration.horizontalLower
+            let lowerFraction = luminance(integration.horizontalLower) / max(luminance(total), 0.000001)
+            #expect(lowerFraction >= 0)
+            #expect(lowerFraction < 0.25)
+        }
+    }
+
+    @Test
+    func neutralGroundAlbedoInfluenceIsMonotonicAndEnergyBounded() {
+        let sun = direction(elevationDegrees: 60)
+        let lowerDirection = SIMD3<Float>(0, -1, 0)
+        let black = DaytimeAtmosphereModel.sample(
+            direction: lowerDirection, sunDirection: sun, parameters: .init(groundAlbedo: 0)
+        ).atmosphere
+        let calibrated = DaytimeAtmosphereModel.sample(
+            direction: lowerDirection, sunDirection: sun,
+            parameters: .init(groundAlbedo: DaytimeAtmosphereModel.groundAlbedo)
+        ).atmosphere
+        let bright = DaytimeAtmosphereModel.sample(
+            direction: lowerDirection, sunDirection: sun, parameters: .init(groundAlbedo: 0.4)
+        ).atmosphere
+        #expect(simd_reduce_max(black) < 0.000001)
+        #expect(simd_reduce_min(calibrated - black) >= 0)
+        #expect(simd_reduce_min(bright - calibrated) >= 0)
+        #expect(luminance(calibrated) < luminance(
+            DaytimeAtmosphereModel.sample(
+                direction: SIMD3<Float>(0, 1, 0), sunDirection: sun,
+                parameters: .init(groundAlbedo: DaytimeAtmosphereModel.groundAlbedo)
+            ).capture
+        ))
+    }
+
+    @Test
+    func currentNormalizationRetainsPracticalHalfFloatHeadroomAtSourceEVPlusOne() {
+        let radius = DaytimeAtmosphereModel.solarAngularRadiusDegrees * Float.pi / 180
+        let currentPeak = simd_reduce_max(
+            DaytimeAtmosphereModel.topSolarDiskRadianceRGB(radiusRadians: radius)
+                * DaytimeAtmosphereModel.sourceScale(sourceEV: 1)
+        )
+        let candidatePeak = currentPeak * 1.1
+        #expect(currentPeak < 60_000)
+        #expect(65_504 - currentPeak > 5_000)
+        #expect(65_504 - candidatePeak < 1_000)
+    }
+
+    @Test
+    func productionMetalMatchesCalibratedDaylightColor() throws {
+        let support = Phase4LegacyCharacterization()
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let library = try Phase3MetalTestSupport.library(device: device)
+        let pipeline = try device.makeComputePipelineState(function: #require(
+            library.makeFunction(name: "phase4_procedural_sky_component_samples")
+        ))
+        for elevation: Float in [60, 10] {
+            var params = SkySystem.shaderParams(
+                authored: support.makeSky(elevationDegrees: elevation), runtime: nil
+            )
+            let directions = support.sampleDirections(params: params)
+            let gpu = try support.sample(
+                device: device, pipeline: pipeline, params: &params, directions: directions
+            )
+            let zenith = gpu.capture[0].xyz
+            #expect(zenith.z > zenith.y)
+            #expect(zenith.y > zenith.x)
+            if elevation == 10 {
+                let opposite = gpu.capture[3].xyz
+                #expect(opposite.z / max(opposite.x, 0.000001) > 1.3)
+            }
+        }
+    }
+
+    @Test
+    func neutralMaterialReferencesUseProductionIBLAndPBRPaths() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let library = try Phase3MetalTestSupport.library(device: device)
+        let sun = direction(elevationDegrees: 60)
+        let parameters = DaytimeAtmosphereModel.Parameters(sourceEV: 0)
+        let source = try Phase3MetalTestSupport.makeCube(
+            device: device, size: 64, mipmapped: true, label: "Phase4B.DaylightSource"
+        )
+        try fillProceduralCapture(source, sunDirection: sun, parameters: parameters)
+        let irradiance = try Phase3MetalTestSupport.renderIrradiance(
+            device: device, library: library, source: source, size: 16, sampleCount: 2048
+        )
+        let prefiltered = try Phase3MetalTestSupport.renderPrefilter(
+            device: device, library: library, source: source, size: 32, sampleCount: 1024
+        )
+        let upwardIrradiance = try Phase3MetalTestSupport.sampleCube(
+            device: device, library: library, texture: irradiance,
+            directionsAndMip: [SIMD4<Float>(0, 1, 0, 0)]
+        )[0].xyz
+        let roughnesses: [Float] = [0.06, 0.8]
+        let maxMip = Float(prefiltered.mipmapLevelCount - 1)
+        let prefilteredSamples = try Phase3MetalTestSupport.sampleCube(
+            device: device, library: library, texture: prefiltered,
+            directionsAndMip: roughnesses.map { SIMD4<Float>(0, 1, 0, $0 * maxMip) }
+        ).map(\.xyz)
+        let brdfSamples: [SIMD2<Float>] = try Phase3MetalTestSupport.compute(
+            device: device,
+            library: library,
+            functionName: "phase3_brdf_lut_reference_samples",
+            inputs: roughnesses.map { SIMD2<Float>(1, $0) },
+            outputType: SIMD2<Float>.self
+        )
+        let solar = DaytimeAtmosphereModel.solarIrradiance(
+            sunDirection: sun, parameters: parameters
+        ).rgb
+
+        let references: [(String, SIMD3<Float>, Float, Float, Int)] = [
+            ("smoothDielectric", SIMD3<Float>(repeating: 0.8), 0, 0.06, 0),
+            ("smoothNeutralMetal", SIMD3<Float>(repeating: 0.92), 1, 0.06, 0),
+            ("roughNeutralMetal", SIMD3<Float>(repeating: 0.92), 1, 0.8, 1)
+        ]
+        for (name, baseColor, metallic, roughness, sampleIndex) in references {
+            let response = materialResponse(
+                baseColor: baseColor,
+                metallic: metallic,
+                roughness: roughness,
+                sunDirection: sun,
+                solarIrradiance: solar,
+                skyIrradiance: upwardIrradiance,
+                prefilteredRadiance: prefilteredSamples[sampleIndex],
+                brdf: brdfSamples[sampleIndex]
+            )
+            let final = SceneLinearHDRContract.finalSDROutput(
+                sceneLinear: response.combined, exposureEV: 0
+            )
+            print("PHASE4B_MATERIAL name=\(name) direct=\(response.direct) "
+                + "ibl=\(response.ibl) combined=\(response.combined) final=\(final)")
+            #expect(simd_distance(response.combined, response.direct + response.ibl) < 0.000001)
+            for value in [response.direct, response.ibl, response.combined, final] {
+                #expect(value.x.isFinite && value.y.isFinite && value.z.isFinite)
+                #expect(simd_reduce_min(value) >= 0)
+            }
+            if metallic == 1 {
+                #expect(simd_reduce_min(response.ibl) > 0)
+            }
+        }
     }
 
     @Test
@@ -465,6 +676,101 @@ struct Phase4BDaylightChromaticityTests {
         )
     }
 
+    private func fillProceduralCapture(
+        _ texture: MTLTexture,
+        sunDirection: SIMD3<Float>,
+        parameters: DaytimeAtmosphereModel.Parameters
+    ) throws {
+        let size = texture.width
+        for faceIndex in 0..<6 {
+            let face = try #require(CubemapConvention.Face(rawValue: faceIndex))
+            var pixels = [SIMD4<Float16>]()
+            pixels.reserveCapacity(size * size)
+            for y in 0..<size {
+                for x in 0..<size {
+                    let uv = SIMD2<Float>(
+                        (Float(x) + 0.5) / Float(size),
+                        (Float(y) + 0.5) / Float(size)
+                    )
+                    let worldDirection = CubemapConvention.direction(face: face, uv: uv)
+                    let radiance = DaytimeAtmosphereModel.sample(
+                        direction: worldDirection,
+                        sunDirection: sunDirection,
+                        parameters: parameters
+                    ).capture
+                    pixels.append(SIMD4<Float16>(
+                        Float16(radiance.x), Float16(radiance.y), Float16(radiance.z), 1
+                    ))
+                }
+            }
+            pixels.withUnsafeBytes { bytes in
+                texture.replace(
+                    region: MTLRegionMake2D(0, 0, size, size),
+                    mipmapLevel: 0,
+                    slice: faceIndex,
+                    withBytes: bytes.baseAddress!,
+                    bytesPerRow: size * MemoryLayout<SIMD4<Float16>>.stride,
+                    bytesPerImage: bytes.count
+                )
+            }
+        }
+        try Phase3MetalTestSupport.generateMipmaps(texture)
+    }
+
+    private func materialResponse(
+        baseColor: SIMD3<Float>,
+        metallic: Float,
+        roughness: Float,
+        sunDirection: SIMD3<Float>,
+        solarIrradiance: SIMD3<Float>,
+        skyIrradiance: SIMD3<Float>,
+        prefilteredRadiance: SIMD3<Float>,
+        brdf: SIMD2<Float>
+    ) -> Phase4BMaterialResponse {
+        let normal = SIMD3<Float>(0, 1, 0)
+        let view = normal
+        let light = simd_normalize(sunDirection)
+        let half = simd_normalize(view + light)
+        let nDotL = max(simd_dot(normal, light), 0)
+        let nDotV = max(simd_dot(normal, view), 0)
+        let nDotH = max(simd_dot(normal, half), 0)
+        let hDotV = max(simd_dot(half, view), 0)
+        let f0 = DirectPBRReferenceMath.f0(baseColor: baseColor, metallic: metallic)
+        let fresnel = DirectPBRReferenceMath.fresnelSchlick(cosine: hDotV, f0: f0)
+        let diffuse = baseColor / Float.pi
+            * (SIMD3<Float>(repeating: 1) - fresnel)
+            * (1 - metallic)
+        let specular = DirectPBRReferenceMath.directSpecular(
+            normalDotView: nDotV,
+            normalDotLight: nDotL,
+            normalDotHalf: nDotH,
+            halfDotView: hDotV,
+            perceptualRoughness: roughness,
+            f0: f0
+        )
+        let direct = (diffuse + specular) * solarIrradiance * nDotL
+
+        let diffuseIBL = skyIrradiance * (baseColor / Float.pi)
+        let kD = (SIMD3<Float>(repeating: 1) - f0) * (1 - metallic)
+        let singleScatter = f0 * brdf.x + SIMD3<Float>(repeating: brdf.y)
+        let energyDenominator = max(brdf.x + brdf.y, 0.001)
+        let rawCompensation = SIMD3<Float>(repeating: 1)
+            + f0 * (1 / energyDenominator - 1)
+        let compensation = simd_clamp(
+            rawCompensation,
+            SIMD3<Float>(repeating: 1),
+            SIMD3<Float>(repeating: 1.5)
+        )
+        let compensationWeight = roughness * roughness
+        let specularIBL = prefilteredRadiance * singleScatter
+            * simd_mix(
+                SIMD3<Float>(repeating: 1), compensation,
+                SIMD3<Float>(repeating: compensationWeight)
+            )
+        let ibl = kD * diffuseIBL + specularIBL
+        return Phase4BMaterialResponse(direct: direct, ibl: ibl, combined: direct + ibl)
+    }
+
     private func luminance(_ value: SIMD3<Float>) -> Float {
         simd_dot(value, SIMD3<Float>(0.2126, 0.7152, 0.0722))
     }
@@ -485,6 +791,12 @@ private struct Phase4BEnvironmentIntegration {
     var horizontalUpper: SIMD3<Float>
     var horizontalLower: SIMD3<Float>
     var upperAverage: SIMD3<Float>
+}
+
+private struct Phase4BMaterialResponse {
+    var direct: SIMD3<Float>
+    var ibl: SIMD3<Float>
+    var combined: SIMD3<Float>
 }
 
 private func direction(elevationDegrees: Float, azimuthDegrees: Float = 0) -> SIMD3<Float> {
