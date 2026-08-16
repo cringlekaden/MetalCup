@@ -229,6 +229,241 @@ struct FogDepthReconstructionGPUTests {
             #expect(results[index].x.isFinite && results[index].y.isFinite && results[index].z.isFinite)
         }
     }
+
+    @Test
+    func productionFogFragmentReconstructsGeometryAndClassifiesBackground() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let library = try Phase2MetalTestSupport.canonicalLibrary(device: device)
+        let cameraPosition = SIMD3<Float>(0, 2, 0)
+        let projection = matrix_float4x4.perspective(
+            fovDegrees: 60,
+            aspectRatio: 1,
+            near: 0.1,
+            far: 150
+        )
+        var view = matrix_identity_float4x4
+        view.columns.3.y = -cameraPosition.y
+        var constants = SceneConstants()
+        constants.viewMatrix = view
+        constants.inverseViewMatrix = simd_inverse(view)
+        constants.projectionMatrix = projection
+        constants.inverseProjectionMatrix = simd_inverse(projection)
+        constants.inverseViewProjectionMatrix = simd_inverse(projection * view)
+        constants.cameraPositionAndIBL = SIMD4<Float>(cameraPosition, 1)
+
+        var settings = RendererSettings()
+        settings.localFogParameters = LocalFogTransport.Parameters(
+            enabled: true,
+            extinction: 0.025,
+            scatteringAlbedo: SIMD3<Float>(repeating: 0.9),
+            baseHeight: 0,
+            scaleHeight: 12,
+            anisotropy: 0.2
+        )
+        settings.aerialFogSunDirectionAndNight = SIMD4<Float>(0, 1, 0, 0)
+        settings.aerialFogSunColorAndStrength = SIMD4<Float>(1.0, 0.9, 0.7, 0)
+
+        let source = SIMD3<Float>(0.8, 0.6, 0.4)
+        let ambient = SIMD3<Float>(repeating: 0.2)
+        let worldPosition = SIMD4<Float>(0, cameraPosition.y, -10, 1)
+        let clip = projection * view * worldPosition
+        let geometryDepth = clip.z / clip.w
+        let geometryOutput = try renderProductionFog(
+            device: device,
+            library: library,
+            rawDepth: geometryDepth,
+            source: source,
+            irradiance: ambient * .pi,
+            settings: settings,
+            sceneConstants: constants
+        )
+        let geometryReference = LocalFogTransport.evaluate(
+            cameraPosition: cameraPosition,
+            rayDirection: SIMD3<Float>(0, 0, -1),
+            distance: 10,
+            ambientRadiance: ambient,
+            solarIrradiance: SIMD3<Float>(1.0, 0.9, 0.7),
+            directionToSun: SIMD3<Float>(0, 1, 0),
+            parameters: settings.localFogParameters
+        )
+        let expectedGeometry = source * geometryReference.transmittance
+            + geometryReference.inscattering
+        #expect(simd_distance(geometryOutput.xyz, expectedGeometry) < 0.001)
+
+        let backgroundOutput = try renderProductionFog(
+            device: device,
+            library: library,
+            rawDepth: 1,
+            source: source,
+            irradiance: ambient * .pi,
+            settings: settings,
+            sceneConstants: constants
+        )
+        let backgroundReference = LocalFogTransport.evaluate(
+            cameraPosition: cameraPosition,
+            rayDirection: SIMD3<Float>(0, 0, -1),
+            distance: nil,
+            ambientRadiance: ambient,
+            solarIrradiance: SIMD3<Float>(1.0, 0.9, 0.7),
+            directionToSun: SIMD3<Float>(0, 1, 0),
+            parameters: settings.localFogParameters
+        )
+        let expectedBackground = source * backgroundReference.transmittance
+            + backgroundReference.inscattering
+        #expect(simd_distance(backgroundOutput.xyz, expectedBackground) < 0.001)
+
+        settings.setHeightFogEnabled(false)
+        let disabledOutput = try renderProductionFog(
+            device: device,
+            library: library,
+            rawDepth: geometryDepth,
+            source: source,
+            irradiance: ambient * .pi,
+            settings: settings,
+            sceneConstants: constants
+        )
+        #expect(simd_distance(disabledOutput.xyz, source) < 0.000001)
+    }
+
+    private func renderProductionFog(device: MTLDevice,
+                                     library: MTLLibrary,
+                                     rawDepth: Float,
+                                     source: SIMD3<Float>,
+                                     irradiance: SIMD3<Float>,
+                                     settings: RendererSettings,
+                                     sceneConstants: SceneConstants) throws -> SIMD4<Float> {
+        // A 1x1 target places the sole fragment exactly at UV (0.5, 0.5), so the
+        // expected camera-forward world-space ray has no pixel-center offset.
+        let size = 1
+        let colorDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba32Float,
+            width: size,
+            height: size,
+            mipmapped: false
+        )
+        colorDescriptor.storageMode = .shared
+        colorDescriptor.usage = [.shaderRead, .renderTarget]
+        let sourceTexture = try #require(device.makeTexture(descriptor: colorDescriptor))
+        let outputTexture = try #require(device.makeTexture(descriptor: colorDescriptor))
+        let sourcePixels = [SIMD4<Float>](
+            repeating: SIMD4<Float>(source, 1),
+            count: size * size
+        )
+        sourcePixels.withUnsafeBytes { bytes in
+            sourceTexture.replace(region: MTLRegionMake2D(0, 0, size, size),
+                                  mipmapLevel: 0,
+                                  withBytes: bytes.baseAddress!,
+                                  bytesPerRow: MemoryLayout<SIMD4<Float>>.stride * size)
+        }
+
+        let depthDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .depth32Float,
+            width: size,
+            height: size,
+            mipmapped: false
+        )
+        depthDescriptor.storageMode = .private
+        depthDescriptor.usage = [.renderTarget, .shaderRead]
+        let depthTexture = try #require(device.makeTexture(descriptor: depthDescriptor))
+
+        let irradianceDescriptor = MTLTextureDescriptor.textureCubeDescriptor(
+            pixelFormat: .rgba32Float,
+            size: 1,
+            mipmapped: false
+        )
+        irradianceDescriptor.storageMode = .shared
+        irradianceDescriptor.usage = .shaderRead
+        let irradianceTexture = try #require(device.makeTexture(descriptor: irradianceDescriptor))
+        var irradianceTexel = SIMD4<Float>(irradiance, 1)
+        for face in 0..<6 {
+            irradianceTexture.replace(region: MTLRegionMake2D(0, 0, 1, 1),
+                                      mipmapLevel: 0,
+                                      slice: face,
+                                      withBytes: &irradianceTexel,
+                                      bytesPerRow: MemoryLayout<SIMD4<Float>>.stride,
+                                      bytesPerImage: MemoryLayout<SIMD4<Float>>.stride)
+        }
+
+        let vertexDescriptor = MTLVertexDescriptor()
+        vertexDescriptor.attributes[0].format = .float3
+        vertexDescriptor.attributes[0].bufferIndex = 0
+        vertexDescriptor.layouts[0].stride = MemoryLayout<SimpleVertex>.stride
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.vertexFunction = try #require(library.makeFunction(name: "vertex_final"))
+        pipelineDescriptor.fragmentFunction = try #require(library.makeFunction(name: "fragment_height_fog"))
+        pipelineDescriptor.vertexDescriptor = vertexDescriptor
+        pipelineDescriptor.colorAttachments[0].pixelFormat = .rgba32Float
+        let pipeline = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+
+        let samplerDescriptor = MTLSamplerDescriptor()
+        samplerDescriptor.minFilter = .linear
+        samplerDescriptor.magFilter = .linear
+        samplerDescriptor.sAddressMode = .clampToEdge
+        samplerDescriptor.tAddressMode = .clampToEdge
+        samplerDescriptor.rAddressMode = .clampToEdge
+        let sampler = try #require(device.makeSamplerState(descriptor: samplerDescriptor))
+        let vertices = [
+            SimpleVertex(position: SIMD3<Float>(-1, -1, 0)),
+            SimpleVertex(position: SIMD3<Float>( 1, -1, 0)),
+            SimpleVertex(position: SIMD3<Float>(-1,  1, 0)),
+            SimpleVertex(position: SIMD3<Float>(-1,  1, 0)),
+            SimpleVertex(position: SIMD3<Float>( 1, -1, 0)),
+            SimpleVertex(position: SIMD3<Float>( 1,  1, 0))
+        ]
+
+        let queue = try #require(device.makeCommandQueue())
+        let commandBuffer = try #require(queue.makeCommandBuffer())
+        let depthPass = MTLRenderPassDescriptor()
+        depthPass.depthAttachment.texture = depthTexture
+        depthPass.depthAttachment.loadAction = .clear
+        depthPass.depthAttachment.storeAction = .store
+        depthPass.depthAttachment.clearDepth = Double(rawDepth)
+        let depthEncoder = try #require(commandBuffer.makeRenderCommandEncoder(descriptor: depthPass))
+        depthEncoder.endEncoding()
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = outputTexture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+        let encoder = try #require(commandBuffer.makeRenderCommandEncoder(descriptor: pass))
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setViewport(MTLViewport(originX: 0, originY: 0,
+                                        width: Double(size), height: Double(size),
+                                        znear: 0, zfar: 1))
+        encoder.setVertexBytes(vertices,
+                               length: MemoryLayout<SimpleVertex>.stride * vertices.count,
+                               index: VertexBufferIndex.vertices)
+        var mutableSettings = settings
+        var mutableConstants = sceneConstants
+        encoder.setFragmentBytes(&mutableSettings,
+                                 length: RendererSettings.stride,
+                                 index: FragmentBufferIndex.rendererSettings)
+        encoder.setFragmentBytes(&mutableConstants,
+                                 length: SceneConstants.stride,
+                                 index: FragmentBufferIndex.postProcessSceneConstants)
+        encoder.setFragmentTexture(sourceTexture, index: PostProcessTextureIndex.source)
+        encoder.setFragmentTexture(depthTexture, index: PostProcessTextureIndex.depth)
+        encoder.setFragmentTexture(irradianceTexture, index: FragmentTextureIndex.irradiance)
+        encoder.setFragmentSamplerState(sampler, index: FragmentSamplerIndex.linearClamp)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        #expect(commandBuffer.status == .completed)
+        if let error = commandBuffer.error {
+            Issue.record("Production fog fragment GPU render failed: \(error.localizedDescription)")
+        }
+
+        var outputPixels = [SIMD4<Float>](repeating: .zero, count: size * size)
+        outputPixels.withUnsafeMutableBytes { bytes in
+            outputTexture.getBytes(bytes.baseAddress!,
+                                   bytesPerRow: MemoryLayout<SIMD4<Float>>.stride * size,
+                                   from: MTLRegionMake2D(0, 0, size, size),
+                                   mipmapLevel: 0)
+        }
+        return outputPixels[(size / 2) * size + size / 2]
+    }
 }
 
 @Suite("Fog sky/object continuity")
