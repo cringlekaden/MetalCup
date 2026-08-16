@@ -773,7 +773,14 @@ enum ShadingDebugMode : uint {
     DebugDirectPlusLocalSpecular = 37,
     DebugDirectPlusMixedSpecular = 38,
     DebugDirectSpecularOnly = 39,
-    DebugSunVectorAlignment = 40
+    DebugSunVectorAlignment = 40,
+    DebugFogOpticalDepth = 41,
+    DebugFogInscattering = 42,
+    DebugFogLinearDistance = 43,
+    DebugFogDensity = 44,
+    DebugFogAmbientScattering = 45,
+    DebugFogDirectionalScattering = 46,
+    DebugFogPixelClassification = 47
 };
 
 struct LightData {

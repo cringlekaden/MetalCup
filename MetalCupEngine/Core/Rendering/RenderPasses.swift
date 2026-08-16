@@ -196,6 +196,7 @@ struct PostProcessInputs {
     var aoNormals: MTLTexture?
     var ssaoRaw: MTLTexture?
     var ssaoFiltered: MTLTexture?
+    var environmentIrradiance: MTLTexture?
     var grid: MTLTexture?
     var worldDebug: MTLTexture?
     var autoExposure: MTLTexture?
@@ -211,6 +212,7 @@ struct PostProcessInputs {
          aoNormals: MTLTexture? = nil,
          ssaoRaw: MTLTexture? = nil,
          ssaoFiltered: MTLTexture? = nil,
+         environmentIrradiance: MTLTexture? = nil,
          grid: MTLTexture? = nil,
          worldDebug: MTLTexture? = nil,
          autoExposure: MTLTexture? = nil,
@@ -225,6 +227,7 @@ struct PostProcessInputs {
         self.aoNormals = aoNormals
         self.ssaoRaw = ssaoRaw
         self.ssaoFiltered = ssaoFiltered
+        self.environmentIrradiance = environmentIrradiance
         self.grid = grid
         self.worldDebug = worldDebug
         self.autoExposure = autoExposure
@@ -287,6 +290,9 @@ struct PostProcessInputs {
         encoder.setFragmentTexture(aoNormals ?? fallback.blackRGBA, index: PostProcessTextureIndex.aoNormals)
         encoder.setFragmentTexture(ssaoRaw ?? fallback.blackRGBA, index: PostProcessTextureIndex.ssaoRaw)
         encoder.setFragmentTexture(ssaoFiltered ?? fallback.blackRGBA, index: PostProcessTextureIndex.ssaoFiltered)
+        if let environmentIrradiance {
+            encoder.setFragmentTexture(environmentIrradiance, index: FragmentTextureIndex.irradiance)
+        }
         let resolvedSettings = settings ?? frameContext.rendererSettings()
         let settingsBuffer = frameContext.uploadRendererSettings(resolvedSettings)
         encoder.setFragmentBuffer(settingsBuffer.buffer, offset: settingsBuffer.offset, index: FragmentBufferIndex.rendererSettings)
@@ -1869,6 +1875,8 @@ final class HeightFogPass: RenderGraphPass {
                 sampler: .LinearClampToZero,
                 source: sceneTexture,
                 sceneDepth: sceneDepth,
+                environmentIrradiance: frame.frameContext.iblTextures().irradiance
+                    ?? frame.engineContext.fallbackTextures.blackCubemap,
                 settings: frame.frameContext.rendererSettings()
             )
         )

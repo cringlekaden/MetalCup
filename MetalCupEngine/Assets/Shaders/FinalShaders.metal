@@ -339,83 +339,8 @@ static inline float ao_cross_bilateral_blur(float2 uv,
     return (totalWeight > 1e-5) ? (weightedVisibility / totalWeight) : centerVisibility;
 }
 
-// Integrates an exponential height-density field along a world-space view ray segment.
-// Density profile: density * exp(-falloff * (worldY - baseHeight)).
-static inline float heightFogOpticalDepth(float3 cameraPosition,
-                                          float3 rayDirection,
-                                          float segmentStart,
-                                          float segmentEnd,
-                                          constant RendererSettings &settings) {
-    float density = max(settings.heightFogDensity, 0.0) * max(settings.aerialFogParams.y, 0.0);
-    float falloff = max(settings.heightFogHeightFalloff, 0.0);
-    if (density <= 0.0 || segmentEnd <= segmentStart) {
-        return 0.0;
-    }
-
-    float baseHeight = settings.heightFogBaseHeight;
-    float rayY = rayDirection.y;
-    float startY = cameraPosition.y + rayY * segmentStart;
-    float segmentLength = segmentEnd - segmentStart;
-
-    if (falloff <= 1e-5 || fabs(rayY) <= 1e-5) {
-        float referenceHeight = startY - baseHeight;
-        float uniformDensity = density * exp(-falloff * referenceHeight);
-        return uniformDensity * segmentLength;
-    }
-
-    float cameraTerm = density * exp(-falloff * (cameraPosition.y - baseHeight));
-    float startExp = exp(-falloff * rayY * segmentStart);
-    float endExp = exp(-falloff * rayY * segmentEnd);
-    float denominator = falloff * rayY;
-    return cameraTerm * (startExp - endExp) / denominator;
-}
-
-static inline float2 evaluateHeightFogTransmittance(float2 uv,
-                                                    texture2d<float> depthTexture,
-                                                    sampler s,
-                                                    constant RendererSettings &settings,
-                                                    constant SceneConstants &sceneConstants) {
-    if (settings.heightFogEnabled == 0u) {
-        return float2(1.0, 0.0);
-    }
-
-    float rawDepth = sampleSceneDepth(depthTexture, s, uv);
-    if (rawDepth >= 0.999999) {
-        return float2(1.0, 0.0);
-    }
-
-    float3 worldPosition = reconstructWorldPosition(uv, rawDepth, sceneConstants);
-    float3 cameraPosition = sceneConstants.cameraPositionAndIBL.xyz;
-    float3 cameraToSurface = worldPosition - cameraPosition;
-    float rayDistance = length(cameraToSurface);
-    if (rayDistance <= 1e-5) {
-        return float2(1.0, 0.0);
-    }
-
-    float segmentStart = max(settings.heightFogStartDistance, 0.0);
-    if (rayDistance <= segmentStart) {
-        return float2(1.0, 0.0);
-    }
-
-    float3 rayDirection = cameraToSurface / rayDistance;
-    float heightOpticalDepth = heightFogOpticalDepth(
-        cameraPosition,
-        rayDirection,
-        segmentStart,
-        rayDistance,
-        settings
-    );
-
-    float distanceDensity = max(settings.heightFogDistanceDensity, 0.0);
-    float distanceOpticalDepth = distanceDensity * (rayDistance - segmentStart);
-    float opticalDepth = max(heightOpticalDepth + distanceOpticalDepth, 0.0);
-    float transmittance = exp(-opticalDepth);
-    float fogFactor = 1.0 - transmittance;
-    return float2(transmittance, fogFactor);
-}
-
 static inline float3 backgroundFogRayDirection(float2 uv,
-                                                  constant SceneConstants &sceneConstants) {
+                                                constant SceneConstants &sceneConstants) {
     float4 farClip = float4(uv * 2.0 - 1.0, 0.999999, 1.0);
     farClip.y *= -1.0;
     float4 farWorld = sceneConstants.inverseViewProjectionMatrix * farClip;
@@ -429,147 +354,123 @@ static inline float3 backgroundFogRayDirection(float2 uv,
     return rayDirection;
 }
 
-static inline float backgroundFogHorizonWeight(float3 rayDirection) {
-    return pow(clamp(1.0 - max(rayDirection.y, 0.0), 0.0, 1.0), 1.5);
+struct LocalFogSample {
+    float opticalDepth;
+    float transmittance;
+    float3 ambientInscattering;
+    float3 directionalInscattering;
+    float distance;
+    float densityAtCamera;
+    float isBackground;
+};
+
+static inline float localFogOpticalDepthRaw(float cameraY,
+                                            float rayY,
+                                            float distance,
+                                            bool isBackground,
+                                            float extinction,
+                                            float baseHeight,
+                                            float scaleHeight) {
+    extinction = max(extinction, 0.0);
+    scaleHeight = max(scaleHeight, 1e-3);
+    if (extinction <= 0.0) {
+        return 0.0;
+    }
+    float densityExponent = clamp(-(cameraY - baseHeight) / scaleHeight,
+                                  -80.0, 80.0);
+    float extinctionAtCamera = extinction * exp(densityExponent);
+    float opticalDepth = 0.0;
+    if (isBackground) {
+        opticalDepth = (rayY > 1e-5) ? extinctionAtCamera * scaleHeight / rayY : 80.0;
+    } else {
+        float segmentLength = max(distance, 0.0);
+        float k = rayY / scaleHeight;
+        float x = k * segmentLength;
+        float integral = (fabs(x) < 1e-3)
+            ? segmentLength * (1.0 - 0.5 * x + x * x / 6.0)
+            : (1.0 - exp(-x)) / k;
+        opticalDepth = extinctionAtCamera * integral;
+    }
+    return clamp(isfinite(opticalDepth) ? opticalDepth : 80.0, 0.0, 80.0);
 }
 
-static inline float2 evaluateBackgroundHeightFogTransmittance(float2 uv,
-                                                              constant RendererSettings &settings,
-                                                              constant SceneConstants &sceneConstants) {
+static inline float localFogOpticalDepth(float3 cameraPosition,
+                                         float3 rayDirection,
+                                         float distance,
+                                         bool isBackground,
+                                         constant RendererSettings &settings) {
     if (settings.heightFogEnabled == 0u) {
-        return float2(1.0, 0.0);
+        return 0.0;
     }
-
-    float3 cameraPosition = sceneConstants.cameraPositionAndIBL.xyz;
-    float3 rayDirection = backgroundFogRayDirection(uv, sceneConstants);
-    float segmentStart = max(settings.heightFogStartDistance, 0.0);
-
-    // Background fog should read like aerial perspective: dense and hazy at the horizon,
-    // but much less destructive toward the zenith so sky gradients and cloud structure survive.
-    float horizonWeight = backgroundFogHorizonWeight(rayDirection);
-    float maxAerialDistance = max(settings.aerialFogParams.w, 1.0);
-    float segmentEnd = max(segmentStart + 1.0, mix(maxAerialDistance * 0.22, maxAerialDistance, horizonWeight));
-
-    float heightOpticalDepth = heightFogOpticalDepth(
-        cameraPosition,
-        rayDirection,
-        segmentStart,
-        segmentEnd,
-        settings
-    );
-    float distanceDensity = max(settings.heightFogDistanceDensity, 0.0);
-    float distanceOpticalDepth = distanceDensity * (segmentEnd - segmentStart);
-    float opticalDepth = max(heightOpticalDepth + distanceOpticalDepth, 0.0);
-    float transmittance = exp(-opticalDepth);
-    float baseFogFactor = 1.0 - transmittance;
-
-    float zenithWeight = clamp(max(rayDirection.y, 0.0), 0.0, 1.0);
-    float directionalFog = baseFogFactor * mix(0.18, 1.0, horizonWeight);
-    directionalFog *= mix(1.0, 0.55, zenithWeight);
-    directionalFog = min(directionalFog, mix(0.35, 0.94, horizonWeight));
-    return float2(1.0 - directionalFog, directionalFog);
+    return localFogOpticalDepthRaw(cameraPosition.y,
+                                   rayDirection.y,
+                                   distance,
+                                   isBackground,
+                                   settings.heightFogDensity,
+                                   settings.heightFogBaseHeight,
+                                   settings.heightFogHeightFalloff);
 }
 
-static inline float3 resolvedHeightFogColor(constant RendererSettings &settings) {
-    uint colorMode = uint(max(settings.heightFogPadding.x, 0.0));
-    if (colorMode == 1u) {
-        return max(settings.padding0.xyz, 0.0);
-    }
-    return max(settings.heightFogColor, 0.0);
-}
-
-static inline float3 resolvedHeightFogHorizonColor(constant RendererSettings &settings) {
-    uint colorMode = uint(max(settings.heightFogPadding.x, 0.0));
-    if (colorMode == 1u) {
-        return max(settings.padding1.xyz, 0.0);
-    }
-    return max(settings.heightFogColor, 0.0);
-}
-
-static inline float resolvedHeightFogSunScatterStrength(constant RendererSettings &settings) {
-    uint colorMode = uint(max(settings.heightFogPadding.x, 0.0));
-    return (colorMode == 1u) ? clamp(settings.padding1.w, 0.0, 1.0) : 0.0;
-}
-
-static inline float3 resolvedAerialFogSunDirection(constant RendererSettings &settings) {
-    float3 sunDirection = settings.aerialFogSunDirectionAndNight.xyz;
-    if (dot(sunDirection, sunDirection) <= 1e-5) {
-        return float3(0.0, 1.0, 0.0);
-    }
-    return normalize(sunDirection);
-}
-
-static inline float aerialFogHGPhase(float cosTheta, float g) {
+static inline float localFogHGPhase(float cosTheta, float g) {
+    g = clamp(g, -0.9, 0.9);
     float gg = g * g;
-    float denom = max(1.0 + gg - 2.0 * g * cosTheta, 0.045);
-    return (1.0 - gg) / pow(denom, 1.5);
+    float denominator = max(1.0 + gg - 2.0 * g * clamp(cosTheta, -1.0, 1.0), 1e-5);
+    return (1.0 - gg) / (4.0 * M_PI_F * pow(denominator, 1.5));
 }
 
-static inline float3 aerialFogInscatterColor(float3 rayDirection,
-                                             float horizonWeight,
-                                             constant RendererSettings &settings) {
-    float3 bodyColor = resolvedHeightFogColor(settings);
-    float3 horizonColor = resolvedHeightFogHorizonColor(settings);
-    float3 sunColor = max(settings.aerialFogSunColorAndStrength.xyz, 0.0);
-    float3 sunDirection = resolvedAerialFogSunDirection(settings);
-    float sunCos = clamp(dot(rayDirection, sunDirection), -1.0, 1.0);
-    float forwardStrength = max(settings.aerialFogSunColorAndStrength.w, 0.0);
-    float legacyForward = resolvedHeightFogSunScatterStrength(settings);
-    float g = clamp(settings.aerialFogParams.z, 0.0, 0.95);
-    float hgForward = aerialFogHGPhase(sunCos, g) * 0.035;
-    float forwardLobe = pow(saturate(sunCos), mix(14.0, 5.0, forwardStrength));
-    float sunScatter = (hgForward + forwardLobe) * (forwardStrength + legacyForward * 0.45);
-
-    float sunBelowHorizon = saturate((-sunDirection.y - 0.05) / 0.35);
-    float nightScale = clamp(settings.aerialFogSunDirectionAndNight.w, 0.0, 1.0);
-    float inscatteringStrength = max(settings.aerialFogParams.x, 0.0);
-    float3 ambientAerial = mix(bodyColor, horizonColor, saturate(horizonWeight * (0.62 + 0.24 * forwardStrength)));
-    ambientAerial *= mix(1.0, nightScale, sunBelowHorizon);
-    float3 directionalAerial = sunColor * sunScatter * (0.35 + 0.65 * horizonWeight);
-    return max((ambientAerial + directionalAerial) * inscatteringStrength, 0.0);
-}
-
-static inline float3 objectFogRayDirection(float2 uv,
-                                           texture2d<float> depthTexture,
-                                           sampler s,
-                                           constant SceneConstants &sceneConstants) {
-    float rawDepth = sampleSceneDepth(depthTexture, s, uv);
-    float3 worldPosition = reconstructWorldPosition(uv, rawDepth, sceneConstants);
-    float3 cameraPosition = sceneConstants.cameraPositionAndIBL.xyz;
-    float3 ray = worldPosition - cameraPosition;
-    if (dot(ray, ray) <= 1e-8) {
-        return float3(0.0, 0.0, -1.0);
-    }
-    return normalize(ray);
-}
-
-static inline float3 applyHeightFog(float3 sceneColor,
-                                    float2 uv,
-                                    texture2d<float> depthTexture,
-                                    sampler s,
-                                    constant RendererSettings &settings,
-                                    constant SceneConstants &sceneConstants) {
-    float2 fog = evaluateHeightFogTransmittance(uv, depthTexture, s, settings, sceneConstants);
-    float transmittance = fog.x;
-    float fogFactor = fog.y;
-    float3 rayDirection = objectFogRayDirection(uv, depthTexture, s, sceneConstants);
-    float horizonWeight = backgroundFogHorizonWeight(rayDirection);
-    float3 inscatter = aerialFogInscatterColor(rayDirection, horizonWeight, settings);
-    return sceneColor * transmittance + inscatter * fogFactor;
-}
-
-static inline float3 applyBackgroundHeightFog(float3 sceneColor,
-                                              float2 uv,
+static inline LocalFogSample evaluateLocalFog(float2 uv,
+                                              float rawDepth,
+                                              texture2d<float> depthTexture,
+                                              texturecube<float> irradianceTexture,
+                                              sampler s,
                                               constant RendererSettings &settings,
                                               constant SceneConstants &sceneConstants) {
-    float2 fog = evaluateBackgroundHeightFogTransmittance(uv, settings, sceneConstants);
-    float fogFactor = fog.y;
-    float3 rayDirection = backgroundFogRayDirection(uv, sceneConstants);
-    float horizonWeight = backgroundFogHorizonWeight(rayDirection);
-    float zenithWeight = clamp(max(rayDirection.y, 0.0), 0.0, 1.0);
-    float skyFogFactor = fogFactor * mix(0.28, 0.86, horizonWeight) * mix(1.0, 0.42, zenithWeight);
-    float3 inscatter = aerialFogInscatterColor(rayDirection, horizonWeight, settings);
-    return sceneColor * (1.0 - skyFogFactor) + inscatter * skyFogFactor;
+    LocalFogSample result;
+    result.opticalDepth = 0.0;
+    result.transmittance = 1.0;
+    result.ambientInscattering = 0.0;
+    result.directionalInscattering = 0.0;
+    result.distance = 0.0;
+    result.densityAtCamera = 0.0;
+    result.isBackground = rawDepth >= 0.999999 ? 1.0 : 0.0;
+    if (settings.heightFogEnabled == 0u) {
+        return result;
+    }
+
+    float3 cameraPosition = sceneConstants.cameraPositionAndIBL.xyz;
+    bool isBackground = result.isBackground > 0.5;
+    float3 rayDirection;
+    if (isBackground) {
+        rayDirection = backgroundFogRayDirection(uv, sceneConstants);
+    } else {
+        float3 worldPosition = reconstructWorldPosition(uv, rawDepth, sceneConstants);
+        float3 cameraToSurface = worldPosition - cameraPosition;
+        result.distance = length(cameraToSurface);
+        if (result.distance <= 1e-5) {
+            return result;
+        }
+        rayDirection = cameraToSurface / result.distance;
+    }
+
+    float scaleHeight = max(settings.heightFogHeightFalloff, 1e-3);
+    result.densityAtCamera = max(settings.heightFogDensity, 0.0)
+        * exp(clamp(-(cameraPosition.y - settings.heightFogBaseHeight) / scaleHeight, -80.0, 80.0));
+    result.opticalDepth = localFogOpticalDepth(cameraPosition,
+                                               rayDirection,
+                                               result.distance,
+                                               isBackground,
+                                               settings);
+    result.transmittance = exp(-result.opticalDepth);
+    float scatteredFraction = 1.0 - result.transmittance;
+    float3 albedo = clamp(settings.heightFogColor, 0.0, 1.0);
+    float3 ambientRadiance = max(irradianceTexture.sample(s, rayDirection).rgb / M_PI_F, 0.0);
+    float3 sunDirection = settings.aerialFogSunDirectionAndNight.xyz;
+    sunDirection = dot(sunDirection, sunDirection) > 1e-8 ? normalize(sunDirection) : float3(0.0, 1.0, 0.0);
+    float3 solarIrradiance = max(settings.aerialFogSunColorAndStrength.xyz, 0.0);
+    float phase = localFogHGPhase(dot(rayDirection, sunDirection), settings.heightFogDistanceDensity);
+    result.ambientInscattering = ambientRadiance * albedo * scatteredFraction;
+    result.directionalInscattering = solarIrradiance * phase * albedo * scatteredFraction;
+    return result;
 }
 
 vertex SimpleRasterizerData vertex_final(const SimpleVertex vert [[ stage_in ]]) {
@@ -584,6 +485,7 @@ fragment float4 fragment_height_fog(const SimpleRasterizerData rd [[ stage_in ]]
                                   constant SceneConstants &sceneConstants [[ buffer(FragmentBufferIndexPostProcessSceneConstants) ]],
                                   texture2d<float> renderTexture [[ texture(PostProcessTextureIndexSource) ]],
                                   texture2d<float> depthTexture [[ texture(PostProcessTextureIndexDepth) ]],
+                                  texturecube<float> irradianceTexture [[ texture(FragmentTextureIndexIrradiance) ]],
                                   sampler s [[ sampler(FragmentSamplerIndexLinearClamp) ]]) {
     float2 uv = rd.texCoord;
     if (settings.uvDebug.x != 0) {
@@ -592,10 +494,71 @@ fragment float4 fragment_height_fog(const SimpleRasterizerData rd [[ stage_in ]]
 
     float3 sceneColor = max(renderTexture.sample(s, uv).rgb, 0.0);
     float rawDepth = sampleSceneDepth(depthTexture, s, uv);
-    float3 foggedColor = (rawDepth >= 0.999999)
-        ? applyBackgroundHeightFog(sceneColor, uv, settings, sceneConstants)
-        : applyHeightFog(sceneColor, uv, depthTexture, s, settings, sceneConstants);
+    LocalFogSample fog = evaluateLocalFog(uv,
+                                          rawDepth,
+                                          depthTexture,
+                                          irradianceTexture,
+                                          s,
+                                          settings,
+                                          sceneConstants);
+    if (settings.shadingDebugMode == DebugFogFactor) {
+        return float4(float3(1.0 - fog.transmittance), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugFogTransmittance) {
+        return float4(float3(fog.transmittance), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugFogOpticalDepth) {
+        return float4(float3(min(fog.opticalDepth / 8.0, 1.0)), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugFogInscattering) {
+        return float4(fog.ambientInscattering + fog.directionalInscattering, 1.0);
+    }
+    if (settings.shadingDebugMode == DebugFogLinearDistance) {
+        return float4(float3(fog.isBackground > 0.5 ? 1.0 : min(fog.distance / 100.0, 1.0)), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugFogDensity) {
+        return float4(float3(min(fog.densityAtCamera, 1.0)), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugFogAmbientScattering) {
+        return float4(fog.ambientInscattering, 1.0);
+    }
+    if (settings.shadingDebugMode == DebugFogDirectionalScattering) {
+        return float4(fog.directionalInscattering, 1.0);
+    }
+    if (settings.shadingDebugMode == DebugFogPixelClassification) {
+        return fog.isBackground > 0.5
+            ? float4(0.1, 0.25, 1.0, 1.0)
+            : float4(0.1, 1.0, 0.25, 1.0);
+    }
+    float3 foggedColor = sceneColor * fog.transmittance
+        + fog.ambientInscattering
+        + fog.directionalInscattering;
     return float4(foggedColor, 1.0);
+}
+
+// Production-helper GPU reference entry point used by Phase 5 tests.
+// input: x=cameraY, y=rayY, z=distance, w=background flag
+// params: x=extinction, y=baseHeight, z=scaleHeight, w=anisotropy
+// output: x=optical depth, y=transmittance, z=HG phase toward the Sun, w=density at camera
+kernel void phase5_local_fog_reference_samples(device const float4 *inputs [[buffer(0)]],
+                                                device const float4 *parameters [[buffer(1)]],
+                                                device float4 *outputs [[buffer(2)]],
+                                                uint index [[thread_position_in_grid]]) {
+    float4 input = inputs[index];
+    float4 params = parameters[index];
+    float rayY = clamp(input.y, -1.0, 1.0);
+    float opticalDepth = localFogOpticalDepthRaw(input.x,
+                                                 rayY,
+                                                 input.z,
+                                                 input.w > 0.5,
+                                                 params.x,
+                                                 params.y,
+                                                 params.z);
+    float density = max(params.x, 0.0) * exp(clamp(-(input.x - params.y) / max(params.z, 1e-3), -80.0, 80.0));
+    outputs[index] = float4(opticalDepth,
+                            exp(-opticalDepth),
+                            localFogHGPhase(rayY, params.w),
+                            density);
 }
 
 fragment float4 fragment_bloom_extract(const SimpleRasterizerData rd [[ stage_in ]],
@@ -1076,13 +1039,12 @@ fragment float4 fragment_final(const SimpleRasterizerData rd [[ stage_in ]],
         float3 viewPosition = reconstructViewPosition(uv, rawDepth, sceneConstants);
         return float4(visualizeViewPosition(viewPosition, sceneConstants), 1.0);
     }
-    if (settings.shadingDebugMode == DebugFogFactor) {
-        float fogFactor = evaluateHeightFogTransmittance(uv, depthTexture, s, settings, sceneConstants).y;
-        return float4(float3(fogFactor), 1.0);
-    }
-    if (settings.shadingDebugMode == DebugFogTransmittance) {
-        float transmittance = evaluateHeightFogTransmittance(uv, depthTexture, s, settings, sceneConstants).x;
-        return float4(float3(transmittance), 1.0);
+    if (settings.shadingDebugMode == DebugFogFactor
+        || settings.shadingDebugMode == DebugFogTransmittance
+        || (settings.shadingDebugMode >= DebugFogOpticalDepth
+            && settings.shadingDebugMode <= DebugFogPixelClassification)) {
+        // Fog diagnostics are already encoded by the scene-linear fog pass.
+        return sceneTexture.sample(s, uv);
     }
     // Scene and bloom remain scene-linear HDR until this final output stage.
     float3 scene = sceneTexture.sample(s, uv).rgb;
