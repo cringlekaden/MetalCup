@@ -313,6 +313,45 @@ struct FogEnvironmentCouplingTests {
         #expect(probeSource.contains("let shouldApplyHeightFog = false"))
     }
 
+    @Test
+    func noonAndGoldenHourUseTheAuthoritativeEnvironmentSun() {
+        var environment = EnvironmentComponent.default
+        environment.fog = EnvironmentFogConfig(enabled: true,
+                                                extinction: 0.025,
+                                                scatteringAlbedo: SIMD3<Float>(repeating: 0.9),
+                                                baseHeight: 0,
+                                                scaleHeight: 12,
+                                                anisotropy: 0.2)
+        environment.atmosphere.sourceEV = 0
+
+        environment.celestial.defaultTimeOfDay = 12
+        let noon = EnvironmentRenderStateBuilder.build(environment: environment, runtime: nil)
+        environment.celestial.defaultTimeOfDay = 17
+        let golden = EnvironmentRenderStateBuilder.build(environment: environment, runtime: nil)
+
+        for state in [noon, golden] {
+            #expect(state.legacyFogPatch.directionToSun == state.sunDirection)
+            #expect(state.legacyFogPatch.solarIrradiance == state.solarIrradianceRGB)
+            let sample = LocalFogTransport.evaluate(
+                cameraPosition: SIMD3<Float>(0, 2, 0),
+                rayDirection: state.sunDirection,
+                distance: 50,
+                ambientRadiance: SIMD3<Float>(repeating: 0.2),
+                solarIrradiance: state.legacyFogPatch.solarIrradiance,
+                directionToSun: state.legacyFogPatch.directionToSun,
+                parameters: state.legacyFogPatch.parameters
+            )
+            #expect(sample.inscattering.x.isFinite
+                    && sample.inscattering.y.isFinite
+                    && sample.inscattering.z.isFinite)
+            #expect(sample.directionalInscattering.x >= 0
+                    && sample.directionalInscattering.y >= 0
+                    && sample.directionalInscattering.z >= 0)
+        }
+        #expect(noon.sunDirection != golden.sunDirection)
+        #expect(noon.solarIrradianceRGB != golden.solarIrradianceRGB)
+    }
+
     private func engineSource(relativePath: String) throws -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let root = testFile.deletingLastPathComponent().deletingLastPathComponent()
