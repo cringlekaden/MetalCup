@@ -290,6 +290,82 @@ struct FogDepthReconstructionGPUTests {
             + geometryReference.inscattering
         #expect(simd_distance(geometryOutput.xyz, expectedGeometry) < 0.001)
 
+        let offCenterSize = 3
+        let offCenterX = 2
+        let offCenterY = 1
+        let offCenterOutput = try renderProductionFog(
+            device: device,
+            library: library,
+            rawDepth: geometryDepth,
+            source: source,
+            irradiance: ambient * .pi,
+            settings: settings,
+            sceneConstants: constants,
+            size: offCenterSize,
+            sampleX: offCenterX,
+            sampleY: offCenterY
+        )
+        let offCenterUV = SIMD2<Float>(
+            (Float(offCenterX) + 0.5) / Float(offCenterSize),
+            (Float(offCenterY) + 0.5) / Float(offCenterSize)
+        )
+        var offCenterClip = SIMD4<Float>(
+            offCenterUV.x * 2 - 1,
+            (1 - offCenterUV.y) * 2 - 1,
+            geometryDepth,
+            1
+        )
+        offCenterClip = constants.inverseViewProjectionMatrix * offCenterClip
+        let offCenterWorld = offCenterClip.xyz / offCenterClip.w
+        let offCenterVector = offCenterWorld - cameraPosition
+        let offCenterReference = LocalFogTransport.evaluate(
+            cameraPosition: cameraPosition,
+            rayDirection: simd_normalize(offCenterVector),
+            distance: simd_length(offCenterVector),
+            ambientRadiance: ambient,
+            solarIrradiance: SIMD3<Float>(1.0, 0.9, 0.7),
+            directionToSun: SIMD3<Float>(0, 1, 0),
+            parameters: settings.localFogParameters
+        )
+        let expectedOffCenter = source * offCenterReference.transmittance
+            + offCenterReference.inscattering
+        #expect(simd_distance(offCenterOutput.xyz, expectedOffCenter) < 0.001)
+
+        let cameraForward = simd_normalize(SIMD3<Float>(0.6, -0.15, -1))
+        let rotatedView = matrix_float4x4(
+            lookAt: cameraPosition,
+            center: cameraPosition + cameraForward,
+            up: SIMD3<Float>(0, 1, 0)
+        )
+        var rotatedConstants = constants
+        rotatedConstants.viewMatrix = rotatedView
+        rotatedConstants.inverseViewMatrix = simd_inverse(rotatedView)
+        rotatedConstants.inverseViewProjectionMatrix = simd_inverse(projection * rotatedView)
+        let rotatedWorld = SIMD4<Float>(cameraPosition + cameraForward * 10, 1)
+        let rotatedClip = projection * rotatedView * rotatedWorld
+        let rotatedDepth = rotatedClip.z / rotatedClip.w
+        let rotatedOutput = try renderProductionFog(
+            device: device,
+            library: library,
+            rawDepth: rotatedDepth,
+            source: source,
+            irradiance: ambient * .pi,
+            settings: settings,
+            sceneConstants: rotatedConstants
+        )
+        let rotatedReference = LocalFogTransport.evaluate(
+            cameraPosition: cameraPosition,
+            rayDirection: cameraForward,
+            distance: 10,
+            ambientRadiance: ambient,
+            solarIrradiance: SIMD3<Float>(1.0, 0.9, 0.7),
+            directionToSun: SIMD3<Float>(0, 1, 0),
+            parameters: settings.localFogParameters
+        )
+        let expectedRotated = source * rotatedReference.transmittance
+            + rotatedReference.inscattering
+        #expect(simd_distance(rotatedOutput.xyz, expectedRotated) < 0.001)
+
         let backgroundOutput = try renderProductionFog(
             device: device,
             library: library,
@@ -331,10 +407,10 @@ struct FogDepthReconstructionGPUTests {
                                      source: SIMD3<Float>,
                                      irradiance: SIMD3<Float>,
                                      settings: RendererSettings,
-                                     sceneConstants: SceneConstants) throws -> SIMD4<Float> {
-        // A 1x1 target places the sole fragment exactly at UV (0.5, 0.5), so the
-        // expected camera-forward world-space ray has no pixel-center offset.
-        let size = 1
+                                     sceneConstants: SceneConstants,
+                                     size: Int = 1,
+                                     sampleX: Int = 0,
+                                     sampleY: Int = 0) throws -> SIMD4<Float> {
         let colorDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba32Float,
             width: size,
@@ -462,7 +538,7 @@ struct FogDepthReconstructionGPUTests {
                                    from: MTLRegionMake2D(0, 0, size, size),
                                    mipmapLevel: 0)
         }
-        return outputPixels[(size / 2) * size + size / 2]
+        return outputPixels[sampleY * size + sampleX]
     }
 }
 
