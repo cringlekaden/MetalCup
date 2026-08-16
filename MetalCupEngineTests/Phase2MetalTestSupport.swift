@@ -27,10 +27,14 @@ enum Phase2MetalTestSupport {
     static func canonicalLibrary(device: MTLDevice) throws -> MTLLibrary {
         let root = try #require(ResourceRegistry.bundledCanonicalShaderRootURL())
         let registry = ResourceRegistry(canonicalShaderRootURL: root)
-        #expect(registry.activateCanonicalShaders(
+        let activated = registry.activateCanonicalShaders(
             device: device,
             requiredFunctions: ShaderLibrary.requiredFunctionNames
-        ))
+        )
+        if !activated {
+            Issue.record("Canonical Metal compilation failed: \(registry.lastShaderCompileError ?? "unknown error")")
+        }
+        #expect(activated)
         return try #require(registry.defaultLibrary)
     }
 
