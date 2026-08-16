@@ -1737,17 +1737,48 @@ public struct EnvironmentCloudConfig: Equatable {
 }
 
 public struct EnvironmentFogConfig: Equatable {
-    public var amount: Float
-    public var height: Float
-    public var distance: Float
+    public var enabled: Bool
+    /// Extinction coefficient at `baseHeight`, in inverse world units.
+    public var extinction: Float
+    /// Component-wise sigmaS / sigmaT in linear RGB.
+    public var scatteringAlbedo: SIMD3<Float>
+    public var baseHeight: Float
+    /// Exponential density scale height in world units.
+    public var scaleHeight: Float
+    /// Henyey-Greenstein anisotropy, restricted to a numerically safe interval.
+    public var anisotropy: Float
 
-    public init(amount: Float = 0.03,
-                height: Float = 0.0,
-                distance: Float = 3.0) {
-        self.amount = amount
-        self.height = height
-        self.distance = distance
+    public init(enabled: Bool = false,
+                extinction: Float = 0.02,
+                scatteringAlbedo: SIMD3<Float> = SIMD3<Float>(repeating: 0.9),
+                baseHeight: Float = 0.0,
+                scaleHeight: Float = 12.0,
+                anisotropy: Float = 0.2) {
+        self.enabled = enabled
+        self.extinction = max(extinction, 0)
+        self.scatteringAlbedo = simd_clamp(scatteringAlbedo, .zero, SIMD3<Float>(repeating: 1))
+        self.baseHeight = baseHeight
+        self.scaleHeight = max(scaleHeight, 0.001)
+        self.anisotropy = min(max(anisotropy, -0.9), 0.9)
     }
+
+    /// Deterministic migration for Phase 4-era authored values. `amount` becomes extinction,
+    /// `height` remains the base height, and `distance` becomes the scale height.
+    public init(amount: Float, height: Float, distance: Float) {
+        self.init(enabled: amount > 0.0001,
+                  extinction: max(amount, 0),
+                  scatteringAlbedo: SIMD3<Float>(repeating: 0.9),
+                  baseHeight: height,
+                  scaleHeight: max(distance, 0.001),
+                  anisotropy: 0.2)
+    }
+
+    @available(*, deprecated, message: "Use extinction")
+    public var amount: Float { get { extinction } set { extinction = max(newValue, 0); enabled = extinction > 0.0001 } }
+    @available(*, deprecated, message: "Use baseHeight")
+    public var height: Float { get { baseHeight } set { baseHeight = newValue } }
+    @available(*, deprecated, message: "Use scaleHeight")
+    public var distance: Float { get { scaleHeight } set { scaleHeight = max(newValue, 0.001) } }
 }
 
 public struct EnvironmentIBLConfig: Equatable {

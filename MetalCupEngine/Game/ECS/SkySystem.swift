@@ -663,39 +663,27 @@ public enum SkySystem {
         return params
     }
 
-    /// Packs authored atmosphere fog into renderer consumption settings.
-    /// Authoring ownership lives on SkyLightComponent; RendererSettings only carries the
-    /// derived/runtime values that the existing fog pass still consumes.
+    /// Deterministic compatibility migration for legacy SkyLight fog fields.
+    /// The old independently derived sky/horizon/sun colors are intentionally inert: the
+    /// production Phase 5 path derives illumination from the current environment resources.
     public static func applyDerivedFogSettings(_ settings: inout RendererSettings,
                                                authored sky: SkyLightComponent?,
                                                runtime environment: EnvironmentStateComponent?) {
         guard let sky, sky.enabled else {
             settings.setHeightFogEnabled(false)
-            settings.setFogSkyMatchColor(settings.fogManualColor)
-            settings.setFogSkyHorizonColor(settings.fogManualColor)
-            settings.setFogSkySunScatterStrength(0.0)
             return
         }
-
-        settings.setHeightFogEnabled(sky.fogAmount > 0.0001)
-        settings.setFogAmount(sky.fogAmount)
-        settings.setFogHeight(sky.fogHeight)
-        settings.setFogDistance(sky.fogDistance)
-
-        guard settings.heightFogColorMode == .matchActiveSky else { return }
-
+        settings.localFogParameters = LocalFogTransport.Parameters(
+            enabled: sky.fogAmount > 0.0001,
+            extinction: max(sky.fogAmount, 0),
+            scatteringAlbedo: SIMD3<Float>(repeating: 0.9),
+            baseHeight: sky.fogHeight,
+            scaleHeight: max(sky.fogDistance, 0.001),
+            anisotropy: 0.2
+        )
         let derivedAtmosphere = derivedAtmosphere(authored: sky, runtime: environment)
-        settings.setFogSkyMatchColor(max(derivedAtmosphere.fogCandidateTint, SIMD3<Float>(repeating: 0.0)))
-        settings.setFogSkyHorizonColor(max(derivedAtmosphere.fogHorizonTint, SIMD3<Float>(repeating: 0.0)))
-        settings.setFogSkySunScatterStrength(derivedAtmosphere.sunScatterStrength * (0.75 + derivedAtmosphere.horizonDensity * 0.25))
         settings.aerialFogSunDirection = derivedAtmosphere.sunDirectionWorld
-        settings.aerialFogNightScale = min(max(0.18 + derivedAtmosphere.nightFactor * 0.52, 0.0), 0.78)
-        settings.aerialFogSunColor = max(derivedAtmosphere.sunForwardHazeTint, SIMD3<Float>(repeating: 0.0))
-        settings.aerialFogForwardScatteringStrength = min(max(derivedAtmosphere.sunScatterStrength * (0.55 + derivedAtmosphere.horizonDensity * 0.35 + derivedAtmosphere.twilightFactor * 0.32), 0.0), 1.35)
-        settings.aerialFogInscatteringStrength = min(max(0.72 + derivedAtmosphere.hazeAmount * 0.34 + derivedAtmosphere.horizonDensity * 0.28 + derivedAtmosphere.twilightFactor * 0.18, 0.0), 1.55)
-        settings.aerialFogHeightExtinctionScale = min(max(0.82 + derivedAtmosphere.horizonDensity * 0.62 + derivedAtmosphere.hazeAmount * 0.26, 0.25), 2.25)
-        settings.aerialFogAnisotropy = min(max(0.68 + derivedAtmosphere.sunScatterStrength * 0.16 + derivedAtmosphere.twilightFactor * 0.06, 0.55), 0.88)
-        settings.aerialFogMaxDistance = 1800.0 + derivedAtmosphere.horizonDensity * 1200.0 + derivedAtmosphere.hazeAmount * 850.0
+        settings.aerialFogSunColor = .zero
     }
 
     public static func applyDerivedFogSettings(_ settings: inout RendererSettings, for sky: SkyLightComponent?) {

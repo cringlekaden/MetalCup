@@ -2108,26 +2108,87 @@ public struct EnvironmentCloudDTO: Codable {
 
 public struct EnvironmentFogDTO: Codable {
     public var schemaVersion: Int
-    public var amount: Float
-    public var height: Float
-    public var distance: Float
+    public var enabled: Bool
+    public var extinction: Float
+    public var scatteringAlbedo: [Float]
+    public var baseHeight: Float
+    public var scaleHeight: Float
+    public var anisotropy: Float
 
-    public init(schemaVersion: Int = 1,
-                amount: Float,
-                height: Float,
-                distance: Float) {
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, enabled, extinction, scatteringAlbedo, baseHeight, scaleHeight, anisotropy
+        case amount, height, distance
+    }
+
+    public init(schemaVersion: Int = 2,
+                enabled: Bool,
+                extinction: Float,
+                scatteringAlbedo: SIMD3<Float>,
+                baseHeight: Float,
+                scaleHeight: Float,
+                anisotropy: Float) {
         self.schemaVersion = schemaVersion
-        self.amount = amount
-        self.height = height
-        self.distance = distance
+        self.enabled = enabled
+        self.extinction = extinction
+        self.scatteringAlbedo = [scatteringAlbedo.x, scatteringAlbedo.y, scatteringAlbedo.z]
+        self.baseHeight = baseHeight
+        self.scaleHeight = scaleHeight
+        self.anisotropy = anisotropy
     }
 
     public init(config: EnvironmentFogConfig) {
-        self.init(amount: config.amount, height: config.height, distance: config.distance)
+        self.init(enabled: config.enabled,
+                  extinction: config.extinction,
+                  scatteringAlbedo: config.scatteringAlbedo,
+                  baseHeight: config.baseHeight,
+                  scaleHeight: config.scaleHeight,
+                  anisotropy: config.anisotropy)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        if schemaVersion >= 2 || container.contains(.extinction) {
+            enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+            extinction = max(try container.decodeIfPresent(Float.self, forKey: .extinction) ?? 0.02, 0)
+            scatteringAlbedo = try container.decodeIfPresent([Float].self, forKey: .scatteringAlbedo) ?? [0.9, 0.9, 0.9]
+            baseHeight = try container.decodeIfPresent(Float.self, forKey: .baseHeight) ?? 0
+            scaleHeight = max(try container.decodeIfPresent(Float.self, forKey: .scaleHeight) ?? 12, 0.001)
+            anisotropy = min(max(try container.decodeIfPresent(Float.self, forKey: .anisotropy) ?? 0.2, -0.9), 0.9)
+        } else {
+            let amount = max(try container.decodeIfPresent(Float.self, forKey: .amount) ?? 0, 0)
+            enabled = amount > 0.0001
+            extinction = amount
+            scatteringAlbedo = [0.9, 0.9, 0.9]
+            baseHeight = try container.decodeIfPresent(Float.self, forKey: .height) ?? 0
+            scaleHeight = max(try container.decodeIfPresent(Float.self, forKey: .distance) ?? 12, 0.001)
+            anisotropy = 0.2
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(2, forKey: .schemaVersion)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(extinction, forKey: .extinction)
+        try container.encode(scatteringAlbedo, forKey: .scatteringAlbedo)
+        try container.encode(baseHeight, forKey: .baseHeight)
+        try container.encode(scaleHeight, forKey: .scaleHeight)
+        try container.encode(anisotropy, forKey: .anisotropy)
     }
 
     public func toConfig() -> EnvironmentFogConfig {
-        EnvironmentFogConfig(amount: amount, height: height, distance: distance)
+        let albedo = SIMD3<Float>(
+            scatteringAlbedo.indices.contains(0) ? scatteringAlbedo[0] : 0.9,
+            scatteringAlbedo.indices.contains(1) ? scatteringAlbedo[1] : 0.9,
+            scatteringAlbedo.indices.contains(2) ? scatteringAlbedo[2] : 0.9
+        )
+        return EnvironmentFogConfig(enabled: enabled,
+                                    extinction: extinction,
+                                    scatteringAlbedo: albedo,
+                                    baseHeight: baseHeight,
+                                    scaleHeight: scaleHeight,
+                                    anisotropy: anisotropy)
     }
 }
 

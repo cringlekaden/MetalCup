@@ -225,24 +225,22 @@ public struct RendererSettings: sizeable {
     public var ssaoThickness: Float = 0.22
     public var ssaoBlurSharpness: Float = 24.0
 
-    // Enables fullscreen height fog evaluation in later post passes.
-    // Public authoring ownership now lives on SkyLightComponent; these remain the
-    // renderer-consumption values used by the existing fog pass.
+    // Phase 5 scene-linear local-medium GPU contract. Names are retained to preserve the
+    // existing Swift/Metal ABI; the explicit meanings below replace the Phase 4 fog heuristics.
     public var heightFogEnabled: UInt32 = 0
-    // World-space Y level where fog density is anchored before falloff is applied.
+    // World-space Y level where the exponential density is 1.
     public var heightFogBaseHeight: Float = 0.0
-    // Base extinction density for the height fog volume.
-    public var heightFogDensity: Float = 0.03
-    // Exponential falloff controlling how quickly fog thins out above the base height.
-    public var heightFogHeightFalloff: Float = 0.15
-    // Linear HDR fog scattering/albedo color.
-    public var heightFogColor: SIMD3<Float> = SIMD3<Float>(0.62, 0.68, 0.74)
-    // Camera-relative distance before fog starts accumulating along the view ray.
-    public var heightFogStartDistance: Float = 3.0
-    // Optional uniform distance extinction layered on top of the height term.
-    public var heightFogDistanceDensity: Float = 0.0
-    // Reserved fog metadata storage. The shader ignores these values, so the editor uses them for
-    // public-facing fog UX state without changing the Swift/Metal ABI.
+    // sigmaT at base height, in inverse world units.
+    public var heightFogDensity: Float = 0.02
+    // Exponential density scale height in world units.
+    public var heightFogHeightFalloff: Float = 12.0
+    // Component-wise sigmaS / sigmaT in scene-linear RGB.
+    public var heightFogColor: SIMD3<Float> = SIMD3<Float>(repeating: 0.9)
+    // Reserved legacy start-distance slot; local fog starts at the camera.
+    public var heightFogStartDistance: Float = 0.0
+    // Henyey-Greenstein anisotropy in [-0.9, 0.9].
+    public var heightFogDistanceDensity: Float = 0.2
+    // Reserved legacy fog metadata storage.
     public var heightFogPadding: SIMD2<Float> = .zero
 
     public var outlineEnabled: UInt32 = 1
@@ -260,12 +258,12 @@ public struct RendererSettings: sizeable {
     public var shadows: ShadowsSettings = ShadowsSettings()
     public var padding0: SIMD4<Float> = .zero
     public var padding1: SIMD4<Float> = .zero
-    /// xyz = world-space direction from the scene toward the visible sun, w = night fog scale.
-    public var aerialFogSunDirectionAndNight: SIMD4<Float> = SIMD4<Float>(0.0, 1.0, 0.0, 0.45)
-    /// rgb = sun/transmittance inscattering color, w = forward scattering strength.
-    public var aerialFogSunColorAndStrength: SIMD4<Float> = SIMD4<Float>(1.0, 0.95, 0.9, 0.25)
-    /// x = inscattering strength, y = height extinction scale, z = HG anisotropy, w = max aerial distance.
-    public var aerialFogParams: SIMD4<Float> = SIMD4<Float>(1.0, 1.0, 0.76, 2600.0)
+    /// xyz = authoritative world-space direction toward the Sun; w reserved.
+    public var aerialFogSunDirectionAndNight: SIMD4<Float> = SIMD4<Float>(0.0, 1.0, 0.0, 0.0)
+    /// rgb = authoritative ground-level analytic Sun irradiance; w reserved.
+    public var aerialFogSunColorAndStrength: SIMD4<Float> = .zero
+    /// Reserved legacy aerial-fog tuning slots; production local fog ignores them.
+    public var aerialFogParams: SIMD4<Float> = .zero
 }
 
 public extension RendererSettings {
@@ -323,6 +321,27 @@ public extension RendererSettings {
     // Deprecated alias retained for legacy call sites still using SSAO terminology.
     var isSSAOEnabled: Bool { ssaoEnabled != 0 }
     var isHeightFogEnabled: Bool { heightFogEnabled != 0 }
+    var localFogParameters: LocalFogTransport.Parameters {
+        get {
+            LocalFogTransport.Parameters(
+                enabled: isHeightFogEnabled,
+                extinction: heightFogDensity,
+                scatteringAlbedo: heightFogColor,
+                baseHeight: heightFogBaseHeight,
+                scaleHeight: heightFogHeightFalloff,
+                anisotropy: heightFogDistanceDensity
+            )
+        }
+        set {
+            setHeightFogEnabled(newValue.enabled)
+            heightFogDensity = newValue.extinction
+            heightFogColor = newValue.scatteringAlbedo
+            heightFogBaseHeight = newValue.baseHeight
+            heightFogHeightFalloff = newValue.scaleHeight
+            heightFogStartDistance = 0
+            heightFogDistanceDensity = newValue.anisotropy
+        }
+    }
     var heightFogColorMode: FogColorMode {
         get {
             FogColorMode(rawValue: UInt32(max(0, Int(heightFogPadding.x.rounded())))) ?? .manual

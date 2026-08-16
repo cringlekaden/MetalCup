@@ -90,3 +90,15 @@ directional Sun is the transmitted disk's projected RGB integral, decomposed as
 direction, the visible disk, and directional-shadow ray all derive from the same
 environment render state. No environment, weather, IBL, material, exposure, or
 output-stage gain compensates the result.
+
+## Phase 5 planetary-atmosphere/local-medium boundary
+
+The procedural atmosphere owns planetary sky scattering and the incident radiance captured for
+IBL. Camera-local fog is a separate participating medium and is never captured into global IBL or
+reflection probes. It uses `sigmaT = sigmaS + sigmaA`, exponential height density in world units,
+and the scene-linear transport equation `Lout = Lsurface * T + S`. The same transport functions
+apply to geometry and background rays. Background rays use the analytic infinite-medium limit;
+they do not use a virtual sky distance or a second horizon curve.
+
+Local fog is evaluated after opaque HDR lighting and before bloom extraction, exposure, Filmic v1,
+and sRGB output. When disabled it is an exact identity and cannot alter sky, lighting, or IBL.

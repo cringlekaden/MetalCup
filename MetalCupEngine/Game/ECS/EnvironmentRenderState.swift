@@ -6,62 +6,28 @@ import Foundation
 import simd
 
 public struct EnvironmentFogRenderPatch: Equatable {
-    public var heightFogEnabled: Bool
-    public var heightFogBaseHeight: Float
-    public var heightFogDensity: Float
-    public var heightFogHeightFalloff: Float
-    public var heightFogColor: SIMD3<Float>
-    public var heightFogStartDistance: Float
-    public var heightFogDistanceDensity: Float
-    public var heightFogColorMode: FogColorMode
-    public var fogSkyMatchColor: SIMD3<Float>
-    public var fogSkyHorizonColor: SIMD3<Float>
-    public var fogSkySunScatterStrength: Float
-    public var heightFogPadding: SIMD2<Float>
-    public var padding0: SIMD4<Float>
-    public var padding1: SIMD4<Float>
-    public var aerialFogSunDirectionAndNight: SIMD4<Float>
-    public var aerialFogSunColorAndStrength: SIMD4<Float>
-    public var aerialFogParams: SIMD4<Float>
+    public var parameters: LocalFogTransport.Parameters
+    /// World-space direction from the scene toward the authoritative environment Sun.
+    public var directionToSun: SIMD3<Float>
+    /// Scene-linear ground-level analytic Sun irradiance from the Phase 4 frame state.
+    public var solarIrradiance: SIMD3<Float>
 
-    public init(settings: RendererSettings) {
-        self.heightFogEnabled = settings.isHeightFogEnabled
-        self.heightFogBaseHeight = settings.heightFogBaseHeight
-        self.heightFogDensity = settings.heightFogDensity
-        self.heightFogHeightFalloff = settings.heightFogHeightFalloff
-        self.heightFogColor = settings.heightFogColor
-        self.heightFogStartDistance = settings.heightFogStartDistance
-        self.heightFogDistanceDensity = settings.heightFogDistanceDensity
-        self.heightFogColorMode = settings.heightFogColorMode
-        self.fogSkyMatchColor = settings.fogSkyMatchColor
-        self.fogSkyHorizonColor = settings.fogSkyHorizonColor
-        self.fogSkySunScatterStrength = settings.fogSkySunScatterStrength
-        self.heightFogPadding = settings.heightFogPadding
-        self.padding0 = settings.padding0
-        self.padding1 = settings.padding1
-        self.aerialFogSunDirectionAndNight = settings.aerialFogSunDirectionAndNight
-        self.aerialFogSunColorAndStrength = settings.aerialFogSunColorAndStrength
-        self.aerialFogParams = settings.aerialFogParams
+    public init(parameters: LocalFogTransport.Parameters,
+                directionToSun: SIMD3<Float>,
+                solarIrradiance: SIMD3<Float>) {
+        self.parameters = parameters
+        self.directionToSun = directionToSun
+        self.solarIrradiance = solarIrradiance
     }
 
     public func applying(to settings: inout RendererSettings) {
-        settings.setHeightFogEnabled(heightFogEnabled)
-        settings.heightFogBaseHeight = heightFogBaseHeight
-        settings.heightFogDensity = heightFogDensity
-        settings.heightFogHeightFalloff = heightFogHeightFalloff
-        settings.heightFogColor = heightFogColor
-        settings.heightFogStartDistance = heightFogStartDistance
-        settings.heightFogDistanceDensity = heightFogDistanceDensity
-        settings.setHeightFogColorMode(heightFogColorMode)
-        settings.setFogSkyMatchColor(fogSkyMatchColor)
-        settings.setFogSkyHorizonColor(fogSkyHorizonColor)
-        settings.setFogSkySunScatterStrength(fogSkySunScatterStrength)
-        settings.heightFogPadding = heightFogPadding
-        settings.padding0 = padding0
-        settings.padding1 = padding1
-        settings.aerialFogSunDirectionAndNight = aerialFogSunDirectionAndNight
-        settings.aerialFogSunColorAndStrength = aerialFogSunColorAndStrength
-        settings.aerialFogParams = aerialFogParams
+        settings.localFogParameters = parameters
+        settings.heightFogPadding = .zero
+        settings.padding0 = .zero
+        settings.padding1 = .zero
+        settings.aerialFogSunDirectionAndNight = SIMD4<Float>(directionToSun, 0)
+        settings.aerialFogSunColorAndStrength = SIMD4<Float>(max(solarIrradiance, SIMD3<Float>(repeating: 0)), 0)
+        settings.aerialFogParams = .zero
     }
 }
 
@@ -211,9 +177,9 @@ public enum EnvironmentRenderStateBuilder {
             legacySkyParams.cloudsCoverage = 0.0
             legacySkyParams.cloudAtlasEnabled = 0.0
         }
-        let legacyFogPatch = makeFogPatch(rendererSettings: rendererSettings,
-                                          legacySky: legacySky,
-                                          legacyRuntime: legacyRuntime)
+        let legacyFogPatch = makeFogPatch(config: environment.fog,
+                                          sunDirection: derived.sunDirectionWorld,
+                                          solarIrradiance: solar.rgb)
 
         var state = EnvironmentRenderState(
             enabled: environment.enabled,
@@ -239,9 +205,9 @@ public enum EnvironmentRenderStateBuilder {
             cloudRenderParams: cloudRenderParams,
             cloudPhase: resolved.cloudPhase,
             windPhase: resolved.windPhase,
-            fogAmount: environment.fog.amount,
-            fogHeight: environment.fog.height,
-            fogDistance: environment.fog.distance,
+            fogAmount: environment.fog.extinction,
+            fogHeight: environment.fog.baseHeight,
+            fogDistance: environment.fog.scaleHeight,
             moonIntensity: environment.celestial.moonIntensity,
             moonSizeDegrees: environment.celestial.moonSizeDegrees,
             starIntensity: environment.celestial.starIntensity,
@@ -280,12 +246,20 @@ public enum EnvironmentRenderStateBuilder {
         build(environment: environment, runtime: runtime, rendererSettings: rendererSettings).legacyFogPatch
     }
 
-    private static func makeFogPatch(rendererSettings: RendererSettings?,
-                                     legacySky: SkyLightComponent,
-                                     legacyRuntime: EnvironmentStateComponent) -> EnvironmentFogRenderPatch {
-        var settings = rendererSettings ?? RendererSettings()
-        SkySystem.applyDerivedFogSettings(&settings, authored: legacySky, runtime: legacyRuntime)
-        return EnvironmentFogRenderPatch(settings: settings)
+    private static func makeFogPatch(config: EnvironmentFogConfig,
+                                     sunDirection: SIMD3<Float>,
+                                     solarIrradiance: SIMD3<Float>) -> EnvironmentFogRenderPatch {
+        let parameters = LocalFogTransport.Parameters(
+            enabled: config.enabled,
+            extinction: config.extinction,
+            scatteringAlbedo: config.scatteringAlbedo,
+            baseHeight: config.baseHeight,
+            scaleHeight: config.scaleHeight,
+            anisotropy: config.anisotropy
+        )
+        return EnvironmentFogRenderPatch(parameters: parameters,
+                                         directionToSun: sunDirection,
+                                         solarIrradiance: solarIrradiance)
     }
 }
 
@@ -502,9 +476,9 @@ private enum LegacyEnvironmentSkyAdapter {
             milkyWayChroma: milkyWayChroma,
             milkyWayRotation: environment.celestial.milkyWayRotation,
             nightBrightness: nightBrightness,
-            fogAmount: clamp(environment.fog.amount * (1.0 + lookCinematic * 0.18 + positiveMood * 0.08), min: 0.0, max: 1.0),
-            fogHeight: environment.fog.height,
-            fogDistance: environment.fog.distance
+            fogAmount: environment.fog.extinction,
+            fogHeight: environment.fog.baseHeight,
+            fogDistance: environment.fog.scaleHeight
         )
         applyPreviewCompatibility(to: &sky,
                                   atmosphereHaze: atmosphereHaze,
