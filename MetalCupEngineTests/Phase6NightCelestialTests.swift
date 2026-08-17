@@ -300,7 +300,7 @@ struct TimeVaryingCelestialTests {
         let quarter = environmentState(time: 0, phase: 0.25)
         #expect(midnight.iblSignature != later.iblSignature)
         #expect(midnight.iblSignature != quarter.iblSignature)
-        #expect(EnvironmentIBLSignature.currentVersion == 12)
+        #expect(EnvironmentIBLSignature.currentVersion == 13)
     }
 }
 

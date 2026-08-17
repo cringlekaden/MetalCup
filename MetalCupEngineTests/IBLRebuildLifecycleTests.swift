@@ -14,7 +14,7 @@ struct IBLRebuildLifecycleTests {
         environment.celestial.defaultTimeOfDay += 0.000001
         let timeChanged = EnvironmentRenderStateBuilder.build(environment: environment, runtime: nil).iblSignature
         #expect(timeChanged != base)
-        #expect(EnvironmentIBLSignature.currentVersion == 12)
+        #expect(EnvironmentIBLSignature.currentVersion == 13)
     }
 
     @Test
@@ -132,5 +132,47 @@ struct IBLRebuildLifecycleTests {
             resourcesMissing: false,
             finalBuildNeeded: false
         ) == .final)
+    }
+
+    @Test
+    func freshnessNeverLabelsMismatchedOrInteractiveResourcesFinalCurrent() {
+        var environment = EnvironmentComponent.default
+        environment.source.mode = .procedural
+        environment.celestial.defaultTimeOfDay = 19
+        let current = EnvironmentRenderStateBuilder.build(environment: environment, runtime: nil)
+        let exact = EnvironmentIBLStateComponent(
+            dirty: false,
+            needsRebuild: false,
+            lastBuiltSignature: current.iblSignature,
+            lastBuiltQuality: .final,
+            phase: .finalReady,
+            sourceGeneration: 9,
+            lastBuiltGeneration: 9,
+            lastBuiltTimeOfDay: current.finalTimeOfDay,
+            lastBuiltSunDirection: current.sunDirection
+        )
+        let exactFreshness = EnvironmentIBLRebuildLifecycle.freshness(state: exact, current: current)
+        #expect(exactFreshness.exactSignatureMatch)
+        #expect(exactFreshness.finalQuality)
+        #expect(exactFreshness.isCurrentFinal)
+        #expect(exactFreshness.status == "final, exact, current")
+        #expect(exactFreshness.sourceGeneration == 9)
+        #expect(exactFreshness.representedGeneration == 9)
+
+        var changedEnvironment = environment
+        changedEnvironment.celestial.defaultTimeOfDay = 19.01
+        let changed = EnvironmentRenderStateBuilder.build(environment: changedEnvironment, runtime: nil)
+        let staleFreshness = EnvironmentIBLRebuildLifecycle.freshness(state: exact, current: changed)
+        #expect(!staleFreshness.exactSignatureMatch)
+        #expect(!staleFreshness.isCurrentFinal)
+        #expect(staleFreshness.status.contains("lagging"))
+
+        var interactive = exact
+        interactive.lastBuiltQuality = .interactive
+        interactive.phase = .interactiveReady
+        let interactiveFreshness = EnvironmentIBLRebuildLifecycle.freshness(state: interactive, current: current)
+        #expect(interactiveFreshness.exactSignatureMatch)
+        #expect(!interactiveFreshness.finalQuality)
+        #expect(!interactiveFreshness.isCurrentFinal)
     }
 }

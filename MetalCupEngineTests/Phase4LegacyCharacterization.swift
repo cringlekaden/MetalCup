@@ -5,7 +5,7 @@ import simd
 
 @Suite("Phase 4 procedural-sky energy partition")
 struct Phase4LegacyCharacterization {
-    static let elevations: [Float] = [90, 60, 30, 10, 5, 0, -2, -6]
+    static let elevations: [Float] = [90, 60, 30, 10, 5, 0, -2, -6, -12, -18, -24]
 
     @Test
     func generatedSunDirectionAlreadyMatchesTheVisibleDisk() {

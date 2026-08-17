@@ -93,7 +93,8 @@ struct ProceduralAtmosphereReferenceTests {
             ozoneScale: params.atmosphereScatteringParams.w,
             multipleScatteringStrength: params.atmosphereOpticalParams.y,
             groundAlbedo: params.atmosphereOpticalParams.z,
-            solarAngularRadiusRadians: params.sunAngularRadius
+            solarAngularRadiusRadians: params.sunAngularRadius,
+            nightBrightness: params.atmosphereOpticalParams.w
         )
     }
 }
@@ -184,7 +185,8 @@ struct EnvironmentFrameCoherenceTests {
         let transformedRay = simd_normalize(simd_quatf(vector: rotation).act(SIMD3<Float>(0, 0, -1)))
         #expect(simd_distance(state.sunDirection, state.legacySkyParams.sunDirection) < 0.000001)
         #expect(simd_distance(transformedRay, shadowRay) < 0.00001)
-        #expect(state.solarIrradianceRGB == state.sunColor * state.sunIntensity)
+        #expect(simd_distance(state.solarIrradianceRGB,
+                              state.sunColor * state.sunIntensity) < 1e-6)
 
         let frame = EnvironmentFrameStateComponent(renderState: state)
         #expect(frame.sourceSignature == state.iblSignature)
@@ -323,7 +325,7 @@ struct SkyIBLRebuildIntegrationTests {
         state.lastBuiltQuality = .final
         state.lastBuiltSignature = current.iblSignature
         freshness = EnvironmentIBLRebuildLifecycle.freshness(state: state, current: current)
-        #expect(freshness.status == "final and current")
+        #expect(freshness.status == "final, exact, current")
     }
 }
 

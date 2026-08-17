@@ -388,6 +388,32 @@ struct FogDepthReconstructionGPUTests {
             + backgroundReference.inscattering
         #expect(simd_distance(backgroundOutput.xyz, expectedBackground) < 0.001)
 
+        // Phase 2: a valid live environment value must win over a deliberately
+        // stale captured daytime cubemap.
+        let liveNightAmbient = SIMD3<Float>(0.001, 0.002, 0.004)
+        settings.aerialFogAmbientRadiance = SIMD4<Float>(liveNightAmbient, 1)
+        let staleDaytimeAmbient = SIMD3<Float>(0.8, 0.9, 1.0)
+        let liveOutput = try renderProductionFog(
+            device: device,
+            library: library,
+            rawDepth: geometryDepth,
+            source: source,
+            irradiance: staleDaytimeAmbient * .pi,
+            settings: settings,
+            sceneConstants: constants
+        )
+        let liveReference = LocalFogTransport.evaluate(
+            cameraPosition: cameraPosition,
+            rayDirection: SIMD3<Float>(0, 0, -1),
+            distance: 10,
+            ambientRadiance: liveNightAmbient,
+            solarIrradiance: SIMD3<Float>(1.0, 0.9, 0.7),
+            directionToSun: SIMD3<Float>(0, 1, 0),
+            parameters: settings.localFogParameters
+        )
+        let expectedLive = source * liveReference.transmittance + liveReference.inscattering
+        #expect(simd_distance(liveOutput.xyz, expectedLive) < 0.001)
+
         settings.setHeightFogEnabled(false)
         let disabledOutput = try renderProductionFog(
             device: device,
