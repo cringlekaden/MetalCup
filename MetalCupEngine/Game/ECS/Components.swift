@@ -1528,6 +1528,10 @@ public struct LightOrbitComponent {
 public enum ReflectionProbeRebuildMode: UInt32, Codable {
     case manual = 0
     case onPlay = 1
+    case staticInterior = 2
+    case environmentIndependent = 3
+    case environmentDependentScheduled = 4
+    case fullyDynamic = 5
 }
 
 public enum ReflectionProbeRuntimeStatus: Int32, CaseIterable {
@@ -2335,6 +2339,35 @@ public struct EnvironmentIBLStateComponent: Equatable {
     public var lastBuiltTimeOfDay: Float?
     public var lastBuiltSunDirection: SIMD3<Float>?
     public var lastBuildDuration: Double?
+    /// A completed representation waiting to crossfade into the active slots.
+    public var incomingEnvironmentTexture: AssetHandle?
+    public var incomingIrradianceTexture: AssetHandle?
+    public var incomingPrefilteredTexture: AssetHandle?
+    public var incomingSignature: EnvironmentIBLSignature?
+    public var incomingGeneration: UInt64?
+    public var incomingQuality: EnvironmentIBLRebuildQuality?
+    public var incomingTimeOfDay: Float?
+    public var incomingSunDirection: SIMD3<Float>?
+    public var incomingMoonDirection: SIMD3<Float>?
+    public var incomingSkyLogLuminance: Float?
+    public var incomingIncludesSpecular: Bool
+    /// Diffuse and specular radiance blends are independent of camera exposure.
+    public var diffuseBlendFactor: Float
+    public var specularBlendFactor: Float
+    public var crossfadeStartedAt: Double?
+    public var crossfadeDuration: Double
+    public var lastBuiltMoonDirection: SIMD3<Float>?
+    public var lastBuiltSkyLogLuminance: Float?
+    public var lastBuiltSpecularSignature: EnvironmentIBLSignature?
+    public var lastBuiltSpecularGeneration: UInt64?
+    public var lastBuiltSpecularTimeOfDay: Float?
+    public var lastBuiltSpecularSunDirection: SIMD3<Float>?
+    public var lastBuiltSpecularMoonDirection: SIMD3<Float>?
+    public var lastBuiltSpecularSkyLogLuminance: Float?
+    public var sourceDirty: Bool
+    public var interactiveAcceptable: Bool
+    public var coalescedRequestCount: UInt64
+    public var discardedCompletionCount: UInt64
 
     public static var defaultNeedsRebuild: EnvironmentIBLStateComponent {
         EnvironmentIBLStateComponent()
@@ -2361,7 +2394,34 @@ public struct EnvironmentIBLStateComponent: Equatable {
                 lastSourceChangeTime: Double = 0.0,
                 lastBuiltTimeOfDay: Float? = nil,
                 lastBuiltSunDirection: SIMD3<Float>? = nil,
-                lastBuildDuration: Double? = nil) {
+                lastBuildDuration: Double? = nil,
+                incomingEnvironmentTexture: AssetHandle? = nil,
+                incomingIrradianceTexture: AssetHandle? = nil,
+                incomingPrefilteredTexture: AssetHandle? = nil,
+                incomingSignature: EnvironmentIBLSignature? = nil,
+                incomingGeneration: UInt64? = nil,
+                incomingQuality: EnvironmentIBLRebuildQuality? = nil,
+                incomingTimeOfDay: Float? = nil,
+                incomingSunDirection: SIMD3<Float>? = nil,
+                incomingMoonDirection: SIMD3<Float>? = nil,
+                incomingSkyLogLuminance: Float? = nil,
+                incomingIncludesSpecular: Bool = true,
+                diffuseBlendFactor: Float = 0,
+                specularBlendFactor: Float = 0,
+                crossfadeStartedAt: Double? = nil,
+                crossfadeDuration: Double = 0.5,
+                lastBuiltMoonDirection: SIMD3<Float>? = nil,
+                lastBuiltSkyLogLuminance: Float? = nil,
+                lastBuiltSpecularSignature: EnvironmentIBLSignature? = nil,
+                lastBuiltSpecularGeneration: UInt64? = nil,
+                lastBuiltSpecularTimeOfDay: Float? = nil,
+                lastBuiltSpecularSunDirection: SIMD3<Float>? = nil,
+                lastBuiltSpecularMoonDirection: SIMD3<Float>? = nil,
+                lastBuiltSpecularSkyLogLuminance: Float? = nil,
+                sourceDirty: Bool = true,
+                interactiveAcceptable: Bool = false,
+                coalescedRequestCount: UInt64 = 0,
+                discardedCompletionCount: UInt64 = 0) {
         self.environmentTexture = environmentTexture
         self.irradianceTexture = irradianceTexture
         self.prefilteredTexture = prefilteredTexture
@@ -2384,6 +2444,33 @@ public struct EnvironmentIBLStateComponent: Equatable {
         self.lastBuiltTimeOfDay = lastBuiltTimeOfDay
         self.lastBuiltSunDirection = lastBuiltSunDirection
         self.lastBuildDuration = lastBuildDuration
+        self.incomingEnvironmentTexture = incomingEnvironmentTexture
+        self.incomingIrradianceTexture = incomingIrradianceTexture
+        self.incomingPrefilteredTexture = incomingPrefilteredTexture
+        self.incomingSignature = incomingSignature
+        self.incomingGeneration = incomingGeneration
+        self.incomingQuality = incomingQuality
+        self.incomingTimeOfDay = incomingTimeOfDay
+        self.incomingSunDirection = incomingSunDirection
+        self.incomingMoonDirection = incomingMoonDirection
+        self.incomingSkyLogLuminance = incomingSkyLogLuminance
+        self.incomingIncludesSpecular = incomingIncludesSpecular
+        self.diffuseBlendFactor = diffuseBlendFactor
+        self.specularBlendFactor = specularBlendFactor
+        self.crossfadeStartedAt = crossfadeStartedAt
+        self.crossfadeDuration = crossfadeDuration
+        self.lastBuiltMoonDirection = lastBuiltMoonDirection
+        self.lastBuiltSkyLogLuminance = lastBuiltSkyLogLuminance
+        self.lastBuiltSpecularSignature = lastBuiltSpecularSignature
+        self.lastBuiltSpecularGeneration = lastBuiltSpecularGeneration
+        self.lastBuiltSpecularTimeOfDay = lastBuiltSpecularTimeOfDay
+        self.lastBuiltSpecularSunDirection = lastBuiltSpecularSunDirection
+        self.lastBuiltSpecularMoonDirection = lastBuiltSpecularMoonDirection
+        self.lastBuiltSpecularSkyLogLuminance = lastBuiltSpecularSkyLogLuminance
+        self.sourceDirty = sourceDirty
+        self.interactiveAcceptable = interactiveAcceptable
+        self.coalescedRequestCount = coalescedRequestCount
+        self.discardedCompletionCount = discardedCompletionCount
     }
 }
 

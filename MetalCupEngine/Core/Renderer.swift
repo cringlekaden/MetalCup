@@ -50,26 +50,28 @@ public final class Renderer: NSObject {
     // Global and local captures share the authoritative world-space convention.
     private let _views = CubemapConvention.captureViewMatrices
     private var _viewProjections: [float4x4]!
-    private let _environmentSize = 2048
+    private let _environmentSize = 1024
     private let _irradianceSize = 64
-    private let _prefilteredSize = 1024
-    private let _environmentSizeFast = 512
-    private let _irradianceSizeFast = 32
-    private let _prefilteredSizeFast = 256
+    private let _prefilteredSize = 512
+    // Playback tier: directional diffuse is low-frequency; specular retains a
+    // complete mip chain without continuously paying final 2048/1024 costs.
+    private let _environmentSizeFast = 256
+    private let _irradianceSizeFast = 16
+    private let _prefilteredSizeFast = 128
     private let _brdfLutSize = 512
     private let _diagnosticEnvironmentSize = 512
     private let _diagnosticIrradianceSize = 32
     private let _diagnosticPrefilteredSize = 256
     private let _skyRebuildQueue = DispatchQueue(label: "MetalCup.Renderer.SkyRebuild", qos: .userInitiated)
     private let _environmentIBLCommandQueue: MTLCommandQueue
-    private let _skyRebuildCooldown: Double = 2.0
-    private let _environmentIBLEditDebounce: Double = 0.75
-    private let _skyInteractiveSettleDelay: Double = 4.0
+    private let _legacySkyRebuildCooldown: Double = 2.0
+    private let _skyInteractiveSettleDelay: Double = 0.75
     private var _skyRebuildInFlight = false
     private var _lastSkyRequestedSnapshot: SkyLightComponent?
     private var _lastSkyLiveSnapshot: SkyLightComponent?
     private var _lastSkyLiveUpdateTime: Double = 0.0
     private var _lastSkyRebuildStartTime: Double = 0.0
+    private var _lastInteractiveSpecularBuildStartTime: Double = 0.0
     private var _lastSkyInteractionTime: Double = 0.0
     private var _pendingSkySnapshot: SkyLightComponent?
     private var _pendingEnvironmentRenderState: EnvironmentRenderState?
@@ -98,6 +100,9 @@ public final class Renderer: NSObject {
         let manual: Bool
         let sourceTimeOfDay: Float
         let sourceSunDirection: SIMD3<Float>
+        let sourceMoonDirection: SIMD3<Float>
+        let sourceSkyLogLuminance: Float
+        let updatesSpecular: Bool
     }
 
     private struct EnvironmentIBLRebuildResult {
@@ -109,6 +114,9 @@ public final class Renderer: NSObject {
         let completedAt: Double
         let sourceTimeOfDay: Float
         let sourceSunDirection: SIMD3<Float>
+        let sourceMoonDirection: SIMD3<Float>
+        let sourceSkyLogLuminance: Float
+        let updatesSpecular: Bool
         let duration: Double
     }
 
@@ -135,7 +143,7 @@ public final class Renderer: NSObject {
     }
 
     private var _iblHandleSets: [IBLTextureHandles] = []
-    private var _iblFastHandles: IBLTextureHandles?
+    private var _iblFastHandleSets: [IBLTextureHandles] = []
     private var _activeIBLHandleIndex = 0
     private var _brdfPipelineStateByFormat: [MTLPixelFormat: MTLRenderPipelineState] = [:]
     // Runtime-only probe capture state lives in a dedicated manager so authored ECS data stays separate.
@@ -227,20 +235,18 @@ public final class Renderer: NSObject {
         _iblHandleSets = [builtinHandles, alternateHandles]
         _activeIBLHandleIndex = 0
         ensureIBLTextureSet(handles: alternateHandles)
-        let fastHandles = IBLTextureHandles(
-            environment: AssetHandle(),
-            irradiance: AssetHandle(),
-            prefiltered: AssetHandle(),
-            brdf: BuiltinAssets.brdfLut
-        )
-        _iblFastHandles = fastHandles
-        ensureIBLTextureSet(
-            handles: fastHandles,
-            environmentSize: _environmentSizeFast,
-            irradianceSize: _irradianceSizeFast,
-            prefilteredSize: _prefilteredSizeFast,
-            labelSuffix: "Fast"
-        )
+        _iblFastHandleSets = (0..<2).map { slot in
+            let handles = IBLTextureHandles(environment: AssetHandle(),
+                                            irradiance: AssetHandle(),
+                                            prefiltered: AssetHandle(),
+                                            brdf: BuiltinAssets.brdfLut)
+            ensureIBLTextureSet(handles: handles,
+                                environmentSize: _environmentSizeFast,
+                                irradianceSize: _irradianceSizeFast,
+                                prefilteredSize: _prefilteredSizeFast,
+                                labelSuffix: "Interactive.\(slot)")
+            return handles
+        }
         _lastSkyInteractionTime = CACurrentMediaTime()
         let iblAllocationEnd = CACurrentMediaTime()
         EngineLoggerContext.log(
@@ -519,6 +525,11 @@ public final class Renderer: NSObject {
 
     public func reflectionProbeBakeStatus(scene: EngineScene, entityID: UUID) -> ReflectionProbeRuntimeStatus? {
         _reflectionProbeRuntimeManager.reflectionProbeBakeStatus(scene: scene, entityID: entityID)
+    }
+
+    public func reflectionProbeTemporalDebugState(scene: EngineScene,
+                                                  entityID: UUID) -> ReflectionProbeTemporalDebugState? {
+        _reflectionProbeRuntimeManager.reflectionProbeTemporalDebugState(scene: scene, entityID: entityID)
     }
 
     public func debugReflectionProbeSelection(scene: EngineScene, entityID: UUID) -> ReflectionProbeDebugSelection? {
@@ -963,46 +974,58 @@ public final class Renderer: NSObject {
             completedSignature: result.signature,
             completedGeneration: result.generation
         )
-        let mayPublishLaggingInteractive = EnvironmentIBLRebuildLifecycle.mayPublishLaggingInteractive(
-            state: state,
-            completedGeneration: result.generation,
-            completedQuality: result.quality
-        )
+        let improvesBoundedFreshness = activeEnvironmentEntity == entity
+            && result.quality == .interactive
+            && EnvironmentIBLRebuildLifecycle.completionImprovesFreshness(
+                state: state,
+                current: currentRenderState,
+                completedGeneration: result.generation,
+                completedTime: result.sourceTimeOfDay,
+                completedSun: result.sourceSunDirection,
+                completedMoon: result.sourceMoonDirection,
+                completedSkyLogLuminance: result.sourceSkyLogLuminance
+            )
 
-        if resultIsCurrent || mayPublishLaggingInteractive {
-            if let appliedIndex = _iblHandleSets.firstIndex(where: {
-                $0.environment == result.handles.environment
-                    && $0.irradiance == result.handles.irradiance
-                    && $0.prefiltered == result.handles.prefiltered
-            }) {
-                _activeIBLHandleIndex = appliedIndex
-            }
-            state.environmentTexture = result.handles.environment
-            state.irradianceTexture = result.handles.irradiance
-            state.prefilteredTexture = result.handles.prefiltered
+        if resultIsCurrent || improvesBoundedFreshness {
+            state.incomingEnvironmentTexture = result.handles.environment
+            state.incomingIrradianceTexture = result.handles.irradiance
+            state.incomingPrefilteredTexture = result.updatesSpecular
+                ? result.handles.prefiltered
+                : state.prefilteredTexture
+            state.incomingSignature = result.signature
+            state.incomingGeneration = result.generation
+            state.incomingQuality = result.quality
+            state.incomingTimeOfDay = result.sourceTimeOfDay
+            state.incomingSunDirection = result.sourceSunDirection
+            state.incomingMoonDirection = result.sourceMoonDirection
+            state.incomingSkyLogLuminance = result.sourceSkyLogLuminance
+            state.incomingIncludesSpecular = result.updatesSpecular
             state.brdfLUT = result.handles.brdf
+            let activeTimeDelta: Float = state.lastBuiltTimeOfDay.map {
+                let raw = abs($0 - result.sourceTimeOfDay).truncatingRemainder(dividingBy: 24)
+                return min(raw, 24 - raw)
+            } ?? 24
+            let activeRadiometricDelta = state.lastBuiltSkyLogLuminance.map {
+                abs($0 - result.sourceSkyLogLuminance)
+            } ?? .infinity
+            let mustSnap = state.needsRebuild
+                || activeTimeDelta >= EnvironmentIBLRebuildLifecycle.Thresholds.production.snapTimeDiscontinuityHours
+                || activeRadiometricDelta >= EnvironmentIBLRebuildLifecycle.Thresholds.production.snapRadiometricDiscontinuityStops
+            state.crossfadeDuration = mustSnap ? 0 : EnvironmentIBLRebuildLifecycle.Thresholds.production.crossfadeDuration
+            state.crossfadeStartedAt = result.completedAt
+            state.diffuseBlendFactor = mustSnap ? 1 : 0
+            state.specularBlendFactor = mustSnap && result.updatesSpecular ? 1 : 0
             state.dirty = !resultIsCurrent
+            state.sourceDirty = !resultIsCurrent
             state.needsRebuild = false
             state.rebuildRequested = false
             state.isRebuilding = false
-            state.lastBuiltSignature = result.signature
-            state.lastBuiltGeneration = result.generation
-            state.lastBuiltTimeOfDay = result.sourceTimeOfDay
-            state.lastBuiltSunDirection = result.sourceSunDirection
             state.lastBuildDuration = result.duration
             state.inFlightGeneration = nil
             state.currentRebuildQuality = nil
-            state.lastBuiltQuality = result.quality
             state.lastFailureMessage = nil
-            if result.quality == .interactive {
-                state.phase = .interactiveReady
-                // Keep the exact desired signature pending until the automatic
-                // final-quality pass publishes matching resources.
-                state.pendingSignature = resultIsCurrent ? result.signature : currentRenderState.iblSignature
-            } else {
-                state.phase = .finalReady
-                state.pendingSignature = nil
-            }
+            state.phase = result.quality == .final ? .rebuildingFinal : .rebuildingInteractive
+            state.pendingSignature = resultIsCurrent ? result.signature : currentRenderState.iblSignature
         } else {
             state.dirty = true
             state.needsRebuild = false
@@ -1011,6 +1034,7 @@ public final class Renderer: NSObject {
             state.phase = .dirty
             state.currentRebuildQuality = nil
             state.pendingSignature = currentRenderState.iblSignature
+            state.discardedCompletionCount &+= 1
             _pendingEnvironmentRenderState = currentRenderState
         }
 
@@ -1037,6 +1061,85 @@ public final class Renderer: NSObject {
             state.lastFailureMessage = failure.message
         }
         scene.ecs.add(state, to: entity)
+    }
+
+    private func advanceEnvironmentIBLCrossfade(state: inout EnvironmentIBLStateComponent,
+                                                current: EnvironmentRenderState,
+                                                now: Double) {
+        guard let startedAt = state.crossfadeStartedAt,
+              let incomingEnvironment = state.incomingEnvironmentTexture,
+              let incomingIrradiance = state.incomingIrradianceTexture,
+              let incomingPrefiltered = state.incomingPrefilteredTexture,
+              let incomingSignature = state.incomingSignature,
+              let incomingGeneration = state.incomingGeneration,
+              let incomingQuality = state.incomingQuality else { return }
+        let factor = state.crossfadeDuration <= 0
+            ? Float(1)
+            : min(max(Float((now - startedAt) / state.crossfadeDuration), 0), 1)
+        state.diffuseBlendFactor = factor
+        state.specularBlendFactor = state.incomingIncludesSpecular ? factor : 0
+        guard factor >= 1 else { return }
+
+        state.environmentTexture = incomingEnvironment
+        state.irradianceTexture = incomingIrradiance
+        state.prefilteredTexture = incomingPrefiltered
+        state.lastBuiltSignature = incomingSignature
+        state.lastBuiltGeneration = incomingGeneration
+        state.lastBuiltQuality = incomingQuality
+        state.lastBuiltTimeOfDay = state.incomingTimeOfDay
+        state.lastBuiltSunDirection = state.incomingSunDirection
+        state.lastBuiltMoonDirection = state.incomingMoonDirection
+        state.lastBuiltSkyLogLuminance = state.incomingSkyLogLuminance
+        if state.incomingIncludesSpecular {
+            state.lastBuiltSpecularSignature = incomingSignature
+            state.lastBuiltSpecularGeneration = incomingGeneration
+            state.lastBuiltSpecularTimeOfDay = state.incomingTimeOfDay
+            state.lastBuiltSpecularSunDirection = state.incomingSunDirection
+            state.lastBuiltSpecularMoonDirection = state.incomingMoonDirection
+            state.lastBuiltSpecularSkyLogLuminance = state.incomingSkyLogLuminance
+        }
+        state.incomingEnvironmentTexture = nil
+        state.incomingIrradianceTexture = nil
+        state.incomingPrefilteredTexture = nil
+        state.incomingSignature = nil
+        state.incomingGeneration = nil
+        state.incomingQuality = nil
+        state.incomingTimeOfDay = nil
+        state.incomingSunDirection = nil
+        state.incomingMoonDirection = nil
+        state.incomingSkyLogLuminance = nil
+        state.incomingIncludesSpecular = true
+        state.crossfadeStartedAt = nil
+        state.diffuseBlendFactor = 0
+        state.specularBlendFactor = 0
+
+        let exact = incomingSignature == current.iblSignature
+        let lag = EnvironmentIBLRebuildLifecycle.lag(
+            current: current,
+            representedTime: state.lastBuiltTimeOfDay,
+            representedSun: state.lastBuiltSunDirection,
+            representedMoon: state.lastBuiltMoonDirection,
+            representedSkyLogLuminance: state.lastBuiltSkyLogLuminance
+        )
+        let specularLag = EnvironmentIBLRebuildLifecycle.lag(
+            current: current,
+            representedTime: state.lastBuiltSpecularTimeOfDay ?? state.lastBuiltTimeOfDay,
+            representedSun: state.lastBuiltSpecularSunDirection ?? state.lastBuiltSunDirection,
+            representedMoon: state.lastBuiltSpecularMoonDirection ?? state.lastBuiltMoonDirection,
+            representedSkyLogLuminance: state.lastBuiltSpecularSkyLogLuminance ?? state.lastBuiltSkyLogLuminance
+        )
+        let thresholds = EnvironmentIBLRebuildLifecycle.Thresholds.production
+        state.interactiveAcceptable = lag.timeHours <= thresholds.maximumTimeLagHours
+            && lag.skyLuminanceStops <= thresholds.maximumRadiometricLagStops
+            && specularLag.timeHours <= thresholds.maximumTimeLagHours
+            && specularLag.skyLuminanceStops <= thresholds.maximumRadiometricLagStops
+        state.dirty = !exact
+        state.sourceDirty = !exact
+        state.phase = incomingQuality == .final && exact ? .finalReady : .interactiveReady
+        state.pendingSignature = exact ? nil : current.iblSignature
+        if let finalIndex = _iblHandleSets.firstIndex(where: { $0.environment == incomingEnvironment }) {
+            _activeIBLHandleIndex = finalIndex
+        }
     }
 
     @discardableResult
@@ -1102,6 +1205,7 @@ public final class Renderer: NSObject {
             || (prefilteredTexture?.width ?? 0) <= 1
             || brdfTexture == nil
         let now = CACurrentMediaTime()
+        advanceEnvironmentIBLCrossfade(state: &iblState, current: renderState, now: now)
         if texturesMissing {
             iblState.dirty = true
             iblState.needsRebuild = true
@@ -1117,6 +1221,7 @@ public final class Renderer: NSObject {
             iblState.lastSourceChangeTime = now
             iblState.pendingSignature = signature
             iblState.dirty = true
+            iblState.sourceDirty = true
             if !iblState.isRebuilding {
                 iblState.phase = .dirty
             }
@@ -1137,6 +1242,17 @@ public final class Renderer: NSObject {
             _pendingEnvironmentRenderState = renderState
             iblState.isRebuilding = true
             iblState.pendingSignature = signature
+            if desiredSourceChanged {
+                iblState.coalescedRequestCount &+= 1
+            }
+            scene.ecs.add(iblState, to: entity)
+            return true
+        }
+
+        // Do not overwrite either side of an active A/B transition. The newest
+        // immutable source snapshot remains coalesced while the short fade completes.
+        if iblState.incomingGeneration != nil {
+            _pendingEnvironmentRenderState = renderState
             scene.ecs.add(iblState, to: entity)
             return true
         }
@@ -1148,24 +1264,16 @@ public final class Renderer: NSObject {
             now: now,
             settleDelay: _skyInteractiveSettleDelay
         )
-        let shouldRebuild = manualRebuild
-            || iblState.needsRebuild
-            || (iblState.dirty && policyAllowsAutomaticRebuild)
-            || finalBuildNeeded
+        let interactiveBuildNeeded = iblState.dirty
+            && policyAllowsAutomaticRebuild
+            && EnvironmentIBLRebuildLifecycle.shouldScheduleInteractive(
+                state: iblState,
+                current: renderState,
+                now: now,
+                lastBuildStart: _lastSkyRebuildStartTime
+            )
+        let shouldRebuild = manualRebuild || iblState.needsRebuild || interactiveBuildNeeded || finalBuildNeeded
         if !shouldRebuild { return true }
-
-        let bypassCooldown = manualRebuild || iblState.needsRebuild
-        let isDebouncingEdit = !bypassCooldown
-            && !finalBuildNeeded
-            && (now - iblState.lastSourceChangeTime) < _environmentIBLEditDebounce
-        let isInCooldown = !bypassCooldown
-            && (now - _lastSkyRebuildStartTime) < _skyRebuildCooldown
-        if isDebouncingEdit || isInCooldown {
-            _pendingEnvironmentRenderState = renderState
-            iblState.pendingSignature = signature
-            scene.ecs.add(iblState, to: entity)
-            return true
-        }
 
         let snapshot = _pendingEnvironmentRenderState ?? renderState
         _pendingEnvironmentRenderState = nil
@@ -1175,9 +1283,18 @@ public final class Renderer: NSObject {
             resourcesMissing: iblState.needsRebuild,
             finalBuildNeeded: finalBuildNeeded
         )
-        let nextIndex = (_activeIBLHandleIndex + 1) % _iblHandleSets.count
-        let finalHandles = _iblHandleSets[nextIndex]
-        let targetHandles = (rebuildQuality == .interactive ? (_iblFastHandles ?? finalHandles) : finalHandles)
+        let candidates = rebuildQuality == .interactive ? _iblFastHandleSets : _iblHandleSets
+        let targetHandles = candidates.first { handles in
+            handles.irradiance != iblState.irradianceTexture
+                && handles.irradiance != iblState.incomingIrradianceTexture
+                && handles.prefiltered != iblState.prefilteredTexture
+                && handles.prefiltered != iblState.incomingPrefilteredTexture
+        }
+        guard let targetHandles else {
+            _pendingEnvironmentRenderState = renderState
+            scene.ecs.add(iblState, to: entity)
+            return true
+        }
         guard let targetEnv = engineContext.assets.texture(handle: targetHandles.environment),
               let targetIrr = engineContext.assets.texture(handle: targetHandles.irradiance),
               let targetPre = engineContext.assets.texture(handle: targetHandles.prefiltered) else {
@@ -1215,6 +1332,20 @@ public final class Renderer: NSObject {
         skyParams.galaxyTextureEnabled = galaxyTexture == nil ? 0.0 : 1.0
         skyParams.cloudAtlasEnabled = cloudAtlasTexture == nil ? 0.0 : 1.0
 
+        let activeLag = EnvironmentIBLRebuildLifecycle.lag(
+            current: snapshot,
+            representedTime: iblState.lastBuiltSpecularTimeOfDay ?? iblState.lastBuiltTimeOfDay,
+            representedSun: iblState.lastBuiltSpecularSunDirection ?? iblState.lastBuiltSunDirection,
+            representedMoon: iblState.lastBuiltSpecularMoonDirection ?? iblState.lastBuiltMoonDirection,
+            representedSkyLogLuminance: iblState.lastBuiltSpecularSkyLogLuminance ?? iblState.lastBuiltSkyLogLuminance
+        )
+        let updatesSpecular = rebuildQuality == .final
+            || iblState.needsRebuild
+            || now - _lastInteractiveSpecularBuildStartTime >= 0.50
+            || activeLag.sunDegrees >= 4.0
+            || activeLag.moonDegrees >= 5.0
+            || activeLag.skyLuminanceStops >= 0.50
+
         let request = EnvironmentIBLRebuildRequest(
             entity: entity,
             signature: snapshotSignature,
@@ -1234,10 +1365,16 @@ public final class Renderer: NSObject {
             requestedAt: now,
             manual: manualRebuild,
             sourceTimeOfDay: snapshot.finalTimeOfDay,
-            sourceSunDirection: snapshot.sunDirection
+            sourceSunDirection: snapshot.sunDirection,
+            sourceMoonDirection: snapshot.moonDirection,
+            sourceSkyLogLuminance: EnvironmentIBLRebuildLifecycle.skyLogLuminance(snapshot),
+            updatesSpecular: updatesSpecular
         )
         _skyRebuildInFlight = true
         _lastSkyRebuildStartTime = now
+        if updatesSpecular {
+            _lastInteractiveSpecularBuildStartTime = now
+        }
         iblState.lastRebuildTime = now
         iblState.isRebuilding = true
         iblState.needsRebuild = texturesMissing
@@ -1320,13 +1457,15 @@ public final class Renderer: NSObject {
                 frameContext: frameContext,
                 commandBuffer: commandBuffer
             )
-            self.renderPrefilteredSpecularMap(
-                sourceEnvironment: request.targetEnvironment,
-                targetPrefiltered: request.targetPrefiltered,
-                config: request.generationConfig,
-                frameContext: frameContext,
-                commandBuffer: commandBuffer
-            )
+            if request.updatesSpecular {
+                self.renderPrefilteredSpecularMap(
+                    sourceEnvironment: request.targetEnvironment,
+                    targetPrefiltered: request.targetPrefiltered,
+                    config: request.generationConfig,
+                    frameContext: frameContext,
+                    commandBuffer: commandBuffer
+                )
+            }
             let encodeDt = CACurrentMediaTime() - encodeStart
 
             commandBuffer.addCompletedHandler { [weak self] buffer in
@@ -1357,6 +1496,9 @@ public final class Renderer: NSObject {
                     completedAt: completed,
                     sourceTimeOfDay: request.sourceTimeOfDay,
                     sourceSunDirection: request.sourceSunDirection,
+                    sourceMoonDirection: request.sourceMoonDirection,
+                    sourceSkyLogLuminance: request.sourceSkyLogLuminance,
+                    updatesSpecular: request.updatesSpecular,
                     duration: totalCpuWallDt
                 )))
             }
@@ -1420,7 +1562,7 @@ public final class Renderer: NSObject {
             let wantsCloudMotion = sky.cloudsEnabled && abs(sky.cloudsSpeed) > 0.0001
             let needsCloudTick = wantsCloudMotion && (now - _lastSkyLiveUpdateTime) > 0.35
             let shouldUpdateLive = paramsChanged || needsCloudTick
-            if shouldUpdateLive && !_skyRebuildInFlight && (now - iblState.lastRebuildTime) >= _skyRebuildCooldown {
+            if shouldUpdateLive && !_skyRebuildInFlight && (now - iblState.lastRebuildTime) >= _legacySkyRebuildCooldown {
                 if let requested = _lastSkyRequestedSnapshot, SkySystem.liveSkyParamsMatch(requested, sky) {
                     _lastSkyLiveUpdateTime = now
                 } else {
@@ -1440,7 +1582,7 @@ public final class Renderer: NSObject {
         if !iblState.needsRebuild { return }
         let allowRebuild = iblState.realtimeUpdate || iblState.rebuildRequested
         if !allowRebuild { return }
-        if (now - _lastSkyRebuildStartTime) < _skyRebuildCooldown {
+        if (now - _lastSkyRebuildStartTime) < _legacySkyRebuildCooldown {
             _pendingSkySnapshot = sky
             return
         }
@@ -1455,7 +1597,7 @@ public final class Renderer: NSObject {
         let finalHandles = _iblHandleSets[nextIndex]
         let withinInteractiveWindow = (now - _lastSkyInteractionTime) < _skyInteractiveSettleDelay
         let buildMode: IBLBuildMode = withinInteractiveWindow ? .interactive : .final
-        let targetHandles = (buildMode == .interactive ? (_iblFastHandles ?? finalHandles) : finalHandles)
+        let targetHandles = (buildMode == .interactive ? (_iblFastHandleSets.first ?? finalHandles) : finalHandles)
         let modeLabel = buildMode.rawValue
         _skyRebuildInFlight = true
         _lastSkyRebuildStartTime = now

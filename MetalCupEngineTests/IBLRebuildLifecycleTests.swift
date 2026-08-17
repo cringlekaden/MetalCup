@@ -2,6 +2,132 @@ import Testing
 @testable import MetalCupEngine
 
 struct IBLRebuildLifecycleTests {
+    private func renderState(time: Float) -> EnvironmentRenderState {
+        var environment = EnvironmentComponent.default
+        environment.source.mode = .procedural
+        environment.celestial.defaultTimeOfDay = time
+        return EnvironmentRenderStateBuilder.build(environment: environment, runtime: nil)
+    }
+
+    @Test
+    func continuousAnimationSchedulesWithoutWaitingForExactSignatureToSettle() {
+        let midday = renderState(time: 12)
+        let later = renderState(time: 13)
+        let state = EnvironmentIBLStateComponent(
+            dirty: true,
+            needsRebuild: false,
+            lastBuiltSignature: midday.iblSignature,
+            lastBuiltQuality: .interactive,
+            phase: .interactiveReady,
+            sourceGeneration: 20,
+            lastBuiltGeneration: 12,
+            lastBuiltTimeOfDay: midday.finalTimeOfDay,
+            lastBuiltSunDirection: midday.sunDirection,
+            lastBuiltMoonDirection: midday.moonDirection,
+            lastBuiltSkyLogLuminance: EnvironmentIBLRebuildLifecycle.skyLogLuminance(midday)
+        )
+        #expect(!EnvironmentIBLRebuildLifecycle.shouldScheduleInteractive(
+            state: state, current: later, now: 0.19, lastBuildStart: 0
+        ))
+        #expect(EnvironmentIBLRebuildLifecycle.shouldScheduleInteractive(
+            state: state, current: later, now: 0.20, lastBuildStart: 0
+        ))
+    }
+
+    @Test
+    func staleDaytimeCompletionCannotPublishAtNight() {
+        let midday = renderState(time: 12)
+        let midnight = renderState(time: 0)
+        let state = EnvironmentIBLStateComponent(
+            lastBuiltSignature: midnight.iblSignature,
+            sourceGeneration: 40,
+            lastBuiltGeneration: 38,
+            lastBuiltTimeOfDay: midnight.finalTimeOfDay,
+            lastBuiltSunDirection: midnight.sunDirection,
+            lastBuiltMoonDirection: midnight.moonDirection,
+            lastBuiltSkyLogLuminance: EnvironmentIBLRebuildLifecycle.skyLogLuminance(midnight)
+        )
+        #expect(!EnvironmentIBLRebuildLifecycle.completionImprovesFreshness(
+            state: state,
+            current: midnight,
+            completedGeneration: 39,
+            completedTime: midday.finalTimeOfDay,
+            completedSun: midday.sunDirection,
+            completedMoon: midday.moonDirection,
+            completedSkyLogLuminance: EnvironmentIBLRebuildLifecycle.skyLogLuminance(midday)
+        ))
+    }
+
+    @Test
+    func boundedNewerInteractiveCompletionMayAdvanceRepresentation() {
+        let old = renderState(time: 12.0)
+        let completed = renderState(time: 12.25)
+        let current = renderState(time: 12.5)
+        let state = EnvironmentIBLStateComponent(
+            lastBuiltSignature: old.iblSignature,
+            sourceGeneration: 9,
+            lastBuiltGeneration: 4,
+            lastBuiltTimeOfDay: old.finalTimeOfDay,
+            lastBuiltSunDirection: old.sunDirection,
+            lastBuiltMoonDirection: old.moonDirection,
+            lastBuiltSkyLogLuminance: EnvironmentIBLRebuildLifecycle.skyLogLuminance(old)
+        )
+        #expect(EnvironmentIBLRebuildLifecycle.completionImprovesFreshness(
+            state: state,
+            current: current,
+            completedGeneration: 8,
+            completedTime: completed.finalTimeOfDay,
+            completedSun: completed.sunDirection,
+            completedMoon: completed.moonDirection,
+            completedSkyLogLuminance: EnvironmentIBLRebuildLifecycle.skyLogLuminance(completed)
+        ))
+    }
+
+    @Test(arguments: [60.0, 10.0])
+    func acceleratedCycleNeverWaitsForAnimationToStop(dayLengthSeconds: Double) {
+        var represented = renderState(time: 0)
+        var state = EnvironmentIBLStateComponent(
+            dirty: true,
+            needsRebuild: false,
+            lastBuiltSignature: represented.iblSignature,
+            lastBuiltQuality: .interactive,
+            phase: .interactiveReady,
+            sourceGeneration: 1,
+            lastBuiltGeneration: 1,
+            lastBuiltTimeOfDay: represented.finalTimeOfDay,
+            lastBuiltSunDirection: represented.sunDirection,
+            lastBuiltMoonDirection: represented.moonDirection,
+            lastBuiltSkyLogLuminance: EnvironmentIBLRebuildLifecycle.skyLogLuminance(represented)
+        )
+        var lastBuild = 0.0
+        var buildCount = 0
+        for frame in 1...Int(dayLengthSeconds * 60) {
+            let now = Double(frame) / 60
+            let current = renderState(time: Float((now / dayLengthSeconds) * 24).truncatingRemainder(dividingBy: 24))
+            state.dirty = true
+            if EnvironmentIBLRebuildLifecycle.shouldScheduleInteractive(
+                state: state, current: current, now: now, lastBuildStart: lastBuild
+            ) {
+                represented = current
+                lastBuild = now
+                buildCount += 1
+                state.lastBuiltSignature = current.iblSignature
+                state.lastBuiltTimeOfDay = current.finalTimeOfDay
+                state.lastBuiltSunDirection = current.sunDirection
+                state.lastBuiltMoonDirection = current.moonDirection
+                state.lastBuiltSkyLogLuminance = EnvironmentIBLRebuildLifecycle.skyLogLuminance(current)
+            }
+        }
+        #expect(buildCount > 0)
+        let endLag = EnvironmentIBLRebuildLifecycle.lag(
+            current: renderState(time: 0),
+            representedTime: represented.finalTimeOfDay,
+            representedSun: represented.sunDirection,
+            representedMoon: represented.moonDirection,
+            representedSkyLogLuminance: EnvironmentIBLRebuildLifecycle.skyLogLuminance(represented)
+        )
+        #expect(endLag.timeHours < 1.0)
+    }
     @Test
     func exactSourceSignatureChangesAreNotCoarselyQuantized() {
         var environment = EnvironmentComponent(source: EnvironmentSourceConfig(mode: .procedural))
