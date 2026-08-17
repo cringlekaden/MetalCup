@@ -15,32 +15,41 @@ struct SceneLinearHDROutputTests {
         let legacy = Data(#"{"manualExposure":4,"autoExposureEnabled":true}"#.utf8)
         let migrated = try JSONDecoder().decode(CameraComponentDTO.self, from: legacy)
         #expect(abs(migrated.exposureEV - 2.0) < 0.000001)
+        #expect(migrated.exposurePolicy.mode == .automaticHistogram)
+        #expect(migrated.exposurePolicy.manualEV100 == 13.0)
 
         let missing = try JSONDecoder().decode(CameraComponentDTO.self, from: Data("{}".utf8))
         #expect(missing.exposureEV == 0.0)
+        #expect(missing.exposurePolicy.isEmpty)
 
         let encoded = try JSONEncoder().encode(migrated)
         let json = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        #expect(json["exposureEV"] != nil)
+        #expect(json["exposurePolicy"] != nil)
+        #expect(json["exposureEV"] == nil)
         #expect(json["manualExposure"] == nil)
-        #expect(json["schemaVersion"] as? Int == 4)
+        #expect(json["schemaVersion"] as? Int == 5)
     }
 
     @Test
-    func staleAutoExposureFieldsCannotChangeTheManualFramePath() {
-        var camera = CameraComponent(autoExposureEnabled: true, exposureEV: -1.0)
-        camera.exposureCompensation = 8.0
-        camera.autoExposureMin = 0.001
-        camera.autoExposureMax = 64.0
-        camera.adaptationSpeed = 20.0
+    func cameraPolicyIsResolvedWithoutLegacyGainAmbiguity() {
+        var camera = CameraComponent(exposurePolicy: .inheritAll)
+        camera.exposurePolicy = ExposurePolicyOverride(
+            mode: .manualEV100,
+            compensation: 0.5,
+            manualEV100: 16,
+            minimumEV100: 2,
+            maximumEV100: 17,
+            darkAdaptationRate: 3,
+            lightAdaptationRate: 8
+        )
 
         let settings = SceneRenderer.exposureSettings(from: camera)
         #expect(settings.autoExposureEnabled == 0)
         #expect(settings.exposureEV == -1.0)
-        #expect(settings.exposureCompensation == 0.0)
-        #expect(settings.autoExposureMin == 0.0)
-        #expect(settings.autoExposureMax == 0.0)
-        #expect(settings.adaptationSpeed == 0.0)
+        #expect(settings.exposureCompensation == 0.5)
+        #expect(settings.autoExposureMin == 2.0)
+        #expect(settings.autoExposureMax == 17.0)
+        #expect(settings.adaptationSpeed == 3.0)
         #expect(SceneLinearHDRContract.exposureMultiplier(forEV: settings.exposureEV) == 0.5)
 
         let evMinusOne = RenderViewContext(exposureSettings: SceneViewExposureSettings(exposureEV: -1))
