@@ -153,7 +153,7 @@ public typealias BloomUniforms = RendererSettings
 public typealias RendererUniforms = RendererSettings
 
 public struct RendererSettings: sizeable {
-    public static let expectedMetalStride: Int = 464
+    public static let expectedMetalStride: Int = 480
 
     public init() {}
 
@@ -264,6 +264,9 @@ public struct RendererSettings: sizeable {
     public var aerialFogSunColorAndStrength: SIMD4<Float> = .zero
     /// Reserved legacy aerial-fog tuning slots; production local fog ignores them.
     public var aerialFogParams: SIMD4<Float> = .zero
+    /// rgb = current live hemispherical sky radiance for fog; w = validity marker.
+    /// This is deliberately independent of captured IBL freshness.
+    public var aerialFogAmbientRadiance: SIMD4<Float> = .zero
 }
 
 public extension RendererSettings {

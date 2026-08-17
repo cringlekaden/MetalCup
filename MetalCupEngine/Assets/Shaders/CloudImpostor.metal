@@ -95,15 +95,20 @@ fragment float4 fragment_cloud_impostor(
     float luminanceMask = saturate(max(texel.r, max(texel.g, texel.b)));
     float internalDetail = mix(0.86, 1.04, smoothstep(0.24, 0.88, luminanceMask));
 
-    float3 sunDirection = normalize(params.sunDirectionAndNightFactor.xyz);
-    float nightFactor = saturate(params.sunDirectionAndNightFactor.w);
-    float sunHeight = saturate(sunDirection.y * 0.5 + 0.5);
-    float forwardLight = 0.62 + 0.38 * saturate(dot(normalize(in.viewDirection), sunDirection) * 0.5 + 0.5);
-    float3 lowSunTint = float3(1.0, 0.76, 0.50);
-    float3 dayTint = mix(float3(0.78, 0.82, 0.88), float3(1.0, 0.97, 0.91), sunHeight);
-    float3 nightTint = float3(0.08, 0.10, 0.16);
-    float3 cloudColor = mix(mix(lowSunTint, dayTint, sunHeight), nightTint, nightFactor);
-    cloudColor *= params.colorTintAndBrightness.rgb * params.colorTintAndBrightness.w * forwardLight * internalDetail;
+    float3 viewDirection = normalize(in.viewDirection);
+    float sunForward = saturate(dot(viewDirection, normalize(params.sunDirection.xyz)));
+    float moonForward = saturate(dot(viewDirection, normalize(params.moonDirection.xyz)));
+    float multiple = clamp(params.skyRadianceAndMultipleScattering.w, 0.0, 1.5);
+    float3 ambient = max(params.skyRadianceAndMultipleScattering.rgb, 0.0)
+        * mix(0.58, 1.12, multiple) * internalDetail;
+    float3 directSun = max(params.sunIrradiance.rgb, 0.0)
+        * (0.035 + 0.18 * pow(sunForward, 5.0)) * internalDetail;
+    float3 directMoon = max(params.moonIrradiance.rgb, 0.0)
+        * (0.025 + 0.12 * pow(moonForward, 4.0)) * internalDetail;
+    float3 incidentBound = max(params.skyRadianceAndMultipleScattering.rgb, 0.0) * 1.8
+        + (max(params.sunIrradiance.rgb, 0.0) + max(params.moonIrradiance.rgb, 0.0)) * 0.35
+        + float3(1e-7);
+    float3 cloudColor = min(ambient + directSun + directMoon, incidentBound);
 
     return float4(cloudColor * max(settings.renderPreExposure, 0.0), alpha);
 }

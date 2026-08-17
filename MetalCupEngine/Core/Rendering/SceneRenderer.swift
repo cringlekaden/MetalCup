@@ -632,23 +632,15 @@ public enum SceneRenderer {
         }
 
         let cardCount = min(max(Int(round(2.0 + coverage * 5.0)), 1), 7)
-        let daylight = min(max(environmentState.sunDirection.y * 1.15 + 0.12, 0.0), 1.0)
-        let nightFactor = 1.0 - daylight
         let windOffset = clouds.windDirection * clouds.windPhase * 0.05
         var params = CloudImpostorParams()
-        params.sunDirectionAndNightFactor = SIMD4<Float>(
-            environmentState.sunDirection.x,
-            environmentState.sunDirection.y,
-            environmentState.sunDirection.z,
-            nightFactor
-        )
+        params.sunDirection = SIMD4<Float>(environmentState.sunDirection, 0)
+        params.moonDirection = SIMD4<Float>(environmentState.moonDirection, 0)
         params.windOffsetCoverageAndCount = SIMD4<Float>(windOffset.x, windOffset.y, coverage, Float(cardCount))
-        params.colorTintAndBrightness = SIMD4<Float>(
-            environmentState.sunColor.x,
-            environmentState.sunColor.y,
-            environmentState.sunColor.z,
-            max(0.18, min(clouds.brightness, 1.5))
-        )
+        params.skyRadianceAndMultipleScattering = SIMD4<Float>(clouds.skyAmbientRadianceRGB,
+                                                               clouds.multipleScattering)
+        params.sunIrradiance = SIMD4<Float>(clouds.sunIrradianceRGB, 0)
+        params.moonIrradiance = SIMD4<Float>(clouds.moonIrradianceRGB, 0)
         params.layout = SIMD4<Float>(
             7.0,
             2.1 + coverage * 0.5,

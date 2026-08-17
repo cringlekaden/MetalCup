@@ -463,7 +463,11 @@ static inline LocalFogSample evaluateLocalFog(float2 uv,
     result.transmittance = exp(-result.opticalDepth);
     float scatteredFraction = 1.0 - result.transmittance;
     float3 albedo = clamp(settings.heightFogColor, 0.0, 1.0);
-    float3 ambientRadiance = max(irradianceTexture.sample(s, rayDirection).rgb / M_PI_F, 0.0);
+    // Environment-driven fog consumes the live sky field. Captured irradiance may
+    // intentionally lag animated time until Phase 3 and must not relight current fog.
+    float3 ambientRadiance = settings.aerialFogAmbientRadiance.w > 0.5
+        ? max(settings.aerialFogAmbientRadiance.xyz, 0.0)
+        : max(irradianceTexture.sample(s, rayDirection).rgb / M_PI_F, 0.0);
     float3 sunDirection = settings.aerialFogSunDirectionAndNight.xyz;
     sunDirection = dot(sunDirection, sunDirection) > 1e-8 ? normalize(sunDirection) : float3(0.0, 1.0, 0.0);
     float3 solarIrradiance = max(settings.aerialFogSunColorAndStrength.xyz, 0.0);
