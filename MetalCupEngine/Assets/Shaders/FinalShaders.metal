@@ -805,16 +805,25 @@ fragment float4 fragment_depth_hierarchy_reduce(const SimpleRasterizerData rd [[
     return float4(minDepth, 0.0, 0.0, 1.0);
 }
 
-fragment float4 fragment_sao_evaluate(const SimpleRasterizerData rd [[ stage_in ]],
-                                       constant RendererSettings &settings [[ buffer(FragmentBufferIndexRendererSettings) ]],
-                                       constant SceneConstants &sceneConstants [[ buffer(FragmentBufferIndexPostProcessSceneConstants) ]],
-                                       texture2d<float> depthTexture [[ texture(PostProcessTextureIndexDepth) ]],
-                                       texture2d<float> normalTexture [[ texture(PostProcessTextureIndexNormals) ]],
-                                       sampler s [[ sampler(FragmentSamplerIndexLinearClamp) ]]) {
-    float2 uv = rd.texCoord;
-    if (settings.uvDebug.x != 0) {
-        return float4(uv, 0.0, 1.0);
-    }
+struct SAOProductionSample {
+    float visibility;
+    float normalizedObscurance;
+    float validTapFraction;
+    float linearDepth;
+};
+
+static inline SAOProductionSample evaluate_sao_production(
+    float2 uv,
+    constant RendererSettings &settings,
+    constant SceneConstants &sceneConstants,
+    texture2d<float> depthTexture,
+    texture2d<float> normalTexture
+) {
+    SAOProductionSample result;
+    result.visibility = 1.0;
+    result.normalizedObscurance = 0.0;
+    result.validTapFraction = 0.0;
+    result.linearDepth = 0.0;
 
     constexpr uint kSampleCount = 16;
     constexpr float kGoldenAngle = 2.39996323;
@@ -822,14 +831,15 @@ fragment float4 fragment_sao_evaluate(const SimpleRasterizerData rd [[ stage_in 
 
     float centerRawDepth = ssao_sample_depth_nearest(depthTexture, uv);
     if (centerRawDepth >= 0.999999) {
-        return float4(1.0);
+        return result;
     }
 
     float3 centerViewPosition = reconstructViewPosition(uv, centerRawDepth, sceneConstants);
     float3 centerViewNormal = ssao_sample_normal_nearest(normalTexture, uv);
     float centerLinearDepth = linearDepthFromViewPosition(centerViewPosition);
+    result.linearDepth = centerLinearDepth;
     if (centerLinearDepth <= 1e-5) {
-        return float4(1.0);
+        return result;
     }
 
     // Contact-first tuning: keep the effective radius modest so nearby inter-object
@@ -851,6 +861,7 @@ fragment float4 fragment_sao_evaluate(const SimpleRasterizerData rd [[ stage_in 
 
     float obscurance = 0.0;
     float totalWeight = 0.0;
+    uint validTapCount = 0u;
 
     for (uint sampleIndex = 0; sampleIndex < kSampleCount; ++sampleIndex) {
         float tapFraction = (float(sampleIndex) + 0.5) / float(kSampleCount);
@@ -902,15 +913,63 @@ fragment float4 fragment_sao_evaluate(const SimpleRasterizerData rd [[ stage_in 
 
         obscurance += receiverWeight * rangeFalloff * tapWeight;
         totalWeight += tapWeight;
+        validTapCount += 1u;
     }
 
-    float visibility = sao_visibility_from_obscurance(
+    result.visibility = sao_visibility_from_obscurance(
         obscurance,
         totalWeight,
         intensity,
         power
     );
-    return float4(visibility, visibility, visibility, 1.0);
+    result.normalizedObscurance = totalWeight > 0.0
+        ? saturate(obscurance / totalWeight)
+        : 0.0;
+    result.validTapFraction = float(validTapCount) / float(kSampleCount);
+    return result;
+}
+
+fragment float4 fragment_sao_evaluate(const SimpleRasterizerData rd [[ stage_in ]],
+                                       constant RendererSettings &settings [[ buffer(FragmentBufferIndexRendererSettings) ]],
+                                       constant SceneConstants &sceneConstants [[ buffer(FragmentBufferIndexPostProcessSceneConstants) ]],
+                                       texture2d<float> depthTexture [[ texture(PostProcessTextureIndexDepth) ]],
+                                       texture2d<float> normalTexture [[ texture(PostProcessTextureIndexNormals) ]],
+                                       sampler s [[ sampler(FragmentSamplerIndexLinearClamp) ]]) {
+    if (settings.uvDebug.x != 0) {
+        return float4(rd.texCoord, 0.0, 1.0);
+    }
+    SAOProductionSample result = evaluate_sao_production(
+        rd.texCoord,
+        settings,
+        sceneConstants,
+        depthTexture,
+        normalTexture
+    );
+    return float4(result.visibility, result.visibility, result.visibility, 1.0);
+}
+
+/// Diagnostic fragment compiled through the canonical production shader library.
+/// RGBA = raw visibility, normalized obscurance, valid-tap fraction, linear view depth.
+fragment float4 fragment_sao_production_diagnostics(
+    const SimpleRasterizerData rd [[ stage_in ]],
+    constant RendererSettings &settings [[ buffer(FragmentBufferIndexRendererSettings) ]],
+    constant SceneConstants &sceneConstants [[ buffer(FragmentBufferIndexPostProcessSceneConstants) ]],
+    texture2d<float> depthTexture [[ texture(PostProcessTextureIndexDepth) ]],
+    texture2d<float> normalTexture [[ texture(PostProcessTextureIndexNormals) ]]
+) {
+    SAOProductionSample result = evaluate_sao_production(
+        rd.texCoord,
+        settings,
+        sceneConstants,
+        depthTexture,
+        normalTexture
+    );
+    return float4(
+        result.visibility,
+        result.normalizedObscurance,
+        result.validTapFraction,
+        result.linearDepth
+    );
 }
 
 kernel void phase2_sao_visibility_samples(
