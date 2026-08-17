@@ -1,124 +1,51 @@
-# MetalCup
+# MetalCupEngine
 
-MetalCup is a **modern real-time 3D rendering engine written in Swift using Apple’s Metal API**, targeting macOS on Apple Silicon.
+MetalCupEngine is the Swift/Metal runtime behind [MetalCupEditor](https://github.com/cringlekaden/MetalCupEditor). It provides the ECS, scene and asset runtime, Metal renderer, Jolt physics bridge, animation runtime, and Lua scripting boundary used by the editor.
 
-The project focuses on physically based rendering, image-based lighting, and a clean, hackable architecture designed to evolve into a full engine + editor workflow.
+> **Early development:** stable `main` is the public baseline, not a production-ready SDK. APIs and serialized data can change. It is tested only on Apple-silicon Macs running macOS 26.2 with a current Xcode.
 
-MetalCup is developed as a **standalone engine framework**, intended to be embedded into other applications (such as the MetalCup Editor).
+## What is here
 
-> **Status:** Active development. APIs, architecture, and systems are still evolving.
+- `MetalCupEngine/` — Swift framework source: renderer, ECS, scene runtime, serialization and bridges.
+- `MetalCupEngineTests/` — renderer and runtime contract tests.
+- `Vendor/` and `ThirdParty/` — checked-in dependencies and their notices.
 
----
+Stable `main` implements scene-linear HDR rendering, PBR materials, shadows, SSAO, bloom and output tone mapping; IBL and reflection-probe rebuilds; model/texture/material assets; animation graphs; Jolt physics and character controllers; and Lua runtime hooks. See the [technical documentation](Docs/README.md) for exact boundaries and limitations.
 
-## Demo
+## Build
 
-A short showcase of the renderer is available here:
+Clone with submodules, then open `MetalCupEngine.xcodeproj` and build the shared **MetalCupEngine** scheme. `Vendor/JoltPhysics` is a required git submodule; a checkout without it cannot compile `JoltBridge.mm`. The editor project embeds the framework product; building the editor is the practical end-to-end smoke test.
 
-**YouTube:** https://youtu.be/Hbr0vGU27Jw
+```sh
+git clone --recurse-submodules https://github.com/cringlekaden/MetalCupEngine.git
+# Existing clone:
+git submodule update --init --recursive
+```
 
-The demo highlights:
-- Physically based materials
-- Image-based lighting
-- Specular reflections
-- Emissive materials with bloom
-- HDR rendering and tone mapping
+```sh
+xcodebuild -project MetalCupEngine.xcodeproj -scheme MetalCupEngine -configuration Debug -destination 'platform=macOS' build
+```
 
----
+There is no supported package manager distribution, command-line game runner, or export/packaging pipeline on stable `main`.
 
-## Current Features
+## Documentation
 
-### Rendering
-- Metal-based renderer (no third-party libraries)
-- HDR rendering pipeline
-- Physically Based Rendering (metal/roughness workflow)
-- Image-Based Lighting (IBL)
-  - Environment cubemap generation
-  - Irradiance map
-  - Prefiltered specular cubemap
-  - BRDF LUT
-- Normal mapping
-- Emissive materials
-- Configurable bloom post-processing
-- Configurable tone mapping, gamma correction, and exposure
+- [Technical documentation](Docs/README.md)
+- [Architecture](Docs/architecture.md)
+- [Building, testing and contributing](Docs/development.md)
+- [Stable and experimental status](Docs/development-status.md)
+- [Editor handbook](https://github.com/cringlekaden/MetalCupEditor/tree/main/Docs)
 
-### Assets
-- USDZ asset loading via ModelIO
-- Automated asset importing
-- Asset directory scanning
-- Per-asset meta file generation
-- Asset handles used internally by the engine
-- PBR texture support:
-  - Base color
-  - Normal
-  - Metallic / Roughness (combined or separate)
-  - Ambient occlusion
-  - Emissive
-- Fallback scalar material values
-- Per-material feature flags
+## Relationship to the editor
 
-### Engine Structure
-- Built as a reusable **engine framework**
-- Renderer settings owned by the engine and serialized with scenes
-- Scene management system
-- Entity/component runtime with editor-driven serialization
-- Render-to-texture pipeline
-- Cubemap rendering passes
-- Clean separation between rendering stages
-- Runtime decoupled from editor/UI concerns
+The engine must not depend on editor types. MetalCupEditor owns the end-user project workflow and talks to engine state through framework APIs and C-callable bridges. Use the Editor repository for installing, creating projects, and authoring content.
 
----
+## Limitations and roadmap
 
-## Architecture
+Stable `main` has no shipping/export workflow and no public compatibility guarantee. See [ROADMAP.md](ROADMAP.md) and [development status](Docs/development-status.md); the active environment reconstruction branches are deliberately unmerged.
 
-- The engine owns runtime state (renderer settings, ECS components, GPU resources).
-- The editor reads and writes engine state through C-callable bridge APIs.
-- Renderer settings live in the engine and are surfaced to the editor via a thin bridge.
+## License and third-party material
 
-See `ARCHITECTURE.md` at the repository root for the full structure and data flow.
+No top-level license file is present in this repository, so its code license is not established by this README. Do not assume the historical MIT wording in earlier documentation applies. Dependency licenses remain in their own directories; see [third-party responsibilities](Docs/development.md#dependencies-and-licenses).
 
----
-
-## Planned Work
-
-### Rendering
-- Ray-traced shadows
-- Improved specular occlusion
-- Reflection probes
-- Improved post-processing pipeline
-
-### Engine Architecture
-- Entity Component System (ECS) (in progress)
-- Engine / Application / Layer stack (in progress)
-- Event system (in progress)
-
-### World & Content
-- Material system extensions
-- Lighting tools and utilities
-- Terrain utilities
-
----
-
-## Requirements
-
-- macOS 26 (only version tested so far)
-- Apple Silicon Mac
-- Xcode (recent version recommended)
-- Swift + Metal
-
-Earlier macOS versions may work but are not currently supported or tested.
-
----
-
-## Building
-
-1. Clone the repository: ```git clone https://github.com/cringlekaden/MetalCupEngine.git```
-2. Open the project in Xcode
-3. Build the engine framework target
-
-The framework is intended to be consumed by another application (such as the MetalCup Editor).
-
----
-
-## License
-
-MIT License. Use the code however you like. No warranties.
+Contributions are welcome under [CONTRIBUTING.md](CONTRIBUTING.md). Please report vulnerabilities through [SECURITY.md](SECURITY.md).
