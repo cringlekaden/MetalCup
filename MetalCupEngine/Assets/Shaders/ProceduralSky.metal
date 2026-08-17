@@ -13,6 +13,11 @@ using namespace metal;
 // Keep this near unit scale so the visible sky and captured IBL start from the
 // same plausible HDR baseline instead of baking in a large global over-brightness bias.
 static constant float kProceduralSkyRadianceScale = 1.0;
+// Night is calibrated for a separate adapted camera range (roughly EV +8...+12),
+// rather than being lifted to daytime exposure. These scales keep extended
+// celestial sources scene-linear while sparse stars may retain bright peaks.
+static constant float kNightBackgroundRadianceScale = 0.001;
+static constant float kStellarVisibleRadianceScale = 0.002;
 // Local proof switch for validating the bound moon texture. Keep false for normal rendering and IBL generation.
 static constant bool kMoonTextureProofDiagnostic = false;
 static constant bool kUseLegacyProceduralClouds = false;
@@ -430,7 +435,8 @@ static inline float3 evaluate_galactic_band(float3 dir,
 
     float textureEnabled = step(0.5, params.galaxyTextureEnabled);
     float3 galaxy = mix(proceduralGalaxy, max(texturedGalaxy, proceduralGalaxy * 0.35), textureEnabled);
-    return min(galaxy * visibility * galaxyStrength, float3(0.85));
+    return min(galaxy * visibility * galaxyStrength, float3(0.85))
+        * kStellarVisibleRadianceScale;
 }
 
 struct CloudLayerSample {
@@ -723,6 +729,7 @@ static inline float3 evaluateSunLayer(float3 dir, float3 sunDir, constant SkyPar
 
 static inline MoonDiskLayerSample evaluateMoonDiskLayer(float3 dir,
                                                        float3 moonDir,
+                                                       float3 sunDir,
                                                        float moonAngle,
                                                        float moonRadius,
                                                        float moonIntensity,
@@ -735,7 +742,8 @@ static inline MoonDiskLayerSample evaluateMoonDiskLayer(float3 dir,
     layer.opacity = 1.0 - smoothstep(moonRadius * 0.992,
                                      moonRadius * 1.060,
                                      moonAngle);
-    layer.opacity *= saturate1(moonIntensity * 8.0);
+    layer.opacity *= smoothstep(0.000001, 0.0001, moonIntensity)
+        * smoothstep(0.0, 0.01, params.moonIlluminatedFraction);
     layer.celestialOcclusion = 1.0 - layer.interior;
 
     float3 moonUp = (abs(moonDir.y) < 0.92) ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
@@ -750,8 +758,19 @@ static inline MoonDiskLayerSample evaluateMoonDiskLayer(float3 dir,
     float3 proceduralAlbedo = float3(lunarDetail);
     float3 sampledAlbedo = textured_moon_albedo(layer.uv, lunarDetail, moonAlbedoTexture);
     float3 lunarAlbedo = mix(proceduralAlbedo, sampledAlbedo, layer.textureEnabled);
-    float3 moonTint = mix(float3(1.0, 0.96, 0.86), positive3(params.moonColor), 0.24);
-    layer.radiance = moonTint * lunarAlbedo * lunarLimb * moonIntensity * mix(2.35, 2.85, layer.textureEnabled);
+    float surfaceZ = sqrt(max(1.0 - min(dot(layer.uv, layer.uv), 1.0), 0.0));
+    float3 lunarNormal = normalize(-moonDir * surfaceZ
+                                 + moonTangent * layer.uv.x
+                                 + moonBitangent * layer.uv.y);
+    float reflectedSun = saturate1(dot(lunarNormal, sunDir));
+    float albedoDetail = mix(0.75,
+                             1.25,
+                             saturate1(dot(lunarAlbedo, float3(0.2126, 0.7152, 0.0722))));
+    layer.radiance = positive3(params.moonColor)
+        * moonIntensity
+        * reflectedSun
+        * albedoDetail
+        * lunarLimb;
     return layer;
 }
 
@@ -782,7 +801,10 @@ static inline float3 evaluateNightBackgroundLayer(float cosTheta,
     float3 quietHorizon = mix(float3(0.012, 0.017, 0.036), positive3(params.duskTint) * 0.040, twilightHorizon);
     float moonForward = pow(saturate1(moonCos), 2.0);
     float3 moonlitTint = positive3(params.moonColor) * moonIntensity * (0.022 + 0.050 * moonForward + 0.018 * nightGradient) * horizonClarity;
-    return (mix(quietHorizon, deepZenith, nightGradient) * nightBrightness + moonlitTint) * params.nightFactor;
+    return (mix(quietHorizon, deepZenith, nightGradient) * nightBrightness
+            * kNightBackgroundRadianceScale
+            + moonlitTint)
+        * params.nightFactor;
 }
 
 static inline float3 evaluateStarLayer(float3 dir,
@@ -812,7 +834,8 @@ static inline float3 evaluateStarLayer(float3 dir,
     float richnessGain = mix(0.85, 1.65, saturate1(starRichness / 2.0));
     float starStrength = (0.28 + starArt * 4.80) * saturate1(authoredIntensity * 3.6) * richnessGain;
     float starMask = starStrength * visibility * horizonStarMask * directionalHazeMask * twilightStarMask * moonStarMask * moonCelestialOcclusion;
-    return min(stars.color * stars.intensity * starMask, float3(8.0));
+    return min(stars.color * stars.intensity * starMask, float3(8.0))
+        * kStellarVisibleRadianceScale;
 }
 
 static inline float3 evaluateGalaxyLayer(float3 dir,
@@ -1142,7 +1165,7 @@ static inline float3 evaluate_procedural_sky_radiance(float3 direction,
                                                       texture2d<float> moonAlbedoTexture,
                                                       texture2d<float> galaxyTexture,
                                                       texture2d<float> cloudAtlasTexture,
-                                                      bool includeDirectSolarDisk) {
+                                                      bool includeDirectCelestialDisks) {
     float3 dir = normalize(direction);
     float3 sunDir = normalize(params.sunDirection);
 
@@ -1156,7 +1179,7 @@ static inline float3 evaluate_procedural_sky_radiance(float3 direction,
     float sunCos = clamp(dot(dir, sunDir), -1.0, 1.0);
     float sunAngle = solarAngularDistance(dir, sunDir);
     sky += evaluateSolarAureole(dir, sunCos, sunAngle, params);
-    float3 sun = includeDirectSolarDisk ? evaluateSolarDisk(sunAngle, params) : float3(0.0);
+    float3 sun = includeDirectCelestialDisks ? evaluateSolarDisk(sunAngle, params) : float3(0.0);
 
     // Night/celestial layers are kept explicit so opaque bodies, background stars,
     // and glow contributions do not accidentally collapse into one additive pass.
@@ -1172,15 +1195,19 @@ static inline float3 evaluate_procedural_sky_radiance(float3 direction,
 
         MoonDiskLayerSample moonDisk = evaluateMoonDiskLayer(dir,
                                                              moonDir,
+                                                             sunDir,
                                                              moonAngle,
                                                              moonRadius,
                                                              moonIntensity,
                                                              params,
                                                              moonAlbedoTexture);
+        float moonScatteredIntensity = max(params.moonIrradiance, 0.0);
+        float moonCelestialInfluence = params.moonIlluminatedFraction
+            * smoothstep(-0.04, 0.12, moonDir.y);
         float3 moonGlow = evaluateMoonGlowLayer(moonDir,
                                                 moonAngle,
                                                 moonRadius,
-                                                moonIntensity,
+                                                moonScatteredIntensity,
                                                 horizonClarity,
                                                 moonDisk.interior,
                                                 params);
@@ -1192,27 +1219,32 @@ static inline float3 evaluate_procedural_sky_radiance(float3 direction,
 
         float3 nightBackground = evaluateNightBackgroundLayer(cosTheta,
                                                               moonCos,
-                                                              moonIntensity,
+                                                              moonScatteredIntensity,
                                                               horizonClarity,
                                                               params);
         sky = max(sky, nightBackground);
 
+        float celestialDetailScale = includeDirectCelestialDisks
+            ? 1.0
+            : clamp(params.celestialCaptureScale, 0.0, 1.0);
         sky += evaluateStarLayer(dir,
                                  moonAngle,
                                  moonRadius,
-                                 moonIntensity,
+                                 moonCelestialInfluence,
                                  horizonClarity,
                                  moonDisk.celestialOcclusion,
-                                 params);
+                                 params) * celestialDetailScale;
         sky += evaluateGalaxyLayer(dir,
                                    moonDir,
-                                   moonIntensity,
+                                   moonCelestialInfluence,
                                    horizonClarity,
                                    moonAngle,
                                    moonDisk.celestialOcclusion,
                                    params,
-                                   galaxyTexture);
-        sky = mix(sky, moonDisk.radiance, moonDisk.opacity);
+                                   galaxyTexture) * celestialDetailScale;
+        if (includeDirectCelestialDisks) {
+            sky = mix(sky, moonDisk.radiance, moonDisk.opacity);
+        }
         sky += moonGlow;
     }
 
