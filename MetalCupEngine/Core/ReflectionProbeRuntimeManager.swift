@@ -7,6 +7,17 @@ import MetalKit
 import QuartzCore
 import simd
 
+public struct ReflectionProbeTemporalDebugState {
+    public let status: ReflectionProbeRuntimeStatus
+    public let policy: ReflectionProbeRebuildMode
+    public let representedTimeOfDay: Float?
+    public let representedGeneration: UInt64?
+    public let currentSourceGeneration: UInt64?
+    public let timeLagHours: Float?
+    public let queuedProbeCount: Int
+    public let environmentDependent: Bool
+}
+
 final class ReflectionProbeRuntimeManager {
     typealias PrefilterRenderer = (_ sourceEnvironment: MTLTexture,
                                    _ targetPrefiltered: MTLTexture,
@@ -25,10 +36,16 @@ final class ReflectionProbeRuntimeManager {
         // Runtime-only bake status and transient handles.
         var status: ReflectionProbeRuntimeStatus
         var runtimeHandles: ReflectionProbeRuntimeHandles
+        var buildHandles: ReflectionProbeRuntimeHandles?
+        var retiredHandles: [(handles: ReflectionProbeRuntimeHandles, retiredAt: Double)]
         var needsRebuild: Bool
         var queuedAtTime: Double?
         var lastUpdatedTime: Double
         var lastError: String?
+        var representedEnvironmentSignature: EnvironmentIBLSignature?
+        var representedEnvironmentTime: Float?
+        var representedEnvironmentGeneration: UInt64?
+        var representedSkyLogLuminance: Float?
     }
 
     private struct ReflectionProbeSceneRuntimeState {
@@ -74,19 +91,47 @@ final class ReflectionProbeRuntimeManager {
         var runtimeState = runtimeStatesByScene[sceneKey] ?? ReflectionProbeSceneRuntimeState()
         let selectedEntityIDs = entities.map { Set($0.map(\.id)) }
         let now = CACurrentMediaTime()
+        let environmentFrame = scene.ecs.activeEnvironment().flatMap {
+            scene.ecs.get(EnvironmentFrameStateComponent.self, for: $0.0)
+        }
 
         scene.ecs.viewReflectionProbes { entity, probe in
             guard probe.enabled else { return }
             if let selectedEntityIDs, !selectedEntityIDs.contains(entity.id) {
                 return
             }
-            if !force, probe.rebuildMode != .onPlay {
-                return
-            }
             guard var state = runtimeState.probeStates[entity.id] else { return }
             let missingRuntimeResources = state.runtimeHandles.capturedEnvironmentHandle == nil
                 || state.runtimeHandles.prefilteredHandle == nil
-            let shouldQueue = force || state.needsRebuild || missingRuntimeResources
+            let environmentDriven = probe.includeSky
+                && (probe.rebuildMode == .environmentDependentScheduled || probe.rebuildMode == .fullyDynamic)
+            if environmentDriven, let environmentFrame {
+                let current = environmentFrame.renderState
+                let timeLag = state.representedEnvironmentTime.map {
+                    let raw = abs(current.finalTimeOfDay - $0).truncatingRemainder(dividingBy: 24)
+                    return min(raw, 24 - raw)
+                } ?? Float(24)
+                let radiometricLag = state.representedSkyLogLuminance.map {
+                    abs(EnvironmentIBLRebuildLifecycle.skyLogLuminance(current) - $0)
+                } ?? .infinity
+                let minimumInterval = probe.rebuildMode == .fullyDynamic ? 0.5 : 1.0
+                let timeThreshold: Float = probe.rebuildMode == .fullyDynamic ? 0.25 : 1.0
+                let radiometricThreshold: Float = probe.rebuildMode == .fullyDynamic ? 0.30 : 1.0
+                if now - state.lastUpdatedTime >= minimumInterval
+                    && (timeLag >= timeThreshold || radiometricLag >= radiometricThreshold) {
+                    state.needsRebuild = true
+                }
+            }
+            let policyAllowsAutomatic: Bool
+            switch probe.rebuildMode {
+            case .manual:
+                policyAllowsAutomatic = false
+            case .onPlay, .staticInterior, .environmentIndependent:
+                policyAllowsAutomatic = missingRuntimeResources
+            case .environmentDependentScheduled, .fullyDynamic:
+                policyAllowsAutomatic = true
+            }
+            let shouldQueue = force || (policyAllowsAutomatic && (state.needsRebuild || missingRuntimeResources))
             guard shouldQueue else { return }
 
             ensureReflectionProbeTextures(state: &state)
@@ -107,6 +152,33 @@ final class ReflectionProbeRuntimeManager {
 
     func reflectionProbeBakeStatus(scene: EngineScene, entityID: UUID) -> ReflectionProbeRuntimeStatus? {
         runtimeStatesByScene[ObjectIdentifier(scene)]?.probeStates[entityID]?.status
+    }
+
+    func reflectionProbeTemporalDebugState(scene: EngineScene,
+                                           entityID: UUID) -> ReflectionProbeTemporalDebugState? {
+        guard let sceneState = runtimeStatesByScene[ObjectIdentifier(scene)],
+              let probeState = sceneState.probeStates[entityID] else { return nil }
+        let frame = scene.ecs.activeEnvironment().flatMap {
+            scene.ecs.get(EnvironmentFrameStateComponent.self, for: $0.0)
+        }
+        let timeLag = probeState.representedEnvironmentTime.flatMap { represented -> Float? in
+            guard let current = frame?.renderState.finalTimeOfDay else { return nil }
+            let raw = abs(current - represented).truncatingRemainder(dividingBy: 24)
+            return min(raw, 24 - raw)
+        }
+        let dependent = probeState.authoredProbe.includeSky
+            && (probeState.authoredProbe.rebuildMode == .environmentDependentScheduled
+                || probeState.authoredProbe.rebuildMode == .fullyDynamic)
+        return ReflectionProbeTemporalDebugState(
+            status: probeState.status,
+            policy: probeState.authoredProbe.rebuildMode,
+            representedTimeOfDay: probeState.representedEnvironmentTime,
+            representedGeneration: probeState.representedEnvironmentGeneration,
+            currentSourceGeneration: frame?.sourceGeneration,
+            timeLagHours: timeLag,
+            queuedProbeCount: sceneState.queuedProbeIDs.count + (sceneState.activeProbeID == nil ? 0 : 1),
+            environmentDependent: dependent
+        )
     }
 
     func debugReflectionProbeSelection(scene: EngineScene, entityID: UUID) -> ReflectionProbeDebugSelection? {
@@ -183,6 +255,22 @@ final class ReflectionProbeRuntimeManager {
                     completedState.needsRebuild = (terminalError != nil)
                     completedState.status = terminalError == nil ? .ready : .failed
                     completedState.lastError = terminalError
+                    if terminalError == nil, let built = completedState.buildHandles {
+                        completedState.retiredHandles.append((completedState.runtimeHandles, CACurrentMediaTime()))
+                        completedState.runtimeHandles = built
+                        completedState.buildHandles = nil
+                    } else if terminalError != nil, let failedBuild = completedState.buildHandles {
+                        releaseReflectionProbeHandles(failedBuild)
+                        completedState.buildHandles = nil
+                    }
+                    if terminalError == nil,
+                       completedState.authoredProbe.includeSky,
+                       let representedEnvironment = captureSnapshot.activeEnvironmentRenderState {
+                        completedState.representedEnvironmentSignature = representedEnvironment.iblSignature
+                        completedState.representedEnvironmentTime = representedEnvironment.finalTimeOfDay
+                        completedState.representedEnvironmentGeneration = captureSnapshot.activeEnvironmentIBLState?.sourceGeneration
+                        completedState.representedSkyLogLuminance = EnvironmentIBLRebuildLifecycle.skyLogLuminance(representedEnvironment)
+                    }
                     updatedRuntimeState.probeStates[nextProbeID] = completedState
                 }
             } else if var failedState = updatedRuntimeState.probeStates[nextProbeID] {
@@ -215,8 +303,7 @@ final class ReflectionProbeRuntimeManager {
             let runtimeProbeState = runtimeState.probeStates[probe.entity.id]
             let prefilteredHandle = runtimeProbeState?.runtimeHandles.prefilteredHandle
             let runtimeReady = {
-                guard runtimeProbeState?.status == .ready,
-                      let prefilteredHandle,
+                guard let prefilteredHandle,
                       engineContext.assets.texture(handle: prefilteredHandle) != nil else {
                     return false
                 }
@@ -273,14 +360,22 @@ final class ReflectionProbeRuntimeManager {
         let captureSize = max(Int(state.authoredProbe.captureResolution), 1)
         let probeLabelPrefix = String(state.entityID.uuidString.prefix(8))
 
+        if state.runtimeHandles.prefilteredHandle != nil, state.buildHandles == nil {
+            state.buildHandles = ReflectionProbeRuntimeHandles(
+                capturedEnvironmentHandle: AssetHandle(),
+                prefilteredHandle: AssetHandle()
+            )
+        }
+
         if state.runtimeHandles.capturedEnvironmentHandle == nil {
             state.runtimeHandles.capturedEnvironmentHandle = AssetHandle()
         }
         if state.runtimeHandles.prefilteredHandle == nil {
             state.runtimeHandles.prefilteredHandle = AssetHandle()
         }
+        var targetHandles = state.buildHandles ?? state.runtimeHandles
 
-        if let capturedHandle = state.runtimeHandles.capturedEnvironmentHandle,
+        if let capturedHandle = targetHandles.capturedEnvironmentHandle,
            engineContext.assets.texture(handle: capturedHandle) == nil,
            let capturedTexture = makeCubemapTexture(
                 size: captureSize,
@@ -290,7 +385,7 @@ final class ReflectionProbeRuntimeManager {
             engineContext.assets.registerRuntimeTexture(handle: capturedHandle, texture: capturedTexture)
         }
 
-        if let prefilteredHandle = state.runtimeHandles.prefilteredHandle,
+        if let prefilteredHandle = targetHandles.prefilteredHandle,
            engineContext.assets.texture(handle: prefilteredHandle) == nil,
            let prefilteredTexture = makeCubemapTexture(
                 size: captureSize,
@@ -299,13 +394,28 @@ final class ReflectionProbeRuntimeManager {
            ) {
             engineContext.assets.registerRuntimeTexture(handle: prefilteredHandle, texture: prefilteredTexture)
         }
+        if state.buildHandles != nil {
+            state.buildHandles = targetHandles
+        } else {
+            state.runtimeHandles = targetHandles
+        }
     }
 
     private func releaseReflectionProbeTextures(for state: ReflectionProbeRuntimeState) {
-        if let capturedHandle = state.runtimeHandles.capturedEnvironmentHandle {
+        releaseReflectionProbeHandles(state.runtimeHandles)
+        if let buildHandles = state.buildHandles {
+            releaseReflectionProbeHandles(buildHandles)
+        }
+        for retired in state.retiredHandles {
+            releaseReflectionProbeHandles(retired.handles)
+        }
+    }
+
+    private func releaseReflectionProbeHandles(_ handles: ReflectionProbeRuntimeHandles) {
+        if let capturedHandle = handles.capturedEnvironmentHandle {
             engineContext.assets.unregisterRuntimeTexture(handle: capturedHandle)
         }
-        if let prefilteredHandle = state.runtimeHandles.prefilteredHandle {
+        if let prefilteredHandle = handles.prefilteredHandle {
             engineContext.assets.unregisterRuntimeTexture(handle: prefilteredHandle)
         }
     }
@@ -422,7 +532,8 @@ final class ReflectionProbeRuntimeManager {
     private func captureReflectionProbe(scene: EngineScene,
                                         snapshot: RenderFrameSnapshot,
                                         state: ReflectionProbeRuntimeState) -> String? {
-        guard let capturedHandle = state.runtimeHandles.capturedEnvironmentHandle,
+        let targetHandles = state.buildHandles ?? state.runtimeHandles
+        guard let capturedHandle = targetHandles.capturedEnvironmentHandle,
               let capturedTexture = engineContext.assets.texture(handle: capturedHandle) else {
             return "Missing reflection probe capture cubemap."
         }
@@ -535,11 +646,12 @@ final class ReflectionProbeRuntimeManager {
     }
 
     private func prefilterReflectionProbe(state: ReflectionProbeRuntimeState) -> String? {
-        guard let capturedHandle = state.runtimeHandles.capturedEnvironmentHandle,
+        let targetHandles = state.buildHandles ?? state.runtimeHandles
+        guard let capturedHandle = targetHandles.capturedEnvironmentHandle,
               let capturedTexture = engineContext.assets.texture(handle: capturedHandle) else {
             return "Missing captured reflection probe cubemap."
         }
-        guard let prefilteredHandle = state.runtimeHandles.prefilteredHandle,
+        guard let prefilteredHandle = targetHandles.prefilteredHandle,
               let prefilteredTexture = engineContext.assets.texture(handle: prefilteredHandle) else {
             return "Missing reflection probe prefiltered cubemap target."
         }
@@ -584,10 +696,15 @@ final class ReflectionProbeRuntimeManager {
         scene.ecs.viewReflectionProbes { entity, probe in
             liveProbeIDs.insert(entity.id)
             if var existing = runtimeState.probeStates[entity.id] {
+                let expiredHandles = existing.retiredHandles.filter { now - $0.retiredAt >= 1.0 }
+                for retired in expiredHandles {
+                    releaseReflectionProbeHandles(retired.handles)
+                }
+                existing.retiredHandles.removeAll { now - $0.retiredAt >= 1.0 }
                 let authoredChanged = existing.authoredProbe != probe
                 existing.authoredProbe = probe
-                existing.lastUpdatedTime = now
                 if authoredChanged {
+                    existing.lastUpdatedTime = now
                     existing.needsRebuild = true
                     if existing.status == .ready {
                         existing.status = .idle
@@ -604,10 +721,16 @@ final class ReflectionProbeRuntimeManager {
                     authoredProbe: probe,
                     status: .idle,
                     runtimeHandles: ReflectionProbeRuntimeHandles(),
+                    buildHandles: nil,
+                    retiredHandles: [],
                     needsRebuild: true,
                     queuedAtTime: nil,
                     lastUpdatedTime: now,
-                    lastError: nil
+                    lastError: nil,
+                    representedEnvironmentSignature: nil,
+                    representedEnvironmentTime: nil,
+                    representedEnvironmentGeneration: nil,
+                    representedSkyLogLuminance: nil
                 )
             }
         }
