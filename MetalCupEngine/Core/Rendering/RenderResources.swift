@@ -18,6 +18,7 @@ enum RenderNamedResourceKey {
     static let sceneColorFogged = "scene.colorFogged"
     static let sceneDepth = "scene.depth"
     static let sceneNormals = "scene.normals"
+    static let ssaoDepth = "scene.ssaoDepth"
     static let ssaoNormals = "scene.ssaoNormals"
     static let sceneColorMSAA = "scene.colorMSAA"
     static let sceneDepthMSAA = "scene.depthMSAA"
@@ -247,6 +248,7 @@ enum RenderResourceTexture {
     case finalColor
     case baseDepth
     case sceneNormals
+    case ssaoDepth
     case ssaoNormals
     case sceneColorMSAA
     case sceneDepthMSAA
@@ -274,6 +276,8 @@ enum RenderResourceTexture {
             return BuiltinAssets.baseDepthRender
         case .sceneNormals:
             return BuiltinAssets.sceneNormalsRender
+        case .ssaoDepth:
+            return BuiltinAssets.ssaoDepthRender
         case .ssaoNormals:
             return BuiltinAssets.ssaoNormalsRender
         case .sceneColorMSAA:
@@ -339,6 +343,7 @@ final class RenderResources {
             && texture(.finalColor) != nil
             && texture(.baseDepth) != nil
             && texture(.sceneNormals) != nil
+            && texture(.ssaoDepth) != nil
             && texture(.ssaoNormals) != nil
             && texture(.sceneColorMSAA) != nil
             && texture(.sceneDepthMSAA) != nil
@@ -434,6 +439,9 @@ final class RenderResources {
         baseDepthDesc.usage = [.renderTarget, .shaderRead]
         baseDepthDesc.storageMode = .private
         registerTexture(descriptor: baseDepthDesc, handle: .baseDepth, label: "RenderTarget.BaseDepth")
+        // SSAO owns a coherent single-sample depth/normal pair. This deliberately avoids
+        // sampling unresolved MSAA attachments and preserves closest-surface depth at edges.
+        registerTexture(descriptor: baseDepthDesc, handle: .ssaoDepth, label: "RenderTarget.SSAODepth")
 
         let sceneNormalsDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rg16Float,
@@ -446,6 +454,16 @@ final class RenderResources {
         registerTexture(descriptor: sceneNormalsDesc, handle: .sceneNormals, label: "RenderTarget.SceneNormals")
         registerTexture(descriptor: sceneNormalsDesc, handle: .ssaoNormals, label: "RenderTarget.SSAONormals")
 
+        let ssaoRawDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        ssaoRawDesc.usage = [.renderTarget, .shaderRead]
+        ssaoRawDesc.storageMode = .private
+        registerTexture(descriptor: ssaoRawDesc, handle: .ssaoRaw, label: "RenderTarget.SSAORawDiagnostics")
+
         let ssaoDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r16Float,
             width: width,
@@ -454,7 +472,6 @@ final class RenderResources {
         )
         ssaoDesc.usage = [.renderTarget, .shaderRead]
         ssaoDesc.storageMode = .private
-        registerTexture(descriptor: ssaoDesc, handle: .ssaoRaw, label: "RenderTarget.SSAORaw")
         registerTexture(descriptor: ssaoDesc, handle: .ssaoFiltered, label: "RenderTarget.SSAOFiltered")
         registerTexture(descriptor: ssaoDesc, handle: .ssaoPing, label: "RenderTarget.SSAOPing")
 
@@ -560,6 +577,7 @@ final class RenderResources {
             .finalColor,
             .baseDepth,
             .sceneNormals,
+            .ssaoDepth,
             .ssaoNormals,
             .sceneColorMSAA,
             .sceneDepthMSAA,
@@ -590,6 +608,9 @@ final class RenderResources {
         }
         if let sceneNormals = texture(.sceneNormals) {
             registry.registerNamedTexture(RenderNamedResourceKey.sceneNormals, texture: sceneNormals, lifetime: .persistent)
+        }
+        if let ssaoDepth = texture(.ssaoDepth) {
+            registry.registerNamedTexture(RenderNamedResourceKey.ssaoDepth, texture: ssaoDepth, lifetime: .persistent)
         }
         if let ssaoNormals = texture(.ssaoNormals) {
             registry.registerNamedTexture(RenderNamedResourceKey.ssaoNormals, texture: ssaoNormals, lifetime: .persistent)

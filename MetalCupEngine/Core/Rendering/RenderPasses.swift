@@ -85,6 +85,7 @@ struct CanonicalScreenSpaceTextures {
     let sceneColorFogged: MTLTexture?
     let sceneDepth: MTLTexture?
     let sceneNormals: MTLTexture?
+    let ssaoDepth: MTLTexture?
     let ssaoNormals: MTLTexture?
     let ssaoRaw: MTLTexture?
     let ssaoFiltered: MTLTexture?
@@ -98,6 +99,7 @@ struct CanonicalScreenSpaceTextures {
         sceneColorFogged = registry.namedTexture(RenderNamedResourceKey.sceneColorFogged)
         sceneDepth = registry.namedTexture(RenderNamedResourceKey.sceneDepth)
         sceneNormals = registry.namedTexture(RenderNamedResourceKey.sceneNormals)
+        ssaoDepth = registry.namedTexture(RenderNamedResourceKey.ssaoDepth)
         ssaoNormals = registry.namedTexture(RenderNamedResourceKey.ssaoNormals)
         ssaoRaw = registry.namedTexture(RenderNamedResourceKey.ssaoRaw)
         ssaoFiltered = registry.namedTexture(RenderNamedResourceKey.ssaoFiltered)
@@ -479,24 +481,25 @@ final class SceneNormalsPass: RenderGraphPass {
 
 final class AONormalsPass: RenderGraphPass {
     let name = "AONormalsPass"
-    let inputs: [RenderPassResourceUsage] = [
-        .namedTexture(RenderNamedResourceKey.sceneDepth)
-    ]
     let outputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.ssaoDepth),
         .namedTexture(RenderNamedResourceKey.ssaoNormals, expectedFormat: .rg16Float)
     ]
 
     func execute(frame: RenderGraphFrame) {
         guard let ssaoNormals = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.ssaoNormals),
-              let sceneDepth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.sceneDepth) else {
+              let ssaoDepth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.ssaoDepth) else {
             return
         }
 
+        // AO depth and normals are rasterized together into a single-sample pair. They remain
+        // coherent with each other regardless of the main scene's MSAA sample count.
         let pass = RenderPassBuilder.colorDepth(
             color: ssaoNormals,
-            depth: sceneDepth,
-            depthLoadAction: .load
+            depth: ssaoDepth,
+            depthLoadAction: .clear
         )
+        pass.depthAttachment.clearDepth = 1.0
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "AO Normals Pass"
         encoder.pushDebugGroup("AO Normals Pass")
@@ -1459,18 +1462,18 @@ final class TransparentScenePass: RenderGraphPass {
 final class SAOEvaluatePass: RenderGraphPass {
     let name = "SAOEvaluatePass"
     let inputs: [RenderPassResourceUsage] = [
-        .namedTexture(RenderNamedResourceKey.sceneDepth),
+        .namedTexture(RenderNamedResourceKey.ssaoDepth),
         .namedTexture(RenderNamedResourceKey.ssaoNormals)
     ]
     let outputs: [RenderPassResourceUsage] = [
-        .namedTexture(RenderNamedResourceKey.ssaoRaw, expectedFormat: .r16Float)
+        .namedTexture(RenderNamedResourceKey.ssaoRaw, expectedFormat: .rgba16Float)
     ]
 
     func execute(frame: RenderGraphFrame) {
         let surfaces = CanonicalScreenSpaceTextures(registry: frame.resourceRegistry)
         guard
             frame.renderPlan.ssaoEnabled,
-            let sceneDepth = surfaces.sceneDepth,
+            let sceneDepth = surfaces.ssaoDepth,
             let sceneNormals = surfaces.ssaoNormals,
             let ssaoRaw = surfaces.ssaoRaw
         else { return }
@@ -1494,8 +1497,8 @@ final class SAOEvaluatePass: RenderGraphPass {
 final class AOBlurPass: RenderGraphPass {
     let name = "AOBlurPass"
     let inputs: [RenderPassResourceUsage] = [
-        .namedTexture(RenderNamedResourceKey.ssaoRaw, expectedFormat: .r16Float),
-        .namedTexture(RenderNamedResourceKey.sceneDepth),
+        .namedTexture(RenderNamedResourceKey.ssaoRaw, expectedFormat: .rgba16Float),
+        .namedTexture(RenderNamedResourceKey.ssaoDepth),
         .namedTexture(RenderNamedResourceKey.ssaoNormals)
     ]
     let outputs: [RenderPassResourceUsage] = [
@@ -1510,7 +1513,7 @@ final class AOBlurPass: RenderGraphPass {
             let ssaoRaw = surfaces.ssaoRaw,
             let ssaoFiltered = surfaces.ssaoFiltered,
             let ssaoPing = surfaces.ssaoPing,
-            let sceneDepth = surfaces.sceneDepth,
+            let sceneDepth = surfaces.ssaoDepth,
             let aoNormals = surfaces.ssaoNormals,
             let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
         else { return }

@@ -35,6 +35,7 @@ public enum BuiltinAssets {
     public static let ssaoFilteredRender = AssetHandle(string: "00000000-0000-0000-0000-000000000115")
     public static let ssaoPingRender = AssetHandle(string: "00000000-0000-0000-0000-000000000116")
     public static let ssaoNormalsRender = AssetHandle(string: "00000000-0000-0000-0000-000000000117")
+    public static let ssaoDepthRender = AssetHandle(string: "00000000-0000-0000-0000-000000000118")
     public static let sceneColorFoggedRender = AssetHandle(string: "00000000-0000-0000-0000-000000000119")
     public static let worldDebugColorRender = AssetHandle(string: "00000000-0000-0000-0000-000000000120")
 

@@ -13,6 +13,7 @@ public struct RenderOutputs {
     public var sceneColor: MTLTexture?
     public var sceneDepth: MTLTexture?
     public var sceneNormals: MTLTexture?
+    public var ssaoDepth: MTLTexture?
     public var ssaoNormals: MTLTexture?
     public var sceneColorFogged: MTLTexture?
     public var finalColor: MTLTexture?
@@ -29,6 +30,7 @@ public struct RenderOutputs {
                 sceneColor: MTLTexture? = nil,
                 sceneDepth: MTLTexture? = nil,
                 sceneNormals: MTLTexture? = nil,
+                ssaoDepth: MTLTexture? = nil,
                 ssaoNormals: MTLTexture? = nil,
                 sceneColorFogged: MTLTexture? = nil,
                 finalColor: MTLTexture? = nil,
@@ -44,6 +46,7 @@ public struct RenderOutputs {
         self.sceneColor = sceneColor ?? sceneColorResolved
         self.sceneDepth = sceneDepth ?? depth
         self.sceneNormals = sceneNormals
+        self.ssaoDepth = ssaoDepth
         self.ssaoNormals = ssaoNormals
         self.sceneColorFogged = sceneColorFogged
         self.finalColor = finalColor ?? color

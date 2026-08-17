@@ -251,7 +251,7 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         }
 
         library[.SAOEvaluate] = buildPipeline(label: "SAOEvaluate") { descriptor in
-            descriptor.colorAttachments[0].pixelFormat = .r16Float
+            descriptor.colorAttachments[0].pixelFormat = .rgba16Float
             descriptor.vertexFunction = shaders[.FSQuadVertex]
             descriptor.fragmentFunction = shaders[.SAOEvaluateFragment]
             descriptor.vertexDescriptor = vertexDescriptors[.Simple]

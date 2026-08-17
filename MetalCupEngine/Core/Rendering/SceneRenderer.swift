@@ -880,6 +880,7 @@ public enum SceneRenderer {
             case .normal, .ssaoNormal:
                 encodeNormalPass(
                     encoder,
+                    pass: pass,
                     snapshot: snapshot,
                     batch: batch,
                     batchResult: batchResult,
@@ -1006,16 +1007,20 @@ public enum SceneRenderer {
         let engineContext = frameContext.engineContext()
         encoder.setTriangleFillMode(engineContext.preferences.isWireframeEnabled ? .lines : .fill)
         let usePrepassEquality: Bool
-        if pass == .normal || pass == .ssaoNormal {
+        if pass == .normal {
             // SceneNormalsPass always depth-tests against canonical single-sample scene.depth,
             // so it should use strict equality whenever the prepass populated that attachment.
             usePrepassEquality = frameContext.useDepthPrepass()
+        } else if pass == .ssaoNormal {
+            // The AO pass owns and clears its single-sample depth attachment, so it writes the
+            // closest surface while producing the matching smooth view-space normal.
+            usePrepassEquality = false
         } else {
             usePrepassEquality = frameContext.useDepthPrepass()
                 && pass == .main
                 && mainPassUsesPrepassDepth(frameContext: frameContext)
         }
-        if pass == .depthPrepass {
+        if pass == .depthPrepass || pass == .ssaoNormal {
             encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessEqual])
         } else if (pass == .main || pass == .transparent), passKey.blendMode.usesDepthWrite == false {
             encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessNoWrite])
@@ -1118,6 +1123,7 @@ public enum SceneRenderer {
 
     private static func encodeNormalPass(
         _ encoder: MTLRenderCommandEncoder,
+        pass: RenderPassType,
         snapshot: RenderFrameSnapshot,
         batch: RenderBatch,
         batchResult: RenderBatchResult,
@@ -1127,7 +1133,7 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
-        let pipeline = pipelineState(for: .normal, key: batch.bindings.passKey, frameContext: frameContext)
+        let pipeline = pipelineState(for: pass, key: batch.bindings.passKey, frameContext: frameContext)
         let useAlphaClip = batch.bindings.passKey.blendMode == .alphaClip
         encodeMeshBatch(
             encoder,
