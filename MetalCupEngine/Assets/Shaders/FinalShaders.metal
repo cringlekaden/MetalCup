@@ -842,12 +842,11 @@ static inline SAOProductionSample evaluate_sao_production(
         return result;
     }
 
-    // Contact-first tuning: keep the effective radius modest so nearby inter-object
-    // contacts dominate the result instead of being averaged into broad ambient darkening.
     float radius = max(settings.ssaoRadius, 1e-3);
     float effectiveRadius = radius * 0.9;
     float radiusSquared = effectiveRadius * effectiveRadius;
     float bias = max(settings.ssaoBias, 0.0);
+    float thickness = max(settings.ssaoThickness, bias + 1e-4);
     float intensity = max(settings.ssaoIntensity, 0.0);
     float power = max(settings.ssaoPower, 0.1);
 
@@ -894,26 +893,26 @@ static inline SAOProductionSample evaluate_sao_production(
         float distance = sqrt(distanceSquared);
         float3 directionToSample = delta / distance;
 
-        // Restore the previous contact-capable weighting model. It is not a pure hemisphere
-        // obscurance test, but it produced the inter-object grounding we want to preserve.
-        float receiverHeight = dot(centerViewNormal, delta);
-        float receiverLift = saturate((receiverHeight + bias) / (distance + bias));
-        float lateralContact = 1.0 - saturate(abs(receiverHeight) / (distance + bias));
-        float receiverWeight = max(receiverLift, lateralContact * 0.45);
-        if (receiverWeight <= 1e-4) {
-            continue;
-        }
-
+        // Only geometry above the receiver tangent plane can obscure its hemisphere. The old
+        // lateral-contact term treated every coplanar neighbor as an occluder, darkening an
+        // isolated flat surface and making the result unstable as the projected kernel moved.
+        float receiverHeight = dot(centerViewNormal, delta) - bias;
         float3 sampleViewNormal = ssao_sample_normal_nearest(normalTexture, sampleUV);
         float occluderFacing = saturate(dot(sampleViewNormal, -directionToSample));
         float rangeFalloff = 1.0 - saturate(distanceSquared / radiusSquared);
         rangeFalloff *= rangeFalloff;
         float nearFieldWeight = mix(1.2, 0.55, tapFraction);
-        float tapWeight = nearFieldWeight * mix(0.55, 1.0, occluderFacing);
+        float tapWeight = rangeFalloff * nearFieldWeight * mix(0.35, 1.0, occluderFacing);
 
-        obscurance += receiverWeight * rangeFalloff * tapWeight;
         totalWeight += tapWeight;
         validTapCount += 1u;
+        if (receiverHeight <= 0.0) {
+            continue;
+        }
+
+        float horizonWeight = saturate(receiverHeight / max(distance, 1e-4));
+        float thicknessFade = 1.0 - smoothstep(thickness, thickness + effectiveRadius * 0.5, receiverHeight);
+        obscurance += horizonWeight * thicknessFade * tapWeight;
     }
 
     result.visibility = sao_visibility_from_obscurance(
@@ -945,7 +944,14 @@ fragment float4 fragment_sao_evaluate(const SimpleRasterizerData rd [[ stage_in 
         depthTexture,
         normalTexture
     );
-    return float4(result.visibility, result.visibility, result.visibility, 1.0);
+    // The production raw target carries inspectable diagnostics. Downstream AO filtering and
+    // PBR consume only red (visibility); G/B/A are obscurance, valid taps, and linear depth.
+    return float4(
+        result.visibility,
+        result.normalizedObscurance,
+        result.validTapFraction,
+        result.linearDepth
+    );
 }
 
 /// Diagnostic fragment compiled through the canonical production shader library.
@@ -1092,6 +1098,34 @@ fragment float4 fragment_final(const SimpleRasterizerData rd [[ stage_in ]],
         }
         float3 aoNormal = sampleSceneNormal(aoNormalsTexture, s, uv);
         return float4(visualizeSceneNormal(aoNormal), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugAOValidSamples) {
+        if (debugFlags.hasSSAO == 0u) {
+            return float4(1.0, 0.0, 1.0, 1.0);
+        }
+        float validFraction = saturate(ssaoRawTexture.sample(s, uv).b);
+        return float4(float3(validFraction), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugAOObscurance) {
+        if (debugFlags.hasSSAO == 0u) {
+            return float4(1.0, 0.0, 1.0, 1.0);
+        }
+        float obscurance = saturate(ssaoRawTexture.sample(s, uv).g);
+        return float4(float3(obscurance), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugAOProductionDepth) {
+        if (debugFlags.hasSSAO == 0u) {
+            return float4(1.0, 0.0, 1.0, 1.0);
+        }
+        float linearDepth = max(ssaoRawTexture.sample(s, uv).a, 0.0);
+        return float4(visualizeLinearDepth(linearDepth, projectionFarPlane(sceneConstants)), 1.0);
+    }
+    if (settings.shadingDebugMode == DebugAOIndirectFactor) {
+        if (debugFlags.hasSSAO == 0u) {
+            return float4(1.0, 0.0, 1.0, 1.0);
+        }
+        float factor = saturate(ssaoFilteredTexture.sample(s, uv).r);
+        return float4(float3(factor), 1.0);
     }
     if (settings.shadingDebugMode == DebugReconstructedViewPosition) {
         float rawDepth = depthTexture.sample(s, uv).r;

@@ -780,7 +780,11 @@ enum ShadingDebugMode : uint {
     DebugFogDensity = 44,
     DebugFogAmbientScattering = 45,
     DebugFogDirectionalScattering = 46,
-    DebugFogPixelClassification = 47
+    DebugFogPixelClassification = 47,
+    DebugAOValidSamples = 48,
+    DebugAOObscurance = 49,
+    DebugAOProductionDepth = 50,
+    DebugAOIndirectFactor = 51
 };
 
 struct LightData {
