@@ -21,7 +21,6 @@ public enum ShaderType {
     case BRDFFragment
     case BloomExtractFragment
     case HeightFogFragment
-    case AutoExposureExtractFragment
     case BloomDownsampleFragment
     case BlurHFragment
     case BlurVFragment
@@ -78,7 +77,6 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         ShaderRegistration(type: .BRDFFragment, displayName: "BRDF Fragment", functionName: "fragment_brdf"),
         ShaderRegistration(type: .BloomExtractFragment, displayName: "Bloom Extract Fragment", functionName: "fragment_bloom_extract"),
         ShaderRegistration(type: .HeightFogFragment, displayName: "Height Fog Fragment", functionName: "fragment_height_fog"),
-        ShaderRegistration(type: .AutoExposureExtractFragment, displayName: "Auto Exposure Extract Fragment", functionName: "fragment_auto_exposure_extract"),
         ShaderRegistration(type: .BloomDownsampleFragment, displayName: "Bloom Downsample Fragment", functionName: "fragment_bloom_downsample"),
         ShaderRegistration(type: .BlurHFragment, displayName: "Blur Horizontal Fragment", functionName: "fragment_blur_h"),
         ShaderRegistration(type: .BlurVFragment, displayName: "Blur Vertical Fragment", functionName: "fragment_blur_v"),
@@ -107,7 +105,10 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
     ]
 
     public static var requiredFunctionNames: [String] {
-        defaultManifest.map(\.functionName)
+        defaultManifest.map(\.functionName) + [
+            "kernel_exposure_histogram",
+            "kernel_exposure_reduce"
+        ]
     }
 
     private var _library: [ShaderType: Shader] = [:]

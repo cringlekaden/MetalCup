@@ -26,7 +26,10 @@ public extension RendererDelegate {
         let matrices = scene.map { SceneRenderer.cameraMatrices(scene: $0) }
         let cameraPosition = scene.map { SceneRenderer.cameraPosition(scene: $0) } ?? .zero
         let exposureSettings = scene.map { SceneRenderer.cameraExposure(scene: $0) } ?? SceneViewExposureSettings()
-        return SceneView(viewMatrix: matrices?.view ?? matrix_identity_float4x4,
+        return SceneView(sceneId: scene?.id ?? UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+                         cameraId: scene.map { SceneRenderer.cameraID(scene: $0) } ?? UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+                         viewKind: .game,
+                         viewMatrix: matrices?.view ?? matrix_identity_float4x4,
                          projectionMatrix: matrices?.projection ?? matrix_identity_float4x4,
                          cameraPosition: cameraPosition,
                          viewportSize: viewport,

@@ -82,7 +82,7 @@ enum ShaderBindings {
         static let outlineMask = 2
         static let depth = 3
         static let grid = 4
-        static let autoExposure = 5
+        static let reserved5 = 5
         static let normals = 6
         static let ssaoRaw = 7
         static let ssaoFiltered = 8

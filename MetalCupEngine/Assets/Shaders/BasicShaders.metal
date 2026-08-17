@@ -455,7 +455,9 @@ constant bool kAlphaToCoverageEnabled [[function_constant(2)]];
 
 static inline float4 shadedMaterialOutput(float3 color,
                                           float alpha,
-                                          constant MetalCupMaterial &material) {
+                                          constant MetalCupMaterial &material,
+                                          float renderPreExposure) {
+    color *= max(renderPreExposure, 0.0);
     alpha = clamp(alpha, 0.0, 1.0);
     if (isAdditiveBlend(material)) {
         return float4(color * alpha, 0.0);
@@ -837,7 +839,7 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
             emissive += e * mask;
         }
         emissive *= material.emissiveScalar;
-        return shadedMaterialOutput(albedo + emissive, alpha, material);
+        return shadedMaterialOutput(albedo + emissive, alpha, material, settings.renderPreExposure);
     }
 
     // ------------------------------------------------------------
@@ -1477,13 +1479,13 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
             float shadowReal = (shadows.shadowCasterDirectionAndEnabled.w > 0.5 && shadows.shadowMapInvSizeAndCount.z > 0.5) ? 1.0 : 0.0;
             return float4(float3(materialFallback, baseColorReal, iblReal), shadowReal);
         }
-        return shadedMaterialOutput(debugColor, alpha, material);
+        return shadedMaterialOutput(debugColor, alpha, material, settings.renderPreExposure);
     }
     // ------------------------------------------------------------
     // Combine
     // ------------------------------------------------------------
     float3 color = Lo + ambient + specularIBL + emissiveColor;
-    return shadedMaterialOutput(color, alpha, material);
+    return shadedMaterialOutput(color, alpha, material, settings.renderPreExposure);
 }
 
 static inline void applyAlphaClip(RasterizerData rd,

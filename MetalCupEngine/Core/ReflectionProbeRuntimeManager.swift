@@ -145,7 +145,7 @@ final class ReflectionProbeRuntimeManager {
 
             let captureFrameContext = captureFrameContextStorage.beginFrame()
             captureFrameContextStorage.updateRendererState(
-                settings: rendererSettingsProvider(),
+                settings: resolvedCaptureRendererSettings(scene: scene),
                 viewContext: RenderViewContext(
                     viewId: UInt64(bitPattern: Int64(truncatingIfNeeded: nextProbeID.hashValue)),
                     viewportSize: SIMD2<Float>(Float(max(probeState.authoredProbe.captureResolution, 1)),
@@ -362,6 +362,9 @@ final class ReflectionProbeRuntimeManager {
 
     private func resolvedCaptureRendererSettings(scene: EngineScene) -> RendererSettings {
         var settings = rendererSettingsProvider()
+        // Captures are true scene-linear radiance sources. Camera pre-exposure must
+        // never leak from whichever visible view happened to render most recently.
+        settings.renderPreExposure = 1
         if let environmentEntry = scene.ecs.activeEnvironment() {
             let renderState = scene.ecs.get(EnvironmentFrameStateComponent.self,
                                             for: environmentEntry.0)?.renderState

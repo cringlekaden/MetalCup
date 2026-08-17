@@ -125,7 +125,14 @@ public enum SceneRenderer {
                 updatesPickingMapping: true,
                 updatesBatchStats: true,
                 debugFlags: view.debugFlags,
-                showEditorOverlays: view.isEditorView
+                showEditorOverlays: view.isEditorView,
+                exposureSettings: view.exposureSettings,
+                exposureIdentity: ExposureViewStateIdentity(
+                    sceneID: view.sceneId,
+                    cameraID: view.cameraId,
+                    viewportInstanceID: view.viewId,
+                    viewKind: view.viewKind
+                )
             )
         )
         prepareRenderFrameSnapshot(scene: scene, frameContext: frameContext)
@@ -2572,20 +2579,15 @@ public enum SceneRenderer {
     }
 
     public static func exposureSettings(from camera: CameraComponent) -> SceneViewExposureSettings {
-        SceneViewExposureSettings(
-            // Stale serialized auto-exposure fields are deliberately ignored until the
-            // histogram/temporal reconstruction is implemented.
-            autoExposureEnabled: 0,
-            exposureEV: camera.exposureEV,
-            exposureCompensation: 0.0,
-            autoExposureMin: 0.0,
-            autoExposureMax: 0.0,
-            adaptationSpeed: 0.0
-        )
+        SceneViewExposureSettings(cameraOverride: camera.exposurePolicy)
     }
 
     public static func cameraExposure(scene: EngineScene) -> SceneViewExposureSettings {
         scene.getViewExposureSettings()
+    }
+
+    public static func cameraID(scene: EngineScene) -> UUID {
+        scene.getViewCameraID()
     }
 
     public static func gridParams(scene: EngineScene) -> GridParams {

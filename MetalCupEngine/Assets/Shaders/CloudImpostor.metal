@@ -71,6 +71,7 @@ vertex CloudImpostorRasterizerData vertex_cloud_impostor(
 fragment float4 fragment_cloud_impostor(
     CloudImpostorRasterizerData in [[stage_in]],
     constant CloudImpostorParams &params [[buffer(FragmentBufferIndexCloudImpostorParams)]],
+    constant RendererSettings &settings [[buffer(FragmentBufferIndexRendererSettings)]],
     texture2d<float> cloudCard [[texture(FragmentTextureIndexCloudCard)]],
     sampler linearSampler [[sampler(FragmentSamplerIndexLinearClamp)]]) {
     // Keep the prototype on the source mip so generated low-alpha mips cannot turn
@@ -104,5 +105,5 @@ fragment float4 fragment_cloud_impostor(
     float3 cloudColor = mix(mix(lowSunTint, dayTint, sunHeight), nightTint, nightFactor);
     cloudColor *= params.colorTintAndBrightness.rgb * params.colorTintAndBrightness.w * forwardLight * internalDetail;
 
-    return float4(cloudColor, alpha);
+    return float4(cloudColor * max(settings.renderPreExposure, 0.0), alpha);
 }

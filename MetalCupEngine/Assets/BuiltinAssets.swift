@@ -29,7 +29,6 @@ public enum BuiltinAssets {
     public static let gridColor = AssetHandle(string: "00000000-0000-0000-0000-000000000109")
     public static let sceneColorMSAARender = AssetHandle(string: "00000000-0000-0000-0000-000000000110")
     public static let sceneDepthMSAARender = AssetHandle(string: "00000000-0000-0000-0000-000000000111")
-    public static let autoExposureRender = AssetHandle(string: "00000000-0000-0000-0000-000000000112")
     public static let sceneNormalsRender = AssetHandle(string: "00000000-0000-0000-0000-000000000113")
     public static let ssaoRawRender = AssetHandle(string: "00000000-0000-0000-0000-000000000114")
     public static let ssaoFilteredRender = AssetHandle(string: "00000000-0000-0000-0000-000000000115")

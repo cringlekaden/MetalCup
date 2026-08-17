@@ -201,9 +201,7 @@ final class RenderGraph {
         let bloomEnabled = settings.bloomEnabled != 0
         let ssaoEnabled = settings.ssaoEnabled != 0
         let heightFogEnabled = settings.heightFogEnabled != 0
-        // Phase 1 freezes the incomplete instantaneous auto-exposure path. The fields and
-        // resource remain compatibility placeholders until histogram/temporal reconstruction.
-        let autoExposureEnabled = false
+        let autoExposureEnabled = frame.frameContext.exposureFrameResources()?.automatic == true
         if !heightFogEnabled {
             enabledPassNames.remove(PassName.heightFog)
         }

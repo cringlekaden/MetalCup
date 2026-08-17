@@ -120,7 +120,7 @@ enum PostProcessTextureIndex {
     PostProcessTextureIndexOutlineMask = 2,
     PostProcessTextureIndexDepth = 3,
     PostProcessTextureIndexGrid = 4,
-    PostProcessTextureIndexAutoExposure = 5,
+    PostProcessTextureIndexReserved5 = 5,
     PostProcessTextureIndexNormals = 6,
     PostProcessTextureIndexSSAORaw = 7,
     PostProcessTextureIndexSSAOFiltered = 8,
@@ -459,7 +459,7 @@ struct RendererSettings {
     uint bloomResolutionScale;
     uint blurPasses;
     uint tonemap;
-    float reservedExposure0;
+    float renderPreExposure;
     float gamma;
     uint iblEnabled;
     float iblIntensity;
@@ -518,12 +518,51 @@ struct RendererSettings {
 };
 
 struct ViewExposureSettings {
-    uint autoExposureEnabled;
-    float exposureEV;
-    float exposureCompensation;
-    float autoExposureMin;
-    float autoExposureMax;
-    float adaptationSpeed;
+    float exposureGain;
+    float currentEV100;
+    float targetEV100;
+    float meteredLuminance;
+    float renderPreExposure;
+    float inverseRenderPreExposure;
+    float maximumStoredHDR;
+    float outdoorPriorContribution;
+    float compensation;
+    float minimumEV100;
+    float maximumEV100;
+    uint adaptationState;
+    uint mode;
+    uint histogramSampleCount;
+    uint fp16SaturationCount;
+    uint flags;
+};
+
+struct ExposureMeteringUniforms {
+    uint viewportWidth;
+    uint viewportHeight;
+    uint meteringMode;
+    uint resetHistory;
+    float histogramLogMin;
+    float histogramLogMax;
+    float lowPercentile;
+    float highPercentile;
+    float minimumEV100;
+    float maximumEV100;
+    float compensation;
+    float targetKey;
+    float darkAdaptationRate;
+    float lightAdaptationRate;
+    float deltaTime;
+    float renderPreExposure;
+    float skyInfluenceCap;
+    float sceneEV100Calibration;
+    float authoredEV100;
+    uint exposureMode;
+    uint exposureLocked;
+    uint outdoorPriorEnabled;
+    uint padding0;
+    float outdoorPriorStrength;
+    float fp16Maximum;
+    float2 padding1;
 };
 
 struct DepthHierarchyReduceParams {

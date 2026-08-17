@@ -174,8 +174,8 @@ public struct RendererSettings: sizeable {
     public var reservedBloom2: UInt32 = 6
     // Reserved legacy authoring field. Normal output is always MetalCup Filmic v1.
     public var tonemap: UInt32 = TonemapType.filmic.rawValue
-    // Reserved to preserve Swift/Metal uniform ABI after removing renderer-global exposure ownership.
-    public var reservedExposure0: Float = 1.0
+    // Numerical conditioning only. Camera exposure is resolved per view and applied in final output.
+    public var renderPreExposure: Float = 1.0
     // Reserved legacy authoring field. SDR is encoded to sRGB exactly once.
     public var gamma: Float = 2.2
 

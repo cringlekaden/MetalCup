@@ -36,6 +36,7 @@ public struct RenderViewContext {
     /// True only for the canonical mirrored-X cubemap capture projection.
     public var usesMirroredCubemapProjection: Bool
     public var exposureSettings: SceneViewExposureSettings
+    public var exposureIdentity: ExposureViewStateIdentity
 
     public init(
         viewId: UInt64 = 0,
@@ -47,7 +48,8 @@ public struct RenderViewContext {
         debugFlags: UInt32 = 0,
         showEditorOverlays: Bool = false,
         usesMirroredCubemapProjection: Bool = false,
-        exposureSettings: SceneViewExposureSettings = SceneViewExposureSettings()
+        exposureSettings: SceneViewExposureSettings = SceneViewExposureSettings(),
+        exposureIdentity: ExposureViewStateIdentity = ExposureViewStateIdentity()
     ) {
         self.viewId = viewId
         self.viewportSize = viewportSize
@@ -59,6 +61,7 @@ public struct RenderViewContext {
         self.showEditorOverlays = showEditorOverlays
         self.usesMirroredCubemapProjection = usesMirroredCubemapProjection
         self.exposureSettings = exposureSettings
+        self.exposureIdentity = exposureIdentity
     }
 
     public func cacheSignature() -> UInt64 {
@@ -73,6 +76,7 @@ public struct RenderViewContext {
         hasher.combine(debugFlags)
         hasher.combine(showEditorOverlays)
         hasher.combine(usesMirroredCubemapProjection)
+        hasher.combine(exposureIdentity)
         // Exposure is final-output state. It must not invalidate view-owned HDR,
         // culling, environment, bloom-input, or probe resources.
         return UInt64(bitPattern: Int64(hasher.finalize()))
@@ -249,6 +253,20 @@ public struct RendererFrameContext {
         storage.rendererStateRevisionValue()
     }
 
+    /// Renderer-owned view switch used by auxiliary views such as camera previews. Callers must
+    /// restore the previous state after encoding the auxiliary view.
+    func setRendererState(settings: RendererSettings, viewContext: RenderViewContext) {
+        storage.updateRendererState(settings: settings, viewContext: viewContext)
+    }
+
+    func setExposureFrameResources(_ resources: ExposureFrameResources?) {
+        storage.setExposureFrameResources(resources)
+    }
+
+    func exposureFrameResources() -> ExposureFrameResources? {
+        storage.exposureFrameResourcesValue()
+    }
+
     func setRenderResourceRegistry(_ registry: RenderResourceRegistry) {
         storage.setRenderResourceRegistry(registry)
     }
@@ -407,6 +425,7 @@ public final class RendererFrameContextStorage {
     private var lightingInputs: LightingInputs?
     private var currentRenderPass: RenderPassType = .main
     private var viewContext = RenderViewContext()
+    private var exposureFrameResources: ExposureFrameResources?
     private var forwardPlusAllowed = true
     private var forwardPlusCullingDepthSource: ForwardPlusCullingDepthSource = .none
     private var forwardPlusCullingDepthProducerMask: UInt32 = 0
@@ -483,6 +502,7 @@ public final class RendererFrameContextStorage {
         renderResourceRegistry = nil
         renderFrameSnapshot = nil
         lightingInputs = nil
+        exposureFrameResources = nil
         forwardPlusAllowed = true
         forwardPlusCullingDepthSource = .none
         forwardPlusCullingDepthProducerMask = 0
@@ -904,6 +924,14 @@ public final class RendererFrameContextStorage {
 
     fileprivate func setViewContext(_ context: RenderViewContext) {
         viewContext = context
+    }
+
+    fileprivate func setExposureFrameResources(_ resources: ExposureFrameResources?) {
+        exposureFrameResources = resources
+    }
+
+    fileprivate func exposureFrameResourcesValue() -> ExposureFrameResources? {
+        exposureFrameResources
     }
 
     fileprivate func engineContextValue() -> EngineContext {

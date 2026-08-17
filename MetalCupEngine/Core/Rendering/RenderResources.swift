@@ -255,7 +255,6 @@ enum RenderResourceTexture {
     case ssaoRaw
     case ssaoFiltered
     case ssaoPing
-    case autoExposure
     case bloomPing
     case bloomPong
     case outlineMask
@@ -290,8 +289,6 @@ enum RenderResourceTexture {
             return BuiltinAssets.ssaoFilteredRender
         case .ssaoPing:
             return BuiltinAssets.ssaoPingRender
-        case .autoExposure:
-            return BuiltinAssets.autoExposureRender
         case .bloomPing:
             return BuiltinAssets.bloomPing
         case .bloomPong:
@@ -350,7 +347,6 @@ final class RenderResources {
             && texture(.ssaoRaw) != nil
             && texture(.ssaoFiltered) != nil
             && texture(.ssaoPing) != nil
-            && texture(.autoExposure) != nil
             && texture(.bloomPing) != nil
             && texture(.bloomPong) != nil
             && texture(.outlineMask) != nil
@@ -419,16 +415,6 @@ final class RenderResources {
         finalColorDesc.usage = [.renderTarget, .shaderRead]
         finalColorDesc.storageMode = .private
         registerTexture(descriptor: finalColorDesc, handle: .finalColor, label: "RenderTarget.FinalColor")
-
-        let autoExposureDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: preferences.HDRPixelFormat,
-            width: max(1, width / 2),
-            height: max(1, height / 2),
-            mipmapped: true
-        )
-        autoExposureDesc.usage = [.renderTarget, .shaderRead]
-        autoExposureDesc.storageMode = .private
-        registerTexture(descriptor: autoExposureDesc, handle: .autoExposure, label: "RenderTarget.AutoExposure")
 
         let baseDepthDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: preferences.defaultDepthPixelFormat,
@@ -584,7 +570,6 @@ final class RenderResources {
             .ssaoRaw,
             .ssaoFiltered,
             .ssaoPing,
-            .autoExposure,
             .bloomPing,
             .bloomPong,
             .outlineMask,

@@ -37,5 +37,6 @@ fragment float4 fragment_skybox(SkyboxRasterizerData rd [[ stage_in ]],
                                 sampler sampler [[ sampler(FragmentSamplerIndexLinearClamp) ]],
                                 texturecube<float> skyboxTexture [[ texture(FragmentTextureIndexSkybox) ]]) {
     float3 dir = normalize(rd.direction);
-    return float4(skyboxTexture.sample(sampler, dir, bias(settings.skyboxMipBias)).rgb, 1.0);
+    float3 radiance = skyboxTexture.sample(sampler, dir, bias(settings.skyboxMipBias)).rgb;
+    return float4(radiance * max(settings.renderPreExposure, 0.0), 1.0);
 }

@@ -1379,10 +1379,12 @@ fragment float4 fragment_procedural_sky(CubemapRasterizerData rd [[ stage_in ]],
 
 fragment float4 fragment_procedural_sky_visible(VisibleProceduralSkyRasterizerData rd [[ stage_in ]],
                                                 constant SkyParams &params [[ buffer(FragmentBufferIndexSkyParams) ]],
+                                                constant RendererSettings &settings [[ buffer(FragmentBufferIndexRendererSettings) ]],
                                                 texture2d<float> moonAlbedoTexture [[ texture(FragmentTextureIndexMoonAlbedo) ]],
                                                 texture2d<float> galaxyTexture [[ texture(FragmentTextureIndexGalaxyBackground) ]],
                                                 texture2d<float> cloudAtlasTexture [[ texture(FragmentTextureIndexCloudAtlas) ]]) {
-    return float4(evaluate_visible_procedural_sky_radiance(rd.direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+    float3 radiance = evaluate_visible_procedural_sky_radiance(rd.direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture);
+    return float4(radiance * max(settings.renderPreExposure, 0.0), 1.0);
 }
 
 fragment float4 fragment_procedural_sky_capture(VisibleProceduralSkyRasterizerData rd [[ stage_in ]],

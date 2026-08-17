@@ -531,8 +531,7 @@ fragment float4 fragment_height_fog(const SimpleRasterizerData rd [[ stage_in ]]
             : float4(0.1, 1.0, 0.25, 1.0);
     }
     float3 foggedColor = sceneColor * fog.transmittance
-        + fog.ambientInscattering
-        + fog.directionalInscattering;
+        + (fog.ambientInscattering + fog.directionalInscattering) * max(settings.renderPreExposure, 0.0);
     return float4(foggedColor, 1.0);
 }
 
@@ -571,22 +570,141 @@ fragment float4 fragment_bloom_extract(const SimpleRasterizerData rd [[ stage_in
     }
     float2 sourceTexel = float2(1.0 / float(renderTexture.get_width()), 1.0 / float(renderTexture.get_height()));
     float3 scene = dualTent13(renderTexture, s, uv, sourceTexel, 0.0);
-    float3 bloom = soft_threshold(scene, settings.bloomThreshold, settings.bloomKnee);
+    float preExposure = max(settings.renderPreExposure, 1e-6);
+    float3 bloom = soft_threshold(scene,
+                                  settings.bloomThreshold * preExposure,
+                                  settings.bloomKnee);
     return float4(bloom, 1.0);
 }
 
-fragment float4 fragment_auto_exposure_extract(const SimpleRasterizerData rd [[ stage_in ]],
-                                               constant RendererSettings &settings [[ buffer(FragmentBufferIndexRendererSettings) ]],
-                                               texture2d<float> renderTexture [[ texture(PostProcessTextureIndexSource) ]],
-                                               sampler s [[ sampler(FragmentSamplerIndexLinearClamp) ]]) {
-    float2 uv = rd.texCoord;
-    if (settings.uvDebug.x != 0) {
-        return float4(uv, 0.0, 1.0);
+// Engine-wide exposure histogram. One thread samples a 4x4 footprint; weighted counts use
+// fixed-point units so center/sky masks remain deterministic with atomic integer bins.
+kernel void kernel_exposure_histogram(
+    texture2d<float, access::read> sceneTexture [[texture(0)]],
+    texture2d<float, access::read> depthTexture [[texture(1)]],
+    texture2d<float, access::sample> meteringMask [[texture(2)]],
+    device atomic_uint *histogram [[buffer(0)]],
+    constant ExposureMeteringUniforms &uniforms [[buffer(1)]],
+    sampler linearSampler [[sampler(0)]],
+    uint2 gid [[thread_position_in_grid]]) {
+    uint2 pixel = gid * 4u + 2u;
+    uint width = sceneTexture.get_width();
+    uint height = sceneTexture.get_height();
+    if (pixel.x >= width || pixel.y >= height) { return; }
+    float3 stored = max(sceneTexture.read(pixel).rgb, 0.0);
+    float3 trueRadiance = stored / max(uniforms.renderPreExposure, 1e-6);
+    float logLuminance = log2(max(luminance(trueRadiance), exp2(uniforms.histogramLogMin)));
+    float normalized = saturate((logLuminance - uniforms.histogramLogMin)
+        / max(uniforms.histogramLogMax - uniforms.histogramLogMin, 1e-5));
+    uint bin = min(uint(normalized * 128.0), 127u);
+
+    float2 uv = (float2(pixel) + 0.5) / float2(width, height);
+    float2 centered = (uv - 0.5) * 2.0;
+    float radius2 = dot(centered, centered);
+    float weight = 1.0;
+    if (uniforms.meteringMode == 1u) {
+        weight = mix(0.2, 1.0, exp(-radius2 * 2.2));
+    } else if (uniforms.meteringMode == 2u) {
+        weight = radius2 <= 0.04 ? 1.0 : 0.0;
+    } else if (uniforms.meteringMode == 3u) {
+        weight = saturate(meteringMask.sample(linearSampler, uv).r);
     }
-    float3 scene = max(renderTexture.sample(s, uv).rgb, 0.0);
-    float sceneLuminance = max(luminance(scene), 1e-4);
-    float logLuminance = log2(sceneLuminance);
-    return float4(logLuminance, logLuminance, logLuminance, 1.0);
+    float depth = depthTexture.read(min(pixel, uint2(depthTexture.get_width() - 1u,
+                                                     depthTexture.get_height() - 1u))).r;
+    if (depth >= 0.999999) {
+        weight *= saturate(uniforms.skyInfluenceCap);
+    }
+    uint fixedWeight = uint(max(weight * 1024.0, 0.0) + 0.5);
+    if (fixedWeight > 0u) {
+        atomic_fetch_add_explicit(&histogram[bin], fixedWeight, memory_order_relaxed);
+    }
+    float maxStored = max(stored.r, max(stored.g, stored.b));
+    if (isfinite(maxStored) && maxStored >= 0.0) {
+        atomic_fetch_max_explicit(&histogram[128], as_type<uint>(maxStored), memory_order_relaxed);
+        if (maxStored >= uniforms.fp16Maximum * 0.999) {
+            atomic_fetch_add_explicit(&histogram[129], 1u, memory_order_relaxed);
+        }
+    } else {
+        atomic_fetch_add_explicit(&histogram[129], 1u, memory_order_relaxed);
+    }
+}
+
+kernel void kernel_exposure_reduce(
+    device const atomic_uint *histogram [[buffer(0)]],
+    constant ExposureMeteringUniforms &uniforms [[buffer(1)]],
+    device ViewExposureSettings *output [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]) {
+    if (gid != 0u) { return; }
+    uint total = 0;
+    for (uint i = 0; i < 128u; ++i) {
+        total += atomic_load_explicit(&histogram[i], memory_order_relaxed);
+    }
+    float metered = max(uniforms.targetKey, 1e-6);
+    if (total > 0) {
+        uint lowCut = uint(float(total) * saturate(uniforms.lowPercentile));
+        uint highCut = uint(float(total) * saturate(uniforms.highPercentile));
+        highCut = max(highCut, lowCut + 1u);
+        uint cumulative = 0;
+        float weightedLog = 0.0;
+        uint included = 0;
+        float range = uniforms.histogramLogMax - uniforms.histogramLogMin;
+        for (uint i = 0; i < 128u; ++i) {
+            uint count = atomic_load_explicit(&histogram[i], memory_order_relaxed);
+            uint next = cumulative + count;
+            uint begin = max(cumulative, lowCut);
+            uint end = min(next, highCut);
+            if (end > begin) {
+                uint accepted = end - begin;
+                float binLog = uniforms.histogramLogMin + (float(i) + 0.5) * (range / 128.0);
+                weightedLog += binLog * float(accepted);
+                included += accepted;
+            }
+            cumulative = next;
+        }
+        if (included > 0) {
+            metered = exp2(weightedLog / float(included));
+        }
+    }
+
+    float targetEV100 = uniforms.authoredEV100;
+    if (uniforms.exposureMode == 0u) {
+        targetEV100 = uniforms.sceneEV100Calibration
+            - log2(max(uniforms.targetKey, 1e-6) / max(metered, 1e-6));
+    }
+    targetEV100 = clamp(targetEV100, uniforms.minimumEV100, uniforms.maximumEV100);
+    float currentEV100 = output->currentEV100;
+    uint adaptationState = 0u;
+    if (uniforms.resetHistory != 0u || !isfinite(currentEV100)) {
+        currentEV100 = targetEV100;
+    } else if (uniforms.exposureLocked == 0u && uniforms.exposureMode == 0u) {
+        float delta = targetEV100 - currentEV100;
+        if (abs(delta) > 1e-4) {
+            bool gainIncreasing = delta < 0.0;
+            float rate = gainIncreasing ? uniforms.darkAdaptationRate : uniforms.lightAdaptationRate;
+            float step = min(abs(delta), max(rate, 0.0) * max(uniforms.deltaTime, 0.0));
+            currentEV100 += copysign(step, delta);
+            adaptationState = gainIncreasing ? 1u : 2u;
+        }
+    } else if (uniforms.exposureMode != 0u) {
+        currentEV100 = targetEV100;
+    }
+    float gain = exp2(uniforms.sceneEV100Calibration - currentEV100 + uniforms.compensation);
+    output->exposureGain = isfinite(gain) ? gain : 1.0;
+    output->currentEV100 = currentEV100;
+    output->targetEV100 = targetEV100;
+    output->meteredLuminance = metered;
+    output->renderPreExposure = uniforms.renderPreExposure;
+    output->inverseRenderPreExposure = 1.0 / max(uniforms.renderPreExposure, 1e-6);
+    output->maximumStoredHDR = as_type<float>(atomic_load_explicit(&histogram[128], memory_order_relaxed));
+    output->outdoorPriorContribution = uniforms.outdoorPriorEnabled != 0u ? uniforms.outdoorPriorStrength : 0.0;
+    output->compensation = uniforms.compensation;
+    output->minimumEV100 = uniforms.minimumEV100;
+    output->maximumEV100 = uniforms.maximumEV100;
+    output->adaptationState = adaptationState;
+    output->mode = uniforms.exposureMode;
+    output->histogramSampleCount = total / 1024u;
+    output->fp16SaturationCount = atomic_load_explicit(&histogram[129], memory_order_relaxed);
+    output->flags = uniforms.exposureLocked != 0u ? 1u : 0u;
 }
 
 fragment float4 fragment_bloom_downsample(const SimpleRasterizerData rd [[ stage_in ]],
@@ -1045,7 +1163,6 @@ fragment float4 fragment_final(const SimpleRasterizerData rd [[ stage_in ]],
                                texture2d<float> outlineMask [[ texture(PostProcessTextureIndexOutlineMask) ]],
                                texture2d<float> depthTexture [[ texture(PostProcessTextureIndexDepth) ]],
                                texture2d<float> gridTexture [[ texture(PostProcessTextureIndexGrid) ]],
-                               texture2d<float> autoExposureTexture [[ texture(PostProcessTextureIndexAutoExposure) ]],
                                texture2d<float> sceneNormalsTexture [[ texture(PostProcessTextureIndexNormals) ]],
                                texture2d<float> ssaoRawTexture [[ texture(PostProcessTextureIndexSSAORaw) ]],
                                texture2d<float> ssaoFilteredTexture [[ texture(PostProcessTextureIndexSSAOFiltered) ]],
@@ -1150,21 +1267,26 @@ fragment float4 fragment_final(const SimpleRasterizerData rd [[ stage_in ]],
 
     float4 gridSample = gridTexture.sample(s, uv);
     if (settings.gridEnabled != 0) {
-        color = mix(color, gridSample.rgb, gridSample.a * settings.gridOpacity);
+        color = mix(color, gridSample.rgb * viewExposure.renderPreExposure, gridSample.a * settings.gridOpacity);
     }
 
     float4 worldDebugSample = worldDebugTexture.sample(s, uv);
     float worldDebugAlpha = saturate(worldDebugSample.a);
     // Debug lines accumulate into the intermediate overlay target with alpha blending,
     // so the stored RGB is effectively premultiplied by coverage/alpha.
-    color = color * (1.0 - worldDebugAlpha) + max(worldDebugSample.rgb, 0.0);
+    color = color * (1.0 - worldDebugAlpha)
+        + max(worldDebugSample.rgb, 0.0) * viewExposure.renderPreExposure;
 
     if (settings.outlineEnabled != 0) {
         float mask = outlineMask.sample(s, uv).r;
         float outlineAlpha = saturate(mask * settings.outlineOpacity);
-        color = mix(color, settings.outlineColor, outlineAlpha);
+        color = mix(color, settings.outlineColor * viewExposure.renderPreExposure, outlineAlpha);
     }
 
-    color = metalcup_final_sdr_output(color, viewExposure.exposureEV);
+    // storedHDR = trueRadiance * renderPreExposure. Artistic exposure is applied once here.
+    float3 cameraLinear = max(color, 0.0)
+        * viewExposure.exposureGain
+        * viewExposure.inverseRenderPreExposure;
+    color = linear_to_srgb(tonemap_filmic_default(cameraLinear));
     return float4(color, 1.0);
 }

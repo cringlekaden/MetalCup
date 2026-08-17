@@ -35,6 +35,8 @@ public final class Renderer: NSObject {
     private let _frameContextStorage: RendererFrameContextStorage
     private let _skyRebuildFrameContextStorage: RendererFrameContextStorage
     private let _reflectionProbeCaptureFrameContextStorage: RendererFrameContextStorage
+    private let _exposureSystem: ExposureSystem
+    private let _previewExposureComputeEncoder = ExposureComputeEncoder()
     let shadowRenderer: ShadowRenderer
     private var _lastFrameTimestamp: TimeInterval?
     private var _frameCount: UInt64 = 0
@@ -186,6 +188,9 @@ public final class Renderer: NSObject {
         self._frameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
         self._skyRebuildFrameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
         self._reflectionProbeCaptureFrameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
+        self._exposureSystem = ExposureSystem(device: engineContext.device) { [weak engineContext] diagnostics in
+            engineContext?.rendererDiagnostics.commit(exposure: diagnostics)
+        }
         self._environmentIBLCommandQueue = engineContext.device.makeCommandQueue() ?? engineContext.commandQueue
         self.shadowRenderer = ShadowRenderer(engineContext: engineContext)
         super.init()
@@ -1679,8 +1684,183 @@ extension Renderer: MTKViewDelegate {
             updatesBatchStats: true,
             debugFlags: sceneView.debugFlags,
             showEditorOverlays: sceneView.isEditorView,
-            exposureSettings: sceneView.exposureSettings
+            exposureSettings: sceneView.exposureSettings,
+            exposureIdentity: ExposureViewStateIdentity(
+                sceneID: sceneView.sceneId,
+                cameraID: sceneView.cameraId,
+                viewportInstanceID: resolvedViewId,
+                viewKind: sceneView.viewKind
+            )
         )
+    }
+
+    public func pushExposureOverride(_ policy: ExposurePolicyOverride,
+                                     weight: Float = 1,
+                                     priority: Int = 0,
+                                     source: String = "Gameplay/Cinematic",
+                                     lockOperation: ExposureLockOperation? = nil) -> ExposureOverrideToken {
+        _exposureSystem.pushRuntimeOverride(ExposureOverrideLayer(
+            policy: policy,
+            weight: weight,
+            priority: priority,
+            source: source,
+            lockOperation: lockOperation
+        ))
+    }
+
+    public func removeExposureOverride(_ token: ExposureOverrideToken) {
+        _exposureSystem.removeRuntimeOverride(token)
+    }
+
+    public func setViewportExposureOverride(_ policy: ExposurePolicyOverride?,
+                                            viewportID: UInt64,
+                                            lockExposure: Bool = false) {
+        let layer = policy.map {
+            ExposureOverrideLayer(policy: $0,
+                                  weight: 1,
+                                  priority: Int.max,
+                                  source: "Editor Viewport",
+                                  lockOperation: lockExposure ? .lock : .unlock)
+        }
+        _exposureSystem.setViewportOverride(layer, viewportID: viewportID)
+    }
+
+    public func notifyExposureEvent(_ event: ExposureTemporalEvent,
+                                    identity: ExposureViewStateIdentity) {
+        _exposureSystem.notify(event, identity: identity)
+    }
+
+    public func resetExposureHistories() {
+        _exposureSystem.resetAll()
+        engineContext.rendererDiagnostics.removeAllExposureViews()
+    }
+
+    public func resetExposureHistory(viewportID: UInt64) {
+        _exposureSystem.reset(viewportID: viewportID)
+        engineContext.rendererDiagnostics.removeExposureViews(viewportInstanceID: viewportID)
+    }
+
+    /// Renders an inspector camera preview through the same per-view exposure, Filmic v1, and
+    /// sRGB output path as the main view. The preview owns a distinct temporal history.
+    @discardableResult
+    public func renderCameraPreview(scene: EngineScene,
+                                    cameraEntity: Entity,
+                                    viewportSize: SIMD2<Float>,
+                                    hdrTarget: MTLTexture,
+                                    depthTarget: MTLTexture,
+                                    outputTarget: MTLTexture,
+                                    commandBuffer: MTLCommandBuffer,
+                                    frameContext: RendererFrameContext,
+                                    unscaledDeltaTime: Float) -> Bool {
+        guard viewportSize.x > 1, viewportSize.y > 1,
+              outputTarget.pixelFormat == engineContext.preferences.defaultColorPixelFormat,
+              let exposureSettings = scene.getExposureSettings(cameraEntity: cameraEntity) else { return false }
+
+        let previewViewID = Self.previewViewID(cameraID: cameraEntity.id)
+        let identity = ExposureViewStateIdentity(sceneID: scene.id,
+                                                 cameraID: cameraEntity.id,
+                                                 viewportInstanceID: previewViewID,
+                                                 viewKind: .cameraPreview)
+        let previousSettings = frameContext.rendererSettings()
+        let previousViewContext = frameContext.viewContext()
+        let previousExposureResources = frameContext.exposureFrameResources()
+        let solarElevation: Float? = {
+            guard let environment = scene.ecs.activeEnvironment() else { return nil }
+            let state = scene.ecs.get(EnvironmentFrameStateComponent.self, for: environment.0)?.renderState
+                ?? EnvironmentRenderStateBuilder.build(
+                    environment: environment.1,
+                    runtime: scene.ecs.get(EnvironmentRuntimeStateComponent.self, for: environment.0),
+                    rendererSettings: previousSettings
+                )
+            return state.sourceMode == .procedural ? state.solarElevationDegrees : nil
+        }()
+        guard let resources = _exposureSystem.prepare(
+            identity: identity,
+            projectDefaults: engineContext.projectExposureDefaults,
+            viewSettings: exposureSettings,
+            solarElevationDegrees: solarElevation,
+            cameraPosition: scene.ecs.worldTransform(for: cameraEntity).position,
+            unscaledDeltaTime: unscaledDeltaTime,
+            frameIndex: frameContext.currentFrameIndex()
+        ) else { return false }
+
+        var previewSettings = previousSettings
+        previewSettings.renderPreExposure = resources.meteringUniforms.renderPreExposure
+        let previewViewContext = RenderViewContext(
+            viewId: previewViewID,
+            viewportSize: viewportSize,
+            layerFilterMask: .all,
+            depthPrepassEnabled: false,
+            updatesPickingMapping: false,
+            updatesBatchStats: false,
+            debugFlags: 0,
+            showEditorOverlays: false,
+            exposureSettings: exposureSettings,
+            exposureIdentity: identity
+        )
+        frameContext.setRendererState(settings: previewSettings, viewContext: previewViewContext)
+        frameContext.setExposureFrameResources(resources)
+        defer {
+            frameContext.setExposureFrameResources(previousExposureResources)
+            frameContext.setRendererState(settings: previousSettings, viewContext: previousViewContext)
+        }
+
+        let scenePass = MTLRenderPassDescriptor()
+        scenePass.colorAttachments[0].texture = hdrTarget
+        scenePass.colorAttachments[0].loadAction = .clear
+        scenePass.colorAttachments[0].storeAction = .store
+        scenePass.colorAttachments[0].clearColor = ClearColor.Black
+        scenePass.depthAttachment.texture = depthTarget
+        scenePass.depthAttachment.loadAction = .clear
+        scenePass.depthAttachment.storeAction = .store
+        scenePass.depthAttachment.clearDepth = 1
+        guard let sceneEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: scenePass) else { return false }
+        scene.renderPreview(encoder: sceneEncoder,
+                            cameraEntity: cameraEntity,
+                            viewportSize: viewportSize,
+                            frameContext: frameContext)
+        sceneEncoder.endEncoding()
+
+        _previewExposureComputeEncoder.encode(commandBuffer: commandBuffer,
+                                              sceneTexture: hdrTarget,
+                                              sceneDepth: depthTarget,
+                                              meteringMask: resources.resolvedPolicy.settings.meteringMaskHandle
+                                                  .flatMap { engineContext.assets.texture(handle: $0) }
+                                                  ?? engineContext.fallbackTextures.whiteRGBA,
+                                              resources: resources,
+                                              engineContext: engineContext)
+
+        guard let quad = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
+              let finalEncoder = commandBuffer.makeRenderCommandEncoder(
+                descriptor: FullscreenTarget(texture: outputTarget).renderPassDescriptor()
+              ) else { return false }
+        RenderPassHelpers.setViewport(finalEncoder, viewportSize)
+        let finalPass = FullscreenPass(
+            pipeline: .Final,
+            label: "Camera Preview Final Composite",
+            inputs: PostProcessInputs(
+                sampler: .LinearClampToZero,
+                source: hdrTarget,
+                bloom: engineContext.fallbackTextures.blackRGBA,
+                sceneDepth: depthTarget,
+                settings: previewSettings
+            )
+        )
+        finalPass.encode(into: finalEncoder,
+                         quad: quad,
+                         frameContext: frameContext,
+                         graphics: engineContext.graphics)
+        finalEncoder.endEncoding()
+        if resources.automatic {
+            commandBuffer.addCompletedHandler { [weak self] _ in self?._exposureSystem.complete(resources) }
+        }
+        return true
+    }
+
+    private static func previewViewID(cameraID: UUID) -> UInt64 {
+        cameraID.uuidString.utf8.reduce(0xcbf29ce484222325) { partial, byte in
+            (partial ^ UInt64(byte)) &* 0x100000001b3
+        } | (1 << 63)
     }
 
     public func draw(in view: MTKView) {
@@ -1718,11 +1898,34 @@ extension Renderer: MTKViewDelegate {
         // final composite texture and presents it inside the viewport UI.
         let sceneView = delegate?.buildSceneView(renderer: self) ?? SceneView(viewportSize: viewportSize)
         let activeScene = delegate?.activeScene()
-        let frameSettings = resolvedRendererSettings(for: activeScene)
+        var frameSettings = resolvedRendererSettings(for: activeScene)
+        let renderViewContext = makeRenderViewContext(sceneView: sceneView, view: view)
+        let solarElevation: Float? = {
+            guard let scene = activeScene,
+                  let environment = scene.ecs.activeEnvironment() else { return nil }
+            let state = scene.ecs.get(EnvironmentFrameStateComponent.self, for: environment.0)?.renderState
+                ?? EnvironmentRenderStateBuilder.build(
+                    environment: environment.1,
+                    runtime: scene.ecs.get(EnvironmentRuntimeStateComponent.self, for: environment.0),
+                    rendererSettings: frameSettings
+                )
+            return state.sourceMode == .procedural ? state.solarElevationDegrees : nil
+        }()
+        let exposureResources = _exposureSystem.prepare(
+            identity: renderViewContext.exposureIdentity,
+            projectDefaults: engineContext.projectExposureDefaults,
+            viewSettings: sceneView.exposureSettings,
+            solarElevationDegrees: solarElevation,
+            cameraPosition: sceneView.cameraPosition,
+            unscaledDeltaTime: frameTime.unscaledDeltaTime,
+            frameIndex: frameContext.currentFrameIndex()
+        )
+        frameSettings.renderPreExposure = exposureResources?.meteringUniforms.renderPreExposure ?? 1
         _frameContextStorage.updateRendererState(
             settings: frameSettings,
-            viewContext: makeRenderViewContext(sceneView: sceneView, view: view)
+            viewContext: renderViewContext
         )
+        frameContext.setExposureFrameResources(exposureResources)
         _frameContextStorage.setAssetStateRevision(engineContext.assets.cacheRevisionToken())
         frameContext.setRenderResourceRegistry(_renderResources.buildRegistry())
         let frameDiagnostics = frameContext.diagnostics
@@ -1795,6 +1998,11 @@ extension Renderer: MTKViewDelegate {
             )
             engineContext.forwardPlusStats = committed.stats
             engineContext.forwardPlusCullingDepthSource = committed.cullingDepthSource.rawValue
+        }
+        if let exposureResources, exposureResources.automatic {
+            overlayCommandBuffer.addCompletedHandler { [weak self] _ in
+                self?._exposureSystem.complete(exposureResources)
+            }
         }
 
         let overlaysStart = CACurrentMediaTime()

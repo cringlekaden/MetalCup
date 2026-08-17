@@ -201,9 +201,8 @@ struct PostProcessInputs {
     var environmentIrradiance: MTLTexture?
     var grid: MTLTexture?
     var worldDebug: MTLTexture?
-    var autoExposure: MTLTexture?
     var settings: RendererSettings?
-    var viewExposure: SceneViewExposureSettings?
+    var viewExposure: ExposureOutputUniforms?
 
     init(sampler: SamplerStateType? = nil,
          source: MTLTexture? = nil,
@@ -217,9 +216,8 @@ struct PostProcessInputs {
          environmentIrradiance: MTLTexture? = nil,
          grid: MTLTexture? = nil,
          worldDebug: MTLTexture? = nil,
-         autoExposure: MTLTexture? = nil,
          settings: RendererSettings? = nil,
-         viewExposure: SceneViewExposureSettings? = nil) {
+         viewExposure: ExposureOutputUniforms? = nil) {
         self.sampler = sampler
         self.source = source
         self.bloom = bloom
@@ -232,7 +230,6 @@ struct PostProcessInputs {
         self.environmentIrradiance = environmentIrradiance
         self.grid = grid
         self.worldDebug = worldDebug
-        self.autoExposure = autoExposure
         self.settings = settings
         self.viewExposure = viewExposure
     }
@@ -247,9 +244,8 @@ struct PostProcessInputs {
          useSSAO: Bool = false,
          grid: MTLTexture? = nil,
          worldDebug: MTLTexture? = nil,
-         autoExposure: MTLTexture? = nil,
          settings: RendererSettings? = nil,
-         viewExposure: SceneViewExposureSettings? = nil) {
+         viewExposure: ExposureOutputUniforms? = nil) {
         self.init(
             sampler: sampler,
             source: source ?? surfaces.sceneColor,
@@ -262,7 +258,6 @@ struct PostProcessInputs {
             ssaoFiltered: useSSAO ? surfaces.ssaoFiltered : nil,
             grid: grid,
             worldDebug: worldDebug,
-            autoExposure: autoExposure,
             settings: settings,
             viewExposure: viewExposure
         )
@@ -287,7 +282,6 @@ struct PostProcessInputs {
         encoder.setFragmentTexture(sceneDepth ?? fallback.depth1x1, index: PostProcessTextureIndex.depth)
         encoder.setFragmentTexture(grid ?? fallback.transparentBlackRGBA, index: PostProcessTextureIndex.grid)
         encoder.setFragmentTexture(worldDebug ?? fallback.transparentBlackRGBA, index: PostProcessTextureIndex.worldDebug)
-        encoder.setFragmentTexture(autoExposure ?? fallback.blackRGBA, index: PostProcessTextureIndex.autoExposure)
         encoder.setFragmentTexture(sceneNormals ?? fallback.blackRGBA, index: PostProcessTextureIndex.normals)
         encoder.setFragmentTexture(aoNormals ?? fallback.blackRGBA, index: PostProcessTextureIndex.aoNormals)
         encoder.setFragmentTexture(ssaoRaw ?? fallback.blackRGBA, index: PostProcessTextureIndex.ssaoRaw)
@@ -301,8 +295,12 @@ struct PostProcessInputs {
         let sceneConstants = frameContext.renderFrameSnapshot()?.sceneConstants ?? SceneConstants()
         let sceneConstantsBuffer = frameContext.uploadSceneConstants(sceneConstants)
         encoder.setFragmentBuffer(sceneConstantsBuffer, offset: 0, index: FragmentBufferIndex.postProcessSceneConstants)
-        var resolvedExposure = viewExposure ?? frameContext.viewContext().exposureSettings
-        encoder.setFragmentBytes(&resolvedExposure, length: SceneViewExposureSettings.stride, index: FragmentBufferIndex.viewExposure)
+        if let exposureBuffer = frameContext.exposureFrameResources()?.outputBuffer {
+            encoder.setFragmentBuffer(exposureBuffer, offset: 0, index: FragmentBufferIndex.viewExposure)
+        } else {
+            var resolvedExposure = viewExposure ?? ExposureOutputUniforms()
+            encoder.setFragmentBytes(&resolvedExposure, length: ExposureOutputUniforms.stride, index: FragmentBufferIndex.viewExposure)
+        }
         var debugFlags = PostProcessDebugFlags()
         debugFlags.hasSceneNormals = (sceneNormals != nil) ? 1 : 0
         debugFlags.hasSSAO = (ssaoRaw != nil || ssaoFiltered != nil) ? 1 : 0
@@ -318,12 +316,10 @@ struct FinalCompositeInputs {
     let outlineMask: MTLTexture?
     let grid: MTLTexture?
     let worldDebug: MTLTexture?
-    let autoExposure: MTLTexture?
     let includeSceneDepth: Bool
     let includeSceneNormals: Bool
     let includeSSAO: Bool
     let settings: RendererSettings
-    let viewExposure: SceneViewExposureSettings
 
     func postProcessInputs() -> PostProcessInputs {
         PostProcessInputs(
@@ -337,9 +333,7 @@ struct FinalCompositeInputs {
             useSSAO: includeSSAO,
             grid: grid,
             worldDebug: worldDebug,
-            autoExposure: autoExposure,
-            settings: settings,
-            viewExposure: viewExposure
+            settings: settings
         )
     }
 }
@@ -1887,41 +1881,112 @@ final class HeightFogPass: RenderGraphPass {
     }
 }
 
+final class ExposureComputeEncoder {
+    private var histogramPipeline: MTLComputePipelineState?
+    private var reductionPipeline: MTLComputePipelineState?
+
+    func encode(commandBuffer: MTLCommandBuffer,
+                sceneTexture: MTLTexture,
+                sceneDepth: MTLTexture,
+                meteringMask: MTLTexture,
+                resources inputResources: ExposureFrameResources,
+                engineContext: EngineContext) {
+        var resources = inputResources
+        guard resources.automatic,
+              let histogramPipeline = resolvePipeline(name: "kernel_exposure_histogram",
+                                                       cached: &histogramPipeline,
+                                                       engineContext: engineContext),
+              let reductionPipeline = resolvePipeline(name: "kernel_exposure_reduce",
+                                                       cached: &reductionPipeline,
+                                                       engineContext: engineContext) else { return }
+
+        resources.meteringUniforms.viewportWidth = UInt32(sceneTexture.width)
+        resources.meteringUniforms.viewportHeight = UInt32(sceneTexture.height)
+        if let blit = commandBuffer.makeBlitCommandEncoder() {
+            blit.label = "Exposure Histogram Clear"
+            blit.fill(buffer: resources.histogramBuffer,
+                      range: 0..<resources.histogramBuffer.length,
+                      value: 0)
+            blit.endEncoding()
+        }
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.label = "Exposure Histogram + Reduction"
+        encoder.pushDebugGroup("Exposure Histogram")
+        encoder.setComputePipelineState(histogramPipeline)
+        encoder.setTexture(sceneTexture, index: 0)
+        encoder.setTexture(sceneDepth, index: 1)
+        encoder.setTexture(meteringMask, index: 2)
+        encoder.setSamplerState(engineContext.graphics.samplerStates[.LinearClampToZero], index: 0)
+        encoder.setBuffer(resources.histogramBuffer, offset: 0, index: 0)
+        var uniforms = resources.meteringUniforms
+        encoder.setBytes(&uniforms, length: ExposureMeteringUniforms.stride, index: 1)
+        let sampleWidth = (sceneTexture.width + 3) / 4
+        let sampleHeight = (sceneTexture.height + 3) / 4
+        encoder.dispatchThreads(MTLSize(width: sampleWidth, height: sampleHeight, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+        encoder.popDebugGroup()
+        encoder.pushDebugGroup("Exposure Reduction")
+        encoder.setComputePipelineState(reductionPipeline)
+        encoder.setBuffer(resources.histogramBuffer, offset: 0, index: 0)
+        encoder.setBytes(&uniforms, length: ExposureMeteringUniforms.stride, index: 1)
+        encoder.setBuffer(resources.outputBuffer, offset: 0, index: 2)
+        encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+    }
+
+    private func resolvePipeline(name: String,
+                                 cached: inout MTLComputePipelineState?,
+                                 engineContext: EngineContext) -> MTLComputePipelineState? {
+        if let cached { return cached }
+        guard let function = engineContext.resources.resolveFunction(
+            name,
+            device: engineContext.device,
+            fallbackLibrary: engineContext.defaultLibrary
+        ) else {
+            engineContext.log.logWarning("Exposure compute function '\(name)' not found.", category: .renderer)
+            return nil
+        }
+        do {
+            let pipeline = try engineContext.device.makeComputePipelineState(function: function)
+            cached = pipeline
+            return pipeline
+        } catch {
+            engineContext.log.logWarning("Failed to create exposure compute pipeline '\(name)': \(error)", category: .renderer)
+            return nil
+        }
+    }
+}
+
 final class AutoExposurePass: RenderGraphPass {
     let name = "AutoExposurePass"
     let inputs: [RenderPassResourceUsage] = [
         .namedTexture(RenderNamedResourceKey.sceneColor),
-        .namedTexture(RenderNamedResourceKey.sceneColorFogged)
+        .namedTexture(RenderNamedResourceKey.sceneColorFogged),
+        .namedTexture(RenderNamedResourceKey.sceneDepth)
     ]
-    let outputs: [RenderPassResourceUsage] = [
-        .texture(.autoExposure)
-    ]
+    // Histogram/output buffers are renderer-owned, per-view temporal resources rather
+    // than graph-global resources, so this pass deliberately has no registry output.
+    let outputs: [RenderPassResourceUsage] = []
+
+    private let computeEncoder = ExposureComputeEncoder()
 
     func execute(frame: RenderGraphFrame) {
         let surfaces = CanonicalScreenSpaceTextures(registry: frame.resourceRegistry)
         let postSceneColorChain = surfaces.postSceneColorChain(heightFogEnabled: frame.renderPlan.heightFogEnabled)
         guard frame.renderPlan.autoExposureEnabled,
               let sceneTexture = postSceneColorChain.activeSceneColor,
-              let autoExposureTexture = frame.resourceRegistry.texture(.autoExposure) else { return }
-
-        let target = FullscreenTarget(texture: autoExposureTexture)
-        let pass = FullscreenPass(
-            pipeline: .AutoExposureExtract,
-            label: "Auto Exposure Extract",
-            inputs: PostProcessInputs(
-                sampler: .LinearClampToZero,
-                source: sceneTexture,
-                settings: frame.frameContext.rendererSettings()
-            )
-        )
-        guard pass.encode(frame: frame, target: target) else { return }
-
-        if autoExposureTexture.mipmapLevelCount > 1,
-           let blit = frame.commandBuffer.makeBlitCommandEncoder() {
-            blit.label = "Auto Exposure Mipmap Generate"
-            blit.generateMipmaps(for: autoExposureTexture)
-            blit.endEncoding()
-        }
+              let sceneDepth = surfaces.sceneDepth,
+              let resources = frame.frameContext.exposureFrameResources() else { return }
+        computeEncoder.encode(commandBuffer: frame.commandBuffer,
+                              sceneTexture: sceneTexture,
+                              sceneDepth: sceneDepth,
+                              meteringMask: resources.resolvedPolicy.settings.meteringMaskHandle
+                                  .flatMap { frame.engineContext.assets.texture(handle: $0) }
+                                  ?? frame.engineContext.fallbackTextures.whiteRGBA,
+                              resources: resources,
+                              engineContext: frame.engineContext)
     }
 }
 
@@ -2147,12 +2212,10 @@ final class FinalCompositePass: RenderGraphPass {
             outlineMask: showEditorOverlays ? outline : nil,
             grid: showEditorOverlays ? grid : nil,
             worldDebug: (showEditorOverlays && frame.renderPlan.worldDebugEnabled) ? worldDebug : nil,
-            autoExposure: frame.renderPlan.autoExposureEnabled ? frame.resourceRegistry.texture(.autoExposure) : nil,
             includeSceneDepth: true,
             includeSceneNormals: true,
             includeSSAO: aoDebugEnabled,
-            settings: settings,
-            viewExposure: frame.frameContext.viewContext().exposureSettings
+            settings: settings
         )
         let pass = FullscreenPass(
             pipeline: .Final,

@@ -66,6 +66,26 @@ public enum SceneLinearHDRContract {
         return linearToSRGB(tonemapped)
     }
 
+    public static func finalSDROutput(sceneLinear: SIMD3<Float>,
+                                      ev100: Float,
+                                      compensation: Float = 0) -> SIMD3<Float> {
+        let gain = ExposureCalibration.exposureGain(ev100: ev100, compensation: compensation)
+        let exposed = simd_max(sceneLinear, .zero) * gain
+        return linearToSRGB(simd_clamp(metalCupFilmicV1(exposed), .zero, SIMD3<Float>(repeating: 1)))
+    }
+
+    public static func preExposedStorage(trueRadiance: SIMD3<Float>,
+                                         renderPreExposure: Float) -> SIMD3<Float> {
+        simd_max(trueRadiance, .zero) * max(renderPreExposure, 0)
+    }
+
+    public static func reconstructCameraLinear(storedScene: SIMD3<Float>,
+                                               storedBloom: SIMD3<Float> = .zero,
+                                               exposureGain: Float,
+                                               renderPreExposure: Float) -> SIMD3<Float> {
+        (storedScene + storedBloom) * exposureGain / max(renderPreExposure, 0.000_001)
+    }
+
     private static func uncharted2(_ value: SIMD3<Float>) -> SIMD3<Float> {
         SIMD3<Float>(uncharted2(value.x), uncharted2(value.y), uncharted2(value.z))
     }

@@ -21,7 +21,6 @@ public enum RenderPipelineStateType {
     case BRDF
     case BloomExtract
     case HeightFog
-    case AutoExposureExtract
     case BloomDownsample
     case BloomBlurH
     case BloomBlurV
@@ -219,13 +218,6 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
             descriptor.vertexFunction = shaders[.FSQuadVertex]
             descriptor.fragmentFunction = shaders[.HeightFogFragment]
-            descriptor.vertexDescriptor = vertexDescriptors[.Simple]
-        }
-
-        library[.AutoExposureExtract] = buildPipeline(label: "AutoExposureExtract") { descriptor in
-            descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
-            descriptor.vertexFunction = shaders[.FSQuadVertex]
-            descriptor.fragmentFunction = shaders[.AutoExposureExtractFragment]
             descriptor.vertexDescriptor = vertexDescriptors[.Simple]
         }
 

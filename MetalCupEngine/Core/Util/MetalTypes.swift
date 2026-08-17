@@ -110,7 +110,6 @@ public enum PostProcessTextureIndex {
     public static let outlineMask = ShaderBindings.PostProcessTexture.outlineMask
     public static let depth = ShaderBindings.PostProcessTexture.depth
     public static let grid = ShaderBindings.PostProcessTexture.grid
-    public static let autoExposure = ShaderBindings.PostProcessTexture.autoExposure
     public static let normals = ShaderBindings.PostProcessTexture.normals
     public static let ssaoRaw = ShaderBindings.PostProcessTexture.ssaoRaw
     public static let ssaoFiltered = ShaderBindings.PostProcessTexture.ssaoFiltered
