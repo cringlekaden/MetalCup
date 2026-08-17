@@ -489,17 +489,20 @@ public struct SkyParams: sizeable {
     public var horizonDensity: Float = 0.35
     public var skyCoolness: Float = 0.0
     public var starVisibility: Float = 0.0
-    public var _skyDerivedPadding0: Float = 0.0
+    /// Synodic phase in turns: 0/1 new, 0.5 full.
+    public var moonPhase: Float = 0.5
     public var solarExtinctionTint: SIMD3<Float> = SIMD3<Float>(1.0, 0.95, 0.9)
-    public var _skyDerivedPadding1: Float = 0.0
+    public var moonIlluminatedFraction: Float = 1.0
     public var moonDirection: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0)
     public var moonAngularRadius: Float = 0.00935
     public var moonColor: SIMD3<Float> = SIMD3<Float>(0.82, 0.88, 1.0)
     public var moonIntensity: Float = 0.0
     public var duskTint: SIMD3<Float> = SIMD3<Float>(1.0, 0.54, 0.30)
-    public var _skyDerivedPadding2: Float = 0.0
+    /// Bounded capture weight for unresolved stars and Milky Way radiance.
+    public var celestialCaptureScale: Float = 0.04
     public var antiSolarTint: SIMD3<Float> = SIMD3<Float>(0.34, 0.48, 0.82)
-    public var _skyDerivedPadding3: Float = 0.0
+    /// Rec.709 luminance of the projected analytic lunar irradiance.
+    public var moonIrradiance: Float = 0.0
     public var starIntensity: Float = 0.0
     public var moonTextureEnabled: Float = 0.0
     public var galaxyTextureEnabled: Float = 0.0

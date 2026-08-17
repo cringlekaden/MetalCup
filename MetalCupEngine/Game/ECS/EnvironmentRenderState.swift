@@ -7,9 +7,11 @@ import simd
 
 public struct EnvironmentFogRenderPatch: Equatable {
     public var parameters: LocalFogTransport.Parameters
-    /// World-space direction from the scene toward the authoritative environment Sun.
+    /// World-space direction toward the authoritative environment directional source
+    /// (Sun by day, Moon by night). The legacy name is retained in the packed ABI.
     public var directionToSun: SIMD3<Float>
-    /// Scene-linear ground-level analytic Sun irradiance from the Phase 4 frame state.
+    /// Scene-linear ground-level analytic celestial irradiance. The stored property
+    /// keeps its Phase 5 name to avoid changing the renderer-settings ABI.
     public var solarIrradiance: SIMD3<Float>
 
     public init(parameters: LocalFogTransport.Parameters,
@@ -110,6 +112,7 @@ public struct EnvironmentRenderState {
     public var fogDistance: Float
     public var moonIntensity: Float
     public var moonSizeDegrees: Float
+    public var moonPhase: Float
     public var starIntensity: Float
     public var starRichness: Float
     public var milkyWayIntensity: Float
@@ -127,6 +130,15 @@ public struct EnvironmentRenderState {
     public var sunIntensity: Float
     public var moonDirection: SIMD3<Float>
     public var moonColor: SIMD3<Float>
+    public var moonAngularRadiusRadians: Float
+    public var moonIlluminatedFraction: Float
+    public var moonDiskRadianceRGB: SIMD3<Float>
+    public var moonIrradianceRGB: SIMD3<Float>
+    public var nightVisibility: Float
+    public var directionalLightSource: NightCelestialModel.DirectionalSource
+    public var directionalLightDirection: SIMD3<Float>
+    public var directionalLightColor: SIMD3<Float>
+    public var directionalLightIntensity: Float
     public var iblLightingIntensity: Float
     public var legacySkyParams: SkyParams
     public var legacyFogPatch: EnvironmentFogRenderPatch
@@ -145,6 +157,17 @@ public enum EnvironmentRenderStateBuilder {
         let atmosphere = DaytimeAtmosphereModel.Parameters(environment: environment)
         let solar = DaytimeAtmosphereModel.solarIrradiance(sunDirection: derived.sunDirectionWorld,
                                                             parameters: atmosphere)
+        let celestial = NightCelestialModel.build(
+            timeOfDay: resolved.finalTimeOfDay,
+            sunDirection: derived.sunDirectionWorld,
+            solarIrradianceRGB: solar.rgb,
+            atmosphere: atmosphere,
+            lunarAlbedo: environment.celestial.moonIntensity,
+            moonDiameterDegrees: environment.celestial.moonSizeDegrees,
+            moonPhase: environment.celestial.moonPhase,
+            haze: environment.atmosphere.haze,
+            cloudCoverage: environment.clouds.coverage
+        )
         let topDisk = DaytimeAtmosphereModel.topSolarDiskRadianceRGB(
             radiusRadians: atmosphere.solarAngularRadiusRadians
         )
@@ -168,6 +191,19 @@ public enum EnvironmentRenderStateBuilder {
             0
         )
         legacySkyParams.sunAureoleParams = .zero
+        legacySkyParams.moonDirection = celestial.moonDirection
+        legacySkyParams.moonAngularRadius = celestial.moonAngularRadiusRadians
+        let moonDiskLuminance = DaytimeAtmosphereModel.rec709Luminance(celestial.diskRadianceRGB)
+        legacySkyParams.moonColor = moonDiskLuminance > 1e-10
+            ? celestial.diskRadianceRGB / moonDiskLuminance
+            : SIMD3<Float>(repeating: 0)
+        legacySkyParams.moonIntensity = moonDiskLuminance
+        legacySkyParams.moonPhase = celestial.phase
+        legacySkyParams.moonIlluminatedFraction = celestial.illuminatedFraction
+        legacySkyParams.moonIrradiance = DaytimeAtmosphereModel.rec709Luminance(celestial.irradianceRGB)
+        legacySkyParams.nightFactor = celestial.nightVisibility
+        legacySkyParams.starVisibility = celestial.starVisibility
+        legacySkyParams.celestialCaptureScale = NightCelestialModel.celestialCaptureScale
         let cloudRenderParams = EnvironmentCloudRenderParamBuilder.make(authored: legacySky,
                                                                          runtime: legacyRuntime,
                                                                          derivedAtmosphere: derived)
@@ -178,8 +214,8 @@ public enum EnvironmentRenderStateBuilder {
             legacySkyParams.cloudAtlasEnabled = 0.0
         }
         let legacyFogPatch = makeFogPatch(config: environment.fog,
-                                          sunDirection: derived.sunDirectionWorld,
-                                          solarIrradiance: solar.rgb)
+                                          sunDirection: celestial.directionalDirection,
+                                          solarIrradiance: celestial.directionalIrradianceRGB)
 
         var state = EnvironmentRenderState(
             enabled: environment.enabled,
@@ -210,6 +246,7 @@ public enum EnvironmentRenderStateBuilder {
             fogDistance: environment.fog.scaleHeight,
             moonIntensity: environment.celestial.moonIntensity,
             moonSizeDegrees: environment.celestial.moonSizeDegrees,
+            moonPhase: environment.celestial.moonPhase,
             starIntensity: environment.celestial.starIntensity,
             starRichness: environment.celestial.starRichness,
             milkyWayIntensity: environment.celestial.milkyWayIntensity,
@@ -224,8 +261,17 @@ public enum EnvironmentRenderStateBuilder {
             solarIrradianceRGB: solar.rgb,
             sunColor: solar.color,
             sunIntensity: solar.illuminance,
-            moonDirection: derived.moonDirectionWorld,
-            moonColor: max(derived.moonTint, SIMD3<Float>(repeating: 0.0)),
+            moonDirection: celestial.moonDirection,
+            moonColor: legacySkyParams.moonColor,
+            moonAngularRadiusRadians: celestial.moonAngularRadiusRadians,
+            moonIlluminatedFraction: celestial.illuminatedFraction,
+            moonDiskRadianceRGB: celestial.diskRadianceRGB,
+            moonIrradianceRGB: celestial.irradianceRGB,
+            nightVisibility: celestial.nightVisibility,
+            directionalLightSource: celestial.directionalSource,
+            directionalLightDirection: celestial.directionalDirection,
+            directionalLightColor: celestial.directionalColor,
+            directionalLightIntensity: celestial.directionalIlluminance,
             iblLightingIntensity: EnvironmentLightingBalance.iblIntensity(environment: environment),
             legacySkyParams: legacySkyParams,
             legacyFogPatch: legacyFogPatch,
@@ -296,6 +342,7 @@ public extension EnvironmentIBLSignature {
             cloudRenderMode: state.cloudRenderMode.rawValue,
             moonIntensity: exactFloatBits(max(state.moonIntensity, 0)),
             moonSizeDegrees: exactFloatBits(max(state.moonSizeDegrees, 0)),
+            moonPhase: exactFloatBits(state.moonPhase),
             starIntensity: exactFloatBits(max(state.starIntensity, 0)),
             starRichness: exactFloatBits(max(state.starRichness, 0)),
             milkyWayIntensity: exactFloatBits(max(state.milkyWayIntensity, 0)),

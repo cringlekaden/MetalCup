@@ -304,6 +304,14 @@ public enum SkySystem {
         return (azimuthDegrees, elevationDegrees)
     }
 
+    /// Deterministic world-space celestial track used by the authoritative
+    /// environment frame for both solar time and the phase-offset lunar orbit.
+    public static func sunDirection(timeOfDay: Float) -> SIMD3<Float> {
+        let angles = authoredSolarAngles(fromTimeOfDay: timeOfDay)
+        return sunDirection(azimuthDegrees: angles.azimuthDegrees,
+                            elevationDegrees: angles.elevationDegrees)
+    }
+
     private static func resolvedSolarAngles(authored sky: SkyLightComponent,
                                             runtime environment: EnvironmentStateComponent?) -> (azimuthDegrees: Float, elevationDegrees: Float) {
         guard let environment else {
@@ -582,13 +590,18 @@ public enum SkySystem {
         params.horizonDensity = derivedAtmosphere.horizonDensity
         params.skyCoolness = derivedAtmosphere.skyCoolness
         params.starVisibility = derivedAtmosphere.starVisibility
+        params.moonPhase = 0.5
         params.solarExtinctionTint = solarExtinctionTint
+        params.moonIlluminatedFraction = 1.0
         params.moonDirection = derivedAtmosphere.moonDirectionSkySpace
         params.moonAngularRadius = max(0.0001, sky.moonSizeDegrees * Float.pi / 180.0)
         params.moonColor = max(derivedAtmosphere.moonTint, SIMD3<Float>(repeating: 0.0))
         params.moonIntensity = derivedAtmosphere.moonDiskIntensity
         params.duskTint = duskTint
+        params.celestialCaptureScale = NightCelestialModel.celestialCaptureScale
         params.antiSolarTint = antiSolarTint
+        params.moonIrradiance = derivedAtmosphere.moonDiskIntensity
+            * DaytimeAtmosphereModel.projectedSolidAngle(radiusRadians: params.moonAngularRadius)
         params.starIntensity = max(0.0, sky.starIntensity)
         params.celestialArtParams = SIMD4<Float>(
             min(max(sky.starRichness, 0.0), 3.0),
@@ -764,20 +777,20 @@ public enum SkySystem {
         let runtime = ecs.get(EnvironmentRuntimeStateComponent.self, for: environmentEntity)
         let renderState = ecs.get(EnvironmentFrameStateComponent.self, for: environmentEntity)?.renderState
             ?? EnvironmentRenderStateBuilder.build(environment: environment, runtime: runtime)
-        let sunEntity = ecs.firstEntity(with: SkySunTag.self) ?? createSunLight(in: ecs, name: "Sun")
-        let lightRayDirection = -renderState.sunDirection
+        let sunEntity = ecs.firstEntity(with: SkySunTag.self) ?? createSunLight(in: ecs, name: "Environment Key Light")
+        let lightRayDirection = -renderState.directionalLightDirection
 
         var light = ecs.get(LightComponent.self, for: sunEntity) ?? LightComponent(type: .directional)
         light.type = .directional
         light.direction = lightRayDirection
-        light.data.color = max(renderState.sunColor, SIMD3<Float>(repeating: 0.0))
-        light.data.brightness = renderState.sunIntensity
+        light.data.color = max(renderState.directionalLightColor, SIMD3<Float>(repeating: 0.0))
+        light.data.brightness = renderState.directionalLightIntensity
         light.data.diffuseIntensity = 1.0
         light.data.specularIntensity = 1.0
-        // The Environment-owned Sun is also the single cascaded-map owner while
-        // its transmitted irradiance is nonzero. Phase 2's selected-caster path
-        // then uses this exact transform for both matrices and receiver masking.
-        light.castsShadows = renderState.sunIntensity > 1e-6
+        // One runtime-derived Environment key light owns the cascaded map. The
+        // authoritative frame selects Sun or Moon, and this same direction owns
+        // both its light data and shadow matrices.
+        light.castsShadows = renderState.directionalLightIntensity > 1e-10
         ecs.add(light, to: sunEntity)
 
         var transform = ecs.get(TransformComponent.self, for: sunEntity) ?? TransformComponent()
@@ -786,7 +799,7 @@ public enum SkySystem {
                                                        transform: transform,
                                                        source: .engineSystem)
         if ecs.get(NameComponent.self, for: sunEntity) == nil {
-            ecs.add(NameComponent(name: "Sun"), to: sunEntity)
+            ecs.add(NameComponent(name: "Environment Key Light"), to: sunEntity)
         }
         return true
     }

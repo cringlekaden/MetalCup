@@ -1646,6 +1646,8 @@ public struct EnvironmentCelestialConfig: Equatable {
     public var timeScale: Float
     public var moonIntensity: Float
     public var moonSizeDegrees: Float
+    /// Synodic phase in turns: 0/1 = new Moon, 0.5 = full Moon.
+    public var moonPhase: Float
     public var starIntensity: Float
     public var starRichness: Float
     public var milkyWayIntensity: Float
@@ -1657,8 +1659,9 @@ public struct EnvironmentCelestialConfig: Equatable {
                 timeControlMode: EnvironmentTimeControlMode = .fixed,
                 dayLengthSeconds: Float = 600.0,
                 timeScale: Float = 1.0,
-                moonIntensity: Float = 0.18,
+                moonIntensity: Float = 0.12,
                 moonSizeDegrees: Float = 0.54,
+                moonPhase: Float = 0.5,
                 starIntensity: Float = 0.75,
                 starRichness: Float = 1.0,
                 milkyWayIntensity: Float = 1.0,
@@ -1671,6 +1674,7 @@ public struct EnvironmentCelestialConfig: Equatable {
         self.timeScale = timeScale
         self.moonIntensity = moonIntensity
         self.moonSizeDegrees = moonSizeDegrees
+        self.moonPhase = moonPhase
         self.starIntensity = starIntensity
         self.starRichness = starRichness
         self.milkyWayIntensity = milkyWayIntensity
@@ -1847,6 +1851,7 @@ public enum EnvironmentPresetLibrary {
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 12.0,
                                                                moonIntensity: 0.0,
                                                                moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.5,
                                                                starIntensity: 0.0,
                                                                starRichness: 0.6,
                                                                milkyWayIntensity: 0.0,
@@ -1866,8 +1871,9 @@ public enum EnvironmentPresetLibrary {
             environment.fog = EnvironmentFogConfig(amount: 0.0, height: 0.0, distance: 4.0)
         case .goldenHour:
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 18.25,
-                                                               moonIntensity: 0.03,
+                                                               moonIntensity: 0.12,
                                                                moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.15,
                                                                starIntensity: 0.05,
                                                                starRichness: 0.75,
                                                                milkyWayIntensity: 0.0,
@@ -1889,6 +1895,7 @@ public enum EnvironmentPresetLibrary {
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 19.25,
                                                                moonIntensity: 0.12,
                                                                moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.25,
                                                                starIntensity: 0.35,
                                                                starRichness: 0.85,
                                                                milkyWayIntensity: 0.15,
@@ -1908,8 +1915,9 @@ public enum EnvironmentPresetLibrary {
             environment.fog = EnvironmentFogConfig(amount: 0.012, height: 0.0, distance: 8.0)
         case .moonlitNight:
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 22.0,
-                                                               moonIntensity: 0.75,
-                                                               moonSizeDegrees: 0.62,
+                                                               moonIntensity: 0.12,
+                                                               moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.5,
                                                                starIntensity: 0.65,
                                                                starRichness: 0.8,
                                                                milkyWayIntensity: 0.12,
@@ -1929,8 +1937,9 @@ public enum EnvironmentPresetLibrary {
             environment.fog = EnvironmentFogConfig(amount: 0.006, height: 0.0, distance: 12.0)
         case .starryNight:
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 0.5,
-                                                               moonIntensity: 0.08,
+                                                               moonIntensity: 0.12,
                                                                moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.15,
                                                                starIntensity: 1.15,
                                                                starRichness: 1.55,
                                                                milkyWayIntensity: 0.55,
@@ -1950,8 +1959,9 @@ public enum EnvironmentPresetLibrary {
             environment.fog = EnvironmentFogConfig(amount: 0.0, height: 0.0, distance: 16.0)
         case .milkyWayNight:
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 1.25,
-                                                               moonIntensity: 0.02,
+                                                               moonIntensity: 0.12,
                                                                moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.0,
                                                                starIntensity: 1.35,
                                                                starRichness: 1.75,
                                                                milkyWayIntensity: 1.65,
@@ -1971,8 +1981,9 @@ public enum EnvironmentPresetLibrary {
             environment.fog = EnvironmentFogConfig(amount: 0.0, height: 0.0, distance: 18.0)
         case .foggyMorning:
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 7.0,
-                                                               moonIntensity: 0.02,
+                                                               moonIntensity: 0.12,
                                                                moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.15,
                                                                starIntensity: 0.0,
                                                                starRichness: 0.7,
                                                                milkyWayIntensity: 0.0,
@@ -1994,6 +2005,7 @@ public enum EnvironmentPresetLibrary {
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 13.5,
                                                                moonIntensity: 0.0,
                                                                moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.5,
                                                                starIntensity: 0.0,
                                                                starRichness: 0.6,
                                                                milkyWayIntensity: 0.0,
@@ -2015,6 +2027,7 @@ public enum EnvironmentPresetLibrary {
             environment.celestial = EnvironmentCelestialConfig(defaultTimeOfDay: 16.0,
                                                                moonIntensity: 0.0,
                                                                moonSizeDegrees: 0.54,
+                                                               moonPhase: 0.5,
                                                                starIntensity: 0.0,
                                                                starRichness: 0.5,
                                                                milkyWayIntensity: 0.0,
@@ -2136,7 +2149,7 @@ public struct EnvironmentRuntimeStateComponent: Equatable {
 }
 
 public struct EnvironmentIBLSignature: Equatable, Hashable {
-    public static let currentVersion: UInt32 = 11
+    public static let currentVersion: UInt32 = 12
 
     public let version: UInt32
     public let enabled: Bool
@@ -2161,6 +2174,7 @@ public struct EnvironmentIBLSignature: Equatable, Hashable {
     public let cloudRenderMode: UInt32
     public let moonIntensity: Int32
     public let moonSizeDegrees: Int32
+    public let moonPhase: Int32
     public let starIntensity: Int32
     public let starRichness: Int32
     public let milkyWayIntensity: Int32
@@ -2191,6 +2205,7 @@ public struct EnvironmentIBLSignature: Equatable, Hashable {
                 cloudRenderMode: UInt32 = 0,
                 moonIntensity: Int32 = 0,
                 moonSizeDegrees: Int32 = 0,
+                moonPhase: Int32 = 0,
                 starIntensity: Int32 = 0,
                 starRichness: Int32 = 0,
                 milkyWayIntensity: Int32 = 0,
@@ -2220,6 +2235,7 @@ public struct EnvironmentIBLSignature: Equatable, Hashable {
         self.cloudRenderMode = cloudRenderMode
         self.moonIntensity = moonIntensity
         self.moonSizeDegrees = moonSizeDegrees
+        self.moonPhase = moonPhase
         self.starIntensity = starIntensity
         self.starRichness = starRichness
         self.milkyWayIntensity = milkyWayIntensity

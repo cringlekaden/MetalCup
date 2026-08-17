@@ -132,6 +132,17 @@ public enum DaytimeAtmosphereModel {
                               horizonVisibility: visibility)
     }
 
+    /// Ground-observer transmittance for a celestial source along a world-space
+    /// direction. Horizon visibility is intentionally handled by the caller so
+    /// solar and lunar disks can use their own angular radii at the boundary.
+    public static func atmosphericTransmittance(direction: SIMD3<Float>,
+                                                 parameters: Parameters) -> SIMD3<Float> {
+        let normalized = safeNormalize(direction, fallback: SIMD3<Float>(0, 1, 0))
+        let elevation = asin(min(max(normalized.y, -1), 1))
+        let airMass = opticalAirMass(elevationRadians: max(elevation, 0))
+        return componentExp(-totalOpticalDepth(parameters: parameters) * airMass)
+    }
+
     public static func sample(direction: SIMD3<Float>,
                               sunDirection: SIMD3<Float>,
                               parameters: Parameters) -> Sample {

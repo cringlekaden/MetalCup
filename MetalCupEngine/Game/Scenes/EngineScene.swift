@@ -875,7 +875,7 @@ public class EngineScene {
            sunLight.castsShadows {
             return DirectionalShadowCasterSelection(
                 entity: sunEntity,
-                rayDirection: -environmentRenderState.sunDirection
+                rayDirection: -environmentRenderState.directionalLightDirection
             )
         }
 

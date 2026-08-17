@@ -1846,6 +1846,7 @@ public struct EnvironmentCelestialDTO: Codable {
     public var timeScale: Float
     public var moonIntensity: Float
     public var moonSizeDegrees: Float
+    public var moonPhase: Float
     public var starIntensity: Float
     public var starRichness: Float
     public var milkyWayIntensity: Float
@@ -1853,13 +1854,14 @@ public struct EnvironmentCelestialDTO: Codable {
     public var milkyWayRotation: Float
     public var nightBrightness: Float
 
-    public init(schemaVersion: Int = 3,
+    public init(schemaVersion: Int = 4,
                 defaultTimeOfDay: Float,
                 timeControlMode: UInt32 = EnvironmentTimeControlMode.fixed.rawValue,
                 dayLengthSeconds: Float = 600.0,
                 timeScale: Float = 1.0,
                 moonIntensity: Float,
                 moonSizeDegrees: Float,
+                moonPhase: Float = 0.5,
                 starIntensity: Float,
                 starRichness: Float = 1.0,
                 milkyWayIntensity: Float = 1.0,
@@ -1873,6 +1875,7 @@ public struct EnvironmentCelestialDTO: Codable {
         self.timeScale = timeScale
         self.moonIntensity = moonIntensity
         self.moonSizeDegrees = moonSizeDegrees
+        self.moonPhase = moonPhase
         self.starIntensity = starIntensity
         self.starRichness = starRichness
         self.milkyWayIntensity = milkyWayIntensity
@@ -1889,6 +1892,7 @@ public struct EnvironmentCelestialDTO: Codable {
             timeScale: config.timeScale,
             moonIntensity: config.moonIntensity,
             moonSizeDegrees: config.moonSizeDegrees,
+            moonPhase: config.moonPhase,
             starIntensity: config.starIntensity,
             starRichness: config.starRichness,
             milkyWayIntensity: config.milkyWayIntensity,
@@ -1906,6 +1910,7 @@ public struct EnvironmentCelestialDTO: Codable {
             timeScale: timeScale,
             moonIntensity: moonIntensity,
             moonSizeDegrees: moonSizeDegrees,
+            moonPhase: moonPhase,
             starIntensity: starIntensity,
             starRichness: starRichness,
             milkyWayIntensity: milkyWayIntensity,
@@ -1923,6 +1928,7 @@ public struct EnvironmentCelestialDTO: Codable {
         case timeScale
         case moonIntensity
         case moonSizeDegrees
+        case moonPhase
         case starIntensity
         case starRichness
         case milkyWayIntensity
@@ -1941,6 +1947,7 @@ public struct EnvironmentCelestialDTO: Codable {
         timeScale = try container.decodeIfPresent(Float.self, forKey: .timeScale) ?? defaults.timeScale
         moonIntensity = try container.decodeIfPresent(Float.self, forKey: .moonIntensity) ?? defaults.moonIntensity
         moonSizeDegrees = try container.decodeIfPresent(Float.self, forKey: .moonSizeDegrees) ?? defaults.moonSizeDegrees
+        moonPhase = try container.decodeIfPresent(Float.self, forKey: .moonPhase) ?? defaults.moonPhase
         starIntensity = try container.decodeIfPresent(Float.self, forKey: .starIntensity) ?? defaults.starIntensity
         starRichness = try container.decodeIfPresent(Float.self, forKey: .starRichness) ?? defaults.starRichness
         milkyWayIntensity = try container.decodeIfPresent(Float.self, forKey: .milkyWayIntensity) ?? defaults.milkyWayIntensity
