@@ -715,6 +715,12 @@ public enum SceneRenderer {
         let irr = engineContext.assets.texture(handle: irrHandle) ?? fallback.blackCubemap
         let pre = engineContext.assets.texture(handle: preHandle) ?? fallback.blackCubemap
         let brdf = engineContext.assets.texture(handle: brdfHandle) ?? fallback.brdfLut
+        let incomingIrr = usesEnvironmentIBL
+            ? environmentIBLState?.incomingIrradianceTexture.flatMap { engineContext.assets.texture(handle: $0) }
+            : nil
+        let incomingPre = usesEnvironmentIBL
+            ? environmentIBLState?.incomingPrefilteredTexture.flatMap { engineContext.assets.texture(handle: $0) }
+            : nil
         let diagnosticFlags = frameContext.rendererSettings().diagnosticFlags
         let diagnosticGlobalIBLEnabled = diagnosticFlags.contains(.orientationGlobalIBL)
         let diagnosticEnv = diagnosticGlobalIBLEnabled
@@ -741,7 +747,11 @@ public enum SceneRenderer {
             environment: diagnosticEnv ?? env,
             irradiance: diagnosticIrr ?? irr,
             prefiltered: diagnosticPre ?? pre,
-            brdfLut: brdf
+            brdfLut: brdf,
+            incomingIrradiance: diagnosticGlobalIBLEnabled ? diagnosticIrr : incomingIrr,
+            incomingPrefiltered: diagnosticGlobalIBLEnabled ? diagnosticPre : incomingPre,
+            diffuseBlend: diagnosticGlobalIBLEnabled ? 0 : (environmentIBLState?.diffuseBlendFactor ?? 0),
+            specularBlend: diagnosticGlobalIBLEnabled ? 0 : (environmentIBLState?.specularBlendFactor ?? 0)
         )
         frameContext.setIBLReady(diagnosticGlobalIBLEnabled ? (diagnosticIrr != nil && diagnosticPre != nil) : hasValidIBL)
     }

@@ -171,13 +171,21 @@ public struct RendererFrameContext {
         environment: MTLTexture?,
         irradiance: MTLTexture?,
         prefiltered: MTLTexture?,
-        brdfLut: MTLTexture?
+        brdfLut: MTLTexture?,
+        incomingIrradiance: MTLTexture? = nil,
+        incomingPrefiltered: MTLTexture? = nil,
+        diffuseBlend: Float = 0,
+        specularBlend: Float = 0
     ) {
         storage.updateIBLTextures(
             environment: environment,
             irradiance: irradiance,
             prefiltered: prefiltered,
-            brdfLut: brdfLut
+            brdfLut: brdfLut,
+            incomingIrradiance: incomingIrradiance,
+            incomingPrefiltered: incomingPrefiltered,
+            diffuseBlend: diffuseBlend,
+            specularBlend: specularBlend
         )
     }
 
@@ -436,9 +444,15 @@ public final class RendererFrameContextStorage {
         public let irradiance: MTLTexture?
         public let prefiltered: MTLTexture?
         public let brdfLut: MTLTexture?
+        public let incomingIrradiance: MTLTexture?
+        public let incomingPrefiltered: MTLTexture?
+        public let diffuseBlend: Float
+        public let specularBlend: Float
     }
 
-    private var currentIBLTextures = IBLTextures(environment: nil, irradiance: nil, prefiltered: nil, brdfLut: nil)
+    private var currentIBLTextures = IBLTextures(environment: nil, irradiance: nil, prefiltered: nil, brdfLut: nil,
+                                                 incomingIrradiance: nil, incomingPrefiltered: nil,
+                                                 diffuseBlend: 0, specularBlend: 0)
     private var iblReady: Bool = false
 
     fileprivate enum InstanceStream {
@@ -530,13 +544,21 @@ public final class RendererFrameContextStorage {
         environment: MTLTexture?,
         irradiance: MTLTexture?,
         prefiltered: MTLTexture?,
-        brdfLut: MTLTexture?
+        brdfLut: MTLTexture?,
+        incomingIrradiance: MTLTexture?,
+        incomingPrefiltered: MTLTexture?,
+        diffuseBlend: Float,
+        specularBlend: Float
     ) {
         currentIBLTextures = IBLTextures(
             environment: environment,
             irradiance: irradiance,
             prefiltered: prefiltered,
-            brdfLut: brdfLut
+            brdfLut: brdfLut,
+            incomingIrradiance: incomingIrradiance,
+            incomingPrefiltered: incomingPrefiltered,
+            diffuseBlend: min(max(diffuseBlend, 0), 1),
+            specularBlend: min(max(specularBlend, 0), 1)
         )
     }
 

@@ -526,6 +526,49 @@ static inline float3 computeSplitSumSpecularIBL(texturecube<float> prefilteredMa
     return specularIBL;
 }
 
+// Crossfade the two scene-linear prefiltered radiance samples before applying
+// the shared split-sum BRDF. This preserves energy and cannot be affected by exposure.
+static inline float3 computeBlendedSplitSumSpecularIBL(texturecube<float> activeMap,
+                                                       texturecube<float> incomingMap,
+                                                       float blendFactor,
+                                                       texture2d<float> brdfLut,
+                                                       sampler iblSampler,
+                                                       float3 reflectionVector,
+                                                       float roughness,
+                                                       float NdotV,
+                                                       float3 F0,
+                                                       float intensity,
+                                                       thread float &mipLevel,
+                                                       thread float &maxMip) {
+    if (intensity <= 0.0) {
+        mipLevel = 0.0;
+        maxMip = 0.0;
+        return float3(0.0);
+    }
+    float activeMip = 0.0;
+    float activeMaxMip = 0.0;
+    float incomingMip = 0.0;
+    float incomingMaxMip = 0.0;
+    float3 activeRadiance = samplePrefilteredColor(activeMap, iblSampler, reflectionVector, roughness,
+                                                   activeMip, activeMaxMip);
+    float3 incomingRadiance = samplePrefilteredColor(incomingMap, iblSampler, reflectionVector, roughness,
+                                                     incomingMip, incomingMaxMip);
+    mipLevel = mix(activeMip, incomingMip, saturate(blendFactor));
+    maxMip = max(activeMaxMip, incomingMaxMip);
+    if (maxMip <= 0.0) { return float3(0.0); }
+    float3 prefilteredColor = mix(activeRadiance, incomingRadiance, saturate(blendFactor));
+    float2 brdfUV = clamp(float2(clamp(NdotV, 0.0, 1.0), roughness), 0.001, 0.999);
+    float2 brdfSample = brdfLut.sample(iblSampler, brdfUV).rg;
+    float A = brdfSample.x;
+    float B = brdfSample.y;
+    float3 singleScatter = F0 * A + B;
+    float3 result = prefilteredColor * singleScatter * intensity;
+    float energyDenom = max(A + B, 1e-3);
+    float3 energyComp = clamp(1.0 + F0 * (1.0 / energyDenom - 1.0), float3(1.0), float3(1.5));
+    result *= mix(float3(1.0), energyComp, roughness * roughness);
+    return result;
+}
+
 static inline bool intersectLocalReflectionProbeBox(float3 rayOriginLocal,
                                                     float3 rayDirectionLocal,
                                                     float3 boxExtents,
@@ -631,6 +674,7 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
                               constant ForwardPlusTileParams *tileParams [[ buffer(FragmentBufferIndexTileParams) ]],
                               constant ShadowConstants &shadows [[ buffer(FragmentBufferIndexShadowConstants) ]],
                               constant LocalReflectionProbeUniform &localReflectionProbe [[ buffer(FragmentBufferIndexLocalReflectionProbe) ]],
+                              constant GlobalIBLBlendUniform &globalIBLBlend [[ buffer(FragmentBufferIndexGlobalIBLBlend) ]],
                               sampler sam [[ sampler(FragmentSamplerIndexLinear) ]],
                               sampler iblSam [[ sampler(FragmentSamplerIndexLinearClamp) ]],
                               sampler shadowCompareSampler [[ sampler(FragmentSamplerIndexShadowCompare) ]],
@@ -650,6 +694,8 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
                               texture2d<float> sceneAOTexture [[ texture(FragmentTextureIndexSceneAO) ]],
                               texturecube<float> irradianceMap [[ texture(FragmentTextureIndexIrradiance) ]],
                               texturecube<float> prefilteredMap [[ texture(FragmentTextureIndexPrefiltered) ]],
+                              texturecube<float> incomingIrradianceMap [[ texture(FragmentTextureIndexIncomingIrradiance) ]],
+                              texturecube<float> incomingPrefilteredMap [[ texture(FragmentTextureIndexIncomingPrefiltered) ]],
                               texturecube<float> localReflectionPrefilteredMap [[ texture(FragmentTextureIndexLocalReflectionPrefiltered) ]],
                               texture2d<float> brdf_lut [[ texture(FragmentTextureIndexBRDFLUT) ]],
                               depth2d_array<float, access::sample> shadowMap [[ texture(FragmentTextureIndexShadowMap) ]])  {
@@ -1104,7 +1150,10 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
     // ------------------------------------------------------------
     float3 diffuseIBL = float3(0.0);
     if (iblIntensity > 0.0) {
-        float3 irradiance = irradianceMap.sample(iblSam, N).rgb;
+        float3 activeIrradiance = irradianceMap.sample(iblSam, N).rgb;
+        float3 incomingIrradiance = incomingIrradianceMap.sample(iblSam, N).rgb;
+        float3 irradiance = mix(activeIrradiance, incomingIrradiance,
+                                saturate(globalIBLBlend.blendFactors.x));
         diffuseIBL = irradiance * (albedo / PBR::PI) * iblIntensity;
     }
 
@@ -1143,8 +1192,10 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
     float brdfRoughness = clamp(perceptualRoughness, minRoughness, 1.0);
     float globalMipLevel = 0.0;
     float globalMaxMip = 0.0;
-    float3 globalSpecularIBL = computeSplitSumSpecularIBL(
+    float3 globalSpecularIBL = computeBlendedSplitSumSpecularIBL(
         prefilteredMap,
+        incomingPrefilteredMap,
+        globalIBLBlend.blendFactors.y,
         brdf_lut,
         iblSam,
         R,
@@ -1195,8 +1246,10 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
             float ccGlobalMipLevel = 0.0;
             float ccGlobalMaxMip = 0.0;
             float3 ccF0 = float3(0.04);
-            float3 clearcoatIBLGlobal = computeSplitSumSpecularIBL(
+            float3 clearcoatIBLGlobal = computeBlendedSplitSumSpecularIBL(
                 prefilteredMap,
+                incomingPrefilteredMap,
+                globalIBLBlend.blendFactors.y,
                 brdf_lut,
                 iblSam,
                 R,

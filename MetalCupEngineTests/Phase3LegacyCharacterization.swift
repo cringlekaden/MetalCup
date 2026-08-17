@@ -33,6 +33,26 @@ struct Phase3LegacyCharacterization {
         #expect(!source.contains("quantizeStep01("))
     }
 
+    @Test
+    func productionPBRBindsAndBlendsIncomingIBLRadiance() throws {
+        let shader = try canonicalShaderSource(named: "BasicShaders.metal")
+        let mesh = try engineSource(relativePath: "Assets/MCMesh.swift")
+        #expect(shader.contains("FragmentTextureIndexIncomingIrradiance"))
+        #expect(shader.contains("FragmentTextureIndexIncomingPrefiltered"))
+        #expect(shader.contains("computeBlendedSplitSumSpecularIBL"))
+        #expect(shader.contains("mix(activeRadiance, incomingRadiance"))
+        #expect(mesh.contains("GlobalIBLBlendUniform(diffuse: ibl.diffuseBlend, specular: ibl.specularBlend)"))
+    }
+
+    @Test
+    func continuousEnvironmentPathHasNoPerFrameDebounceGate() throws {
+        let renderer = try engineSource(relativePath: "Core/Renderer.swift")
+        #expect(!renderer.contains("_environmentIBLEditDebounce"))
+        #expect(renderer.contains("shouldScheduleInteractive"))
+        #expect(renderer.contains("coalescedRequestCount"))
+        #expect(renderer.contains("incomingIrradianceTexture"))
+    }
+
     private func canonicalShaderSource(named name: String) throws -> String {
         let root = try #require(ResourceRegistry.bundledCanonicalShaderRootURL())
         return try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)

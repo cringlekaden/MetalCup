@@ -77,7 +77,8 @@ enum FragmentBufferIndex {
     FragmentBufferIndexPostProcessSceneConstants = 18,
     FragmentBufferIndexPostProcessParams = 19,
     FragmentBufferIndexLocalReflectionProbe = 20,
-    FragmentBufferIndexCloudImpostorParams = 22
+    FragmentBufferIndexCloudImpostorParams = 22,
+    FragmentBufferIndexGlobalIBLBlend = 23
 };
 
 enum FragmentTextureIndex {
@@ -104,7 +105,9 @@ enum FragmentTextureIndex {
     FragmentTextureIndexMoonAlbedo = 20,
     FragmentTextureIndexGalaxyBackground = 21,
     FragmentTextureIndexCloudAtlas = 22,
-    FragmentTextureIndexCloudCard = 23
+    FragmentTextureIndexCloudCard = 23,
+    FragmentTextureIndexIncomingIrradiance = 24,
+    FragmentTextureIndexIncomingPrefiltered = 25
 };
 
 enum FragmentSamplerIndex {
@@ -263,6 +266,10 @@ struct LocalReflectionProbeUniform {
     float4 boxExtentsAndBlendDistance;
     float4 intensityAndFlags;
     float4x4 worldToProbeMatrix;
+};
+
+struct GlobalIBLBlendUniform {
+    float4 blendFactors;
 };
 
 struct CloudImpostorParams {

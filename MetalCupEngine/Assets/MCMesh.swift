@@ -876,6 +876,14 @@ public class MCMesh {
         let ibl = frameContext.iblTextures()
         renderCommandEncoder.setFragmentTexture(ibl.irradiance ?? fallback.blackCubemap, index: FragmentTextureIndex.irradiance)
         renderCommandEncoder.setFragmentTexture(ibl.prefiltered ?? fallback.blackCubemap, index: FragmentTextureIndex.prefiltered)
+        renderCommandEncoder.setFragmentTexture(ibl.incomingIrradiance ?? ibl.irradiance ?? fallback.blackCubemap,
+                                                index: FragmentTextureIndex.incomingIrradiance)
+        renderCommandEncoder.setFragmentTexture(ibl.incomingPrefiltered ?? ibl.prefiltered ?? fallback.blackCubemap,
+                                                index: FragmentTextureIndex.incomingPrefiltered)
+        var globalIBLBlend = GlobalIBLBlendUniform(diffuse: ibl.diffuseBlend, specular: ibl.specularBlend)
+        renderCommandEncoder.setFragmentBytes(&globalIBLBlend,
+                                              length: GlobalIBLBlendUniform.stride,
+                                              index: FragmentBufferIndex.globalIBLBlend)
         renderCommandEncoder.setFragmentTexture(ibl.brdfLut ?? fallback.brdfLut, index: FragmentTextureIndex.brdfLut)
         let resolvedLocalReflectionTexture = localReflectionPrefilteredHandle.flatMap { assetManager?.texture(handle: $0) }
         let diagnosticLocalReflectionTexture = frameContext.rendererSettings().diagnosticFlags.contains(.orientationLocalProbe)
@@ -1070,6 +1078,14 @@ class Submesh {
         let ibl = frameContext.iblTextures()
         renderCommandEncoder.setFragmentTexture(ibl.irradiance ?? fallback.blackCubemap, index: FragmentTextureIndex.irradiance)
         renderCommandEncoder.setFragmentTexture(ibl.prefiltered ?? fallback.blackCubemap, index: FragmentTextureIndex.prefiltered)
+        renderCommandEncoder.setFragmentTexture(ibl.incomingIrradiance ?? ibl.irradiance ?? fallback.blackCubemap,
+                                                index: FragmentTextureIndex.incomingIrradiance)
+        renderCommandEncoder.setFragmentTexture(ibl.incomingPrefiltered ?? ibl.prefiltered ?? fallback.blackCubemap,
+                                                index: FragmentTextureIndex.incomingPrefiltered)
+        var globalIBLBlend = GlobalIBLBlendUniform(diffuse: ibl.diffuseBlend, specular: ibl.specularBlend)
+        renderCommandEncoder.setFragmentBytes(&globalIBLBlend,
+                                              length: GlobalIBLBlendUniform.stride,
+                                              index: FragmentBufferIndex.globalIBLBlend)
         renderCommandEncoder.setFragmentTexture(ibl.brdfLut ?? fallback.brdfLut, index: FragmentTextureIndex.brdfLut)
         let resolvedLocalReflectionTexture = localReflectionPrefilteredHandle.flatMap { assetManager?.texture(handle: $0) }
         let diagnosticLocalReflectionTexture = frameContext.rendererSettings().diagnosticFlags.contains(.orientationLocalProbe)

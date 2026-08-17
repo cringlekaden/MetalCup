@@ -40,6 +40,7 @@ enum ShaderBindings {
         static let postProcessParams = 19
         static let localReflectionProbe = 20
         static let cloudImpostorParams = 22
+        static let globalIBLBlend = 23
     }
 
     enum FragmentTexture {
@@ -67,6 +68,8 @@ enum ShaderBindings {
         static let galaxyBackground = 21
         static let cloudAtlas = 22
         static let cloudCard = 23
+        static let incomingIrradiance = 24
+        static let incomingPrefiltered = 25
     }
 
     enum FragmentSampler {

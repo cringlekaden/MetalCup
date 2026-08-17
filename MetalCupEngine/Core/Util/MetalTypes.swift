@@ -68,6 +68,7 @@ public enum FragmentBufferIndex {
     public static let postProcessParams = ShaderBindings.FragmentBuffer.postProcessParams
     public static let localReflectionProbe = ShaderBindings.FragmentBuffer.localReflectionProbe
     public static let cloudImpostorParams = ShaderBindings.FragmentBuffer.cloudImpostorParams
+    public static let globalIBLBlend = ShaderBindings.FragmentBuffer.globalIBLBlend
 }
 
 public enum FragmentTextureIndex {
@@ -95,6 +96,8 @@ public enum FragmentTextureIndex {
     public static let galaxyBackground = ShaderBindings.FragmentTexture.galaxyBackground
     public static let cloudAtlas = ShaderBindings.FragmentTexture.cloudAtlas
     public static let cloudCard = ShaderBindings.FragmentTexture.cloudCard
+    public static let incomingIrradiance = ShaderBindings.FragmentTexture.incomingIrradiance
+    public static let incomingPrefiltered = ShaderBindings.FragmentTexture.incomingPrefiltered
 }
 
 public enum FragmentSamplerIndex {
@@ -204,6 +207,16 @@ public struct LocalReflectionProbeUniform: sizeable {
         self.boxExtentsAndBlendDistance = boxExtentsAndBlendDistance
         self.intensityAndFlags = intensityAndFlags
         self.worldToProbeMatrix = worldToProbeMatrix
+    }
+}
+
+public struct GlobalIBLBlendUniform: sizeable {
+    public static let expectedMetalStride: Int = 16
+    /// x = diffuse blend, y = specular blend, z/w reserved.
+    public var blendFactors = SIMD4<Float>(0, 0, 0, 0)
+
+    public init(diffuse: Float = 0, specular: Float = 0) {
+        blendFactors = SIMD4<Float>(diffuse, specular, 0, 0)
     }
 }
 
