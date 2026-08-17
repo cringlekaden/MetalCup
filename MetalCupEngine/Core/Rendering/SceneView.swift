@@ -5,35 +5,52 @@
 import Foundation
 import simd
 
-public struct SceneViewExposureSettings: sizeable, Equatable {
-    public static let expectedMetalStride: Int = 24
+public struct SceneViewExposureSettings: Equatable {
+    public var cameraOverride: ExposurePolicyOverride
+    public var volumeOverrides: [ExposureOverrideLayer]
+    public var temporalEvent: ExposureTemporalEvent
+    public var adaptationPaused: Bool
 
-    // See Documentation/SceneLinearHDR.md. Auto-exposure fields remain ABI placeholders;
-    // Phase 1 applies `exp2(exposureEV)` exactly once in the final output pass.
-    public var autoExposureEnabled: UInt32
-    public var exposureEV: Float
-    public var exposureCompensation: Float
-    public var autoExposureMin: Float
-    public var autoExposureMax: Float
-    public var adaptationSpeed: Float
-
-    public init(autoExposureEnabled: UInt32 = 0,
-                exposureEV: Float = 0.0,
-                exposureCompensation: Float = 0.0,
-                autoExposureMin: Float = 0.03,
-                autoExposureMax: Float = 8.0,
-                adaptationSpeed: Float = 2.0) {
-        self.autoExposureEnabled = autoExposureEnabled
-        self.exposureEV = exposureEV
-        self.exposureCompensation = exposureCompensation
-        self.autoExposureMin = autoExposureMin
-        self.autoExposureMax = autoExposureMax
-        self.adaptationSpeed = adaptationSpeed
+    public init(cameraOverride: ExposurePolicyOverride = .inheritAll,
+                volumeOverrides: [ExposureOverrideLayer] = [],
+                temporalEvent: ExposureTemporalEvent = .none,
+                adaptationPaused: Bool = false) {
+        self.cameraOverride = cameraOverride
+        self.volumeOverrides = volumeOverrides
+        self.temporalEvent = temporalEvent
+        self.adaptationPaused = adaptationPaused
     }
+
+    /// Source-compatible deterministic helper for older lower-level callers. The value is
+    /// legacy gain-in-stops, not EV100, and is translated at this boundary only.
+    public init(exposureEV legacyGainStops: Float,
+                exposureCompensation: Float = 0) {
+        self.init(cameraOverride: ExposurePolicyOverride(
+            mode: .manualEV100,
+            compensation: exposureCompensation,
+            manualEV100: ExposureCalibration.ev100(fromLegacyGainStops: legacyGainStops)
+        ))
+    }
+
+    public var autoExposureEnabled: UInt32 {
+        cameraOverride.mode == .automaticHistogram ? 1 : 0
+    }
+
+    public var exposureEV: Float {
+        ExposureCalibration.sceneEV100 - (cameraOverride.manualEV100 ?? ExposureCalibration.sceneEV100)
+    }
+
+    public var exposureCompensation: Float { cameraOverride.compensation ?? 0 }
+    public var autoExposureMin: Float { cameraOverride.minimumEV100 ?? ExposurePolicyResolver.engineFallback.minimumEV100 }
+    public var autoExposureMax: Float { cameraOverride.maximumEV100 ?? ExposurePolicyResolver.engineFallback.maximumEV100 }
+    public var adaptationSpeed: Float { cameraOverride.darkAdaptationRate ?? ExposurePolicyResolver.engineFallback.darkAdaptationRate }
 }
 
 public struct SceneView {
     public var viewId: UInt64
+    public var sceneId: UUID
+    public var cameraId: UUID
+    public var viewKind: ExposureViewKind
     public var viewMatrix: matrix_float4x4
     public var projectionMatrix: matrix_float4x4
     public var cameraPosition: SIMD3<Float>
@@ -49,6 +66,9 @@ public struct SceneView {
     public var isEditorView: Bool
 
     public init(viewId: UInt64 = 0,
+                sceneId: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+                cameraId: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+                viewKind: ExposureViewKind = .game,
                 viewMatrix: matrix_float4x4 = matrix_identity_float4x4,
                 projectionMatrix: matrix_float4x4 = matrix_identity_float4x4,
                 cameraPosition: SIMD3<Float> = .zero,
@@ -63,6 +83,9 @@ public struct SceneView {
                 depthPrepassEnabled: Bool = true,
                 isEditorView: Bool = false) {
         self.viewId = viewId
+        self.sceneId = sceneId
+        self.cameraId = cameraId
+        self.viewKind = viewKind
         self.viewMatrix = viewMatrix
         self.projectionMatrix = projectionMatrix
         self.cameraPosition = cameraPosition

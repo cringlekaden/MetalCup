@@ -5,7 +5,7 @@
 import Foundation
 import simd
 
-public struct AssetHandle: Hashable, Codable {
+public struct AssetHandle: Hashable, Codable, Sendable {
     public let rawValue: UUID
 
     public init() {

@@ -54,6 +54,7 @@ public enum SceneECSComponentType: Int32 {
     case environmentRuntimeState = 28
     case environmentIBLState = 29
     case environmentFrameState = 30
+    case postProcessVolume = 31
 }
 
 public struct SceneECSChange {
@@ -83,6 +84,7 @@ public final class SceneECS {
     private var animatorComponents: [Entity: AnimatorComponent] = [:]
     private var materialComponents: [Entity: MaterialComponent] = [:]
     private var cameraComponents: [Entity: CameraComponent] = [:]
+    private var postProcessVolumeComponents: [Entity: PostProcessVolumeComponent] = [:]
     private var scriptComponents: [Entity: ScriptComponent] = [:]
     private var lightComponents: [Entity: LightComponent] = [:]
     private var lightOrbitComponents: [Entity: LightOrbitComponent] = [:]
@@ -173,6 +175,7 @@ public final class SceneECS {
         animatorComponents.removeAll()
         materialComponents.removeAll()
         cameraComponents.removeAll()
+        postProcessVolumeComponents.removeAll()
         scriptComponents.removeAll()
         lightComponents.removeAll()
         lightOrbitComponents.removeAll()
@@ -365,6 +368,12 @@ public final class SceneECS {
             if !existed {
                 enqueueChange(.componentAdded, entity: entity, componentType: .camera)
             }
+        case let value as PostProcessVolumeComponent:
+            let existed = postProcessVolumeComponents[entity] != nil
+            postProcessVolumeComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .postProcessVolume)
+            }
         case let value as ScriptComponent:
             let previousEnabled = scriptComponents[entity]?.enabled
             let existed = scriptComponents[entity] != nil
@@ -547,6 +556,10 @@ public final class SceneECS {
             if cameraComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .camera)
             }
+        case is PostProcessVolumeComponent.Type:
+            if postProcessVolumeComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .postProcessVolume)
+            }
         case is ScriptComponent.Type:
             if scriptComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .script)
@@ -647,6 +660,8 @@ public final class SceneECS {
             return materialComponents[entity] as? T
         case is CameraComponent.Type:
             return cameraComponents[entity] as? T
+        case is PostProcessVolumeComponent.Type:
+            return postProcessVolumeComponents[entity] as? T
         case is ScriptComponent.Type:
             return scriptComponents[entity] as? T
         case is LightComponent.Type:
@@ -1079,6 +1094,9 @@ public final class SceneECS {
         }
         if cameraComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .camera)
+        }
+        if postProcessVolumeComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .postProcessVolume)
         }
         if scriptComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .script)

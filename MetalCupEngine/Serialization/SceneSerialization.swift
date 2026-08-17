@@ -61,6 +61,7 @@ public struct ComponentsDocument: Codable {
     public var light: LightComponentDTO?
     public var lightOrbit: LightOrbitComponentDTO?
     public var camera: CameraComponentDTO?
+    public var postProcessVolume: PostProcessVolumeComponentDTO?
     public var script: ScriptComponentDTO?
     public var characterController: CharacterControllerComponentDTO?
     public var audioSource: AudioSourceComponentDTO?
@@ -90,6 +91,7 @@ public struct ComponentsDocument: Codable {
         light: LightComponentDTO? = nil,
         lightOrbit: LightOrbitComponentDTO? = nil,
         camera: CameraComponentDTO? = nil,
+        postProcessVolume: PostProcessVolumeComponentDTO? = nil,
         script: ScriptComponentDTO? = nil,
         characterController: CharacterControllerComponentDTO? = nil,
         audioSource: AudioSourceComponentDTO? = nil,
@@ -116,6 +118,7 @@ public struct ComponentsDocument: Codable {
         self.light = light
         self.lightOrbit = lightOrbit
         self.camera = camera
+        self.postProcessVolume = postProcessVolume
         self.script = script
         self.characterController = characterController
         self.audioSource = audioSource
@@ -127,6 +130,35 @@ public struct ComponentsDocument: Codable {
         self.reflectionProbe = reflectionProbe
         self.skyLightTag = skyLightTag
         self.skySunTag = skySunTag
+    }
+}
+
+public struct PostProcessVolumeComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var isGlobal: Bool
+    public var priority: Int
+    public var blendDistance: Float
+    public var weight: Float
+    public var exposure: ExposurePolicyOverride
+
+    public init(schemaVersion: Int = 1, component: PostProcessVolumeComponent) {
+        self.schemaVersion = schemaVersion
+        self.enabled = component.enabled
+        self.isGlobal = component.isGlobal
+        self.priority = component.priority
+        self.blendDistance = component.blendDistance
+        self.weight = component.weight
+        self.exposure = component.exposure
+    }
+
+    public func toComponent() -> PostProcessVolumeComponent {
+        PostProcessVolumeComponent(enabled: enabled,
+                                   isGlobal: isGlobal,
+                                   priority: priority,
+                                   blendDistance: blendDistance,
+                                   weight: weight,
+                                   exposure: exposure)
     }
 }
 
@@ -857,6 +889,8 @@ public struct CameraComponentDTO: Codable {
     public var projectionType: UInt32
     public var isPrimary: Bool
     public var isEditor: Bool
+    public var exposurePolicy: ExposurePolicyOverride
+    // Legacy decode surface. New schema writes only `exposurePolicy` so gain stops are not called EV100.
     public var autoExposureEnabled: Bool
     public var exposureEV: Float
     public var exposureCompensation: Float
@@ -864,7 +898,7 @@ public struct CameraComponentDTO: Codable {
     public var autoExposureMax: Float
     public var adaptationSpeed: Float
 
-    public init(schemaVersion: Int = 4, component: CameraComponent) {
+    public init(schemaVersion: Int = 5, component: CameraComponent) {
         self.schemaVersion = schemaVersion
         self.fovDegrees = component.fovDegrees
         self.orthoSize = component.orthoSize
@@ -873,6 +907,7 @@ public struct CameraComponentDTO: Codable {
         self.projectionType = component.projectionType.rawValue
         self.isPrimary = component.isPrimary
         self.isEditor = component.isEditor
+        self.exposurePolicy = component.exposurePolicy
         self.autoExposureEnabled = component.autoExposureEnabled
         self.exposureEV = component.exposureEV
         self.exposureCompensation = component.exposureCompensation
@@ -891,6 +926,7 @@ public struct CameraComponentDTO: Codable {
         projectionType = try container.decodeIfPresent(UInt32.self, forKey: .projectionType) ?? ProjectionType.perspective.rawValue
         isPrimary = try container.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? true
         isEditor = try container.decodeIfPresent(Bool.self, forKey: .isEditor) ?? false
+        let decodedPolicy = try container.decodeIfPresent(ExposurePolicyOverride.self, forKey: .exposurePolicy)
         autoExposureEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoExposureEnabled) ?? false
         if let encodedEV = try container.decodeIfPresent(Float.self, forKey: .exposureEV) {
             exposureEV = encodedEV
@@ -903,6 +939,21 @@ public struct CameraComponentDTO: Codable {
         autoExposureMin = try container.decodeIfPresent(Float.self, forKey: .autoExposureMin) ?? 0.03
         autoExposureMax = try container.decodeIfPresent(Float.self, forKey: .autoExposureMax) ?? 8.0
         adaptationSpeed = try container.decodeIfPresent(Float.self, forKey: .adaptationSpeed) ?? 2.0
+        let containsLegacyExposure = container.contains(.autoExposureEnabled)
+            || container.contains(.exposureEV)
+            || container.contains(.manualExposure)
+            || container.contains(.exposureCompensation)
+        exposurePolicy = decodedPolicy ?? (containsLegacyExposure
+            ? ExposurePolicyOverride(
+                mode: autoExposureEnabled ? .automaticHistogram : .manualEV100,
+                compensation: exposureCompensation,
+                manualEV100: ExposureCalibration.ev100(fromLegacyGainStops: exposureEV),
+                minimumEV100: autoExposureMin,
+                maximumEV100: autoExposureMax,
+                darkAdaptationRate: adaptationSpeed,
+                lightAdaptationRate: adaptationSpeed
+            )
+            : .inheritAll)
     }
 
     public func toComponent() -> CameraComponent {
@@ -914,18 +965,13 @@ public struct CameraComponentDTO: Codable {
             projectionType: ProjectionType(rawValue: projectionType) ?? .perspective,
             isPrimary: isPrimary,
             isEditor: isEditor,
-            autoExposureEnabled: autoExposureEnabled,
-            exposureEV: exposureEV,
-            exposureCompensation: exposureCompensation,
-            autoExposureMin: autoExposureMin,
-            autoExposureMax: autoExposureMax,
-            adaptationSpeed: adaptationSpeed
+            exposurePolicy: exposurePolicy
         )
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(4, forKey: .schemaVersion)
+        try container.encode(5, forKey: .schemaVersion)
         try container.encode(fovDegrees, forKey: .fovDegrees)
         try container.encode(orthoSize, forKey: .orthoSize)
         try container.encode(nearPlane, forKey: .nearPlane)
@@ -933,12 +979,7 @@ public struct CameraComponentDTO: Codable {
         try container.encode(projectionType, forKey: .projectionType)
         try container.encode(isPrimary, forKey: .isPrimary)
         try container.encode(isEditor, forKey: .isEditor)
-        try container.encode(autoExposureEnabled, forKey: .autoExposureEnabled)
-        try container.encode(exposureEV, forKey: .exposureEV)
-        try container.encode(exposureCompensation, forKey: .exposureCompensation)
-        try container.encode(autoExposureMin, forKey: .autoExposureMin)
-        try container.encode(autoExposureMax, forKey: .autoExposureMax)
-        try container.encode(adaptationSpeed, forKey: .adaptationSpeed)
+        try container.encode(exposurePolicy, forKey: .exposurePolicy)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -950,6 +991,7 @@ public struct CameraComponentDTO: Codable {
         case projectionType
         case isPrimary
         case isEditor
+        case exposurePolicy
         case autoExposureEnabled
         case exposureEV
         case manualExposure

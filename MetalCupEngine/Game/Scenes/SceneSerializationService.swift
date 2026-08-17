@@ -148,6 +148,9 @@ public final class SceneSerializationService {
                     camera: shouldSerializeOverride(.camera, for: entity)
                         ? scene.ecs.get(CameraComponent.self, for: entity).map { CameraComponentDTO(component: $0) }
                         : nil,
+                    postProcessVolume: scene.ecs.get(PostProcessVolumeComponent.self, for: entity).map {
+                        PostProcessVolumeComponentDTO(component: $0)
+                    },
                     script: shouldSerializeOverride(.script, for: entity)
                         ? scene.ecs.get(ScriptComponent.self, for: entity).map { ScriptComponentDTO(component: $0) }
                         : nil,
@@ -303,6 +306,9 @@ public final class SceneSerializationService {
                 },
                 camera: scene.ecs.get(CameraComponent.self, for: entity).map { component in
                     CameraComponentDTO(component: component)
+                },
+                postProcessVolume: scene.ecs.get(PostProcessVolumeComponent.self, for: entity).map {
+                    PostProcessVolumeComponentDTO(component: $0)
                 },
                 script: scene.ecs.get(ScriptComponent.self, for: entity).map { component in
                     ScriptComponentDTO(component: component)
@@ -544,6 +550,9 @@ public final class SceneSerializationService {
                 if let camera = entityDoc.components.camera {
                     scene.ecs.add(camera.toComponent(), to: entity)
                 }
+                if let volume = entityDoc.components.postProcessVolume {
+                    scene.ecs.add(volume.toComponent(), to: entity)
+                }
                 if let script = entityDoc.components.script {
                     scene.ecs.add(script.toComponent(), to: entity)
                 }
@@ -687,6 +696,9 @@ public final class SceneSerializationService {
             }
             if let camera = entityDoc.components.camera {
                 scene.ecs.add(camera.toComponent(), to: entity)
+            }
+            if let volume = entityDoc.components.postProcessVolume {
+                scene.ecs.add(volume.toComponent(), to: entity)
             }
             if let rigidbody = entityDoc.components.rigidbody {
                 scene.ecs.add(rigidbody.toComponent(), to: entity)
@@ -893,6 +905,9 @@ public final class SceneSerializationService {
             }
             if let camera = entityDoc.components.camera {
                 scene.ecs.add(camera.toComponent(), to: entity)
+            }
+            if let volume = entityDoc.components.postProcessVolume {
+                scene.ecs.add(volume.toComponent(), to: entity)
             }
             if let script = entityDoc.components.script {
                 scene.ecs.add(script.toComponent(), to: entity)

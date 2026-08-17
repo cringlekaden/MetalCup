@@ -1367,13 +1367,38 @@ public struct CameraComponent {
     public var projectionType: ProjectionType
     public var isPrimary: Bool
     public var isEditor: Bool
-    // Compatibility fields are retained for scene decoding. Phase 1 rendering is manual-only.
-    public var autoExposureEnabled: Bool
-    public var exposureEV: Float
-    public var exposureCompensation: Float
-    public var autoExposureMin: Float
-    public var autoExposureMax: Float
-    public var adaptationSpeed: Float
+    /// Field-level camera policy. Nil fields inherit Project Render Settings.
+    public var exposurePolicy: ExposurePolicyOverride
+
+    // Compatibility accessors keep source clients building while making the unit conversion explicit.
+    // `exposureEV` remains legacy positive gain-in-stops and is never serialized by the new schema.
+    public var autoExposureEnabled: Bool {
+        get { exposurePolicy.mode == .automaticHistogram }
+        set { exposurePolicy.mode = newValue ? .automaticHistogram : .manualEV100 }
+    }
+    public var exposureEV: Float {
+        get { ExposureCalibration.sceneEV100 - (exposurePolicy.manualEV100 ?? ExposureCalibration.sceneEV100) }
+        set {
+            exposurePolicy.mode = .manualEV100
+            exposurePolicy.manualEV100 = ExposureCalibration.ev100(fromLegacyGainStops: newValue)
+        }
+    }
+    public var exposureCompensation: Float {
+        get { exposurePolicy.compensation ?? 0 }
+        set { exposurePolicy.compensation = newValue }
+    }
+    public var autoExposureMin: Float {
+        get { exposurePolicy.minimumEV100 ?? ExposurePolicyResolver.engineFallback.minimumEV100 }
+        set { exposurePolicy.minimumEV100 = newValue }
+    }
+    public var autoExposureMax: Float {
+        get { exposurePolicy.maximumEV100 ?? ExposurePolicyResolver.engineFallback.maximumEV100 }
+        set { exposurePolicy.maximumEV100 = newValue }
+    }
+    public var adaptationSpeed: Float {
+        get { exposurePolicy.darkAdaptationRate ?? ExposurePolicyResolver.engineFallback.darkAdaptationRate }
+        set { exposurePolicy.darkAdaptationRate = newValue }
+    }
 
     public init(
         fovDegrees: Float = 45.0,
@@ -1383,12 +1408,13 @@ public struct CameraComponent {
         projectionType: ProjectionType = .perspective,
         isPrimary: Bool = true,
         isEditor: Bool = true,
-        autoExposureEnabled: Bool = false,
+        autoExposureEnabled: Bool? = nil,
         exposureEV: Float = 0.0,
         exposureCompensation: Float = 0.0,
         autoExposureMin: Float = 0.03,
         autoExposureMax: Float = 8.0,
-        adaptationSpeed: Float = 2.0
+        adaptationSpeed: Float = 2.0,
+        exposurePolicy: ExposurePolicyOverride = .inheritAll
     ) {
         self.fovDegrees = fovDegrees
         self.orthoSize = orthoSize
@@ -1397,12 +1423,43 @@ public struct CameraComponent {
         self.projectionType = projectionType
         self.isPrimary = isPrimary
         self.isEditor = isEditor
-        self.autoExposureEnabled = autoExposureEnabled
-        self.exposureEV = exposureEV
-        self.exposureCompensation = exposureCompensation
-        self.autoExposureMin = autoExposureMin
-        self.autoExposureMax = autoExposureMax
-        self.adaptationSpeed = adaptationSpeed
+        if let autoExposureEnabled {
+            self.exposurePolicy = ExposurePolicyOverride(
+                mode: autoExposureEnabled ? .automaticHistogram : .manualEV100,
+                compensation: exposureCompensation,
+                manualEV100: ExposureCalibration.ev100(fromLegacyGainStops: exposureEV),
+                minimumEV100: autoExposureMin,
+                maximumEV100: autoExposureMax,
+                darkAdaptationRate: adaptationSpeed,
+                lightAdaptationRate: adaptationSpeed
+            )
+        } else {
+            self.exposurePolicy = exposurePolicy
+        }
+    }
+}
+
+/// Blended local post-process exposure profile. Transform position/scale define the local box.
+public struct PostProcessVolumeComponent {
+    public var enabled: Bool
+    public var isGlobal: Bool
+    public var priority: Int
+    public var blendDistance: Float
+    public var weight: Float
+    public var exposure: ExposurePolicyOverride
+
+    public init(enabled: Bool = true,
+                isGlobal: Bool = false,
+                priority: Int = 0,
+                blendDistance: Float = 2,
+                weight: Float = 1,
+                exposure: ExposurePolicyOverride = .inheritAll) {
+        self.enabled = enabled
+        self.isGlobal = isGlobal
+        self.priority = priority
+        self.blendDistance = max(blendDistance, 0)
+        self.weight = min(max(weight, 0), 1)
+        self.exposure = exposure
     }
 }
 

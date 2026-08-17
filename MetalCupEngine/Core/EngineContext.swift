@@ -12,6 +12,7 @@ public final class RendererDiagnosticsService {
         cullingDepthSource: .none
     )
     private let lock = NSLock()
+    private var exposureByIdentity: [ExposureViewStateIdentity: ExposureDiagnostics] = [:]
 
     public init() {}
 
@@ -37,6 +38,43 @@ public final class RendererDiagnosticsService {
         lock.unlock()
         return value
     }
+
+    public func commit(exposure: ExposureDiagnostics) {
+        lock.lock()
+        exposureByIdentity[exposure.identity] = exposure
+        lock.unlock()
+    }
+
+    public func exposure(for identity: ExposureViewStateIdentity) -> ExposureDiagnostics? {
+        lock.lock()
+        let value = exposureByIdentity[identity]
+        lock.unlock()
+        return value
+    }
+
+    public func allExposureViews() -> [ExposureDiagnostics] {
+        lock.lock()
+        let values = exposureByIdentity.values.sorted {
+            if $0.identity.viewportInstanceID != $1.identity.viewportInstanceID {
+                return $0.identity.viewportInstanceID < $1.identity.viewportInstanceID
+            }
+            return $0.identity.viewKind.rawValue < $1.identity.viewKind.rawValue
+        }
+        lock.unlock()
+        return values
+    }
+
+    public func removeExposureViews(viewportInstanceID: UInt64) {
+        lock.lock()
+        exposureByIdentity = exposureByIdentity.filter { $0.key.viewportInstanceID != viewportInstanceID }
+        lock.unlock()
+    }
+
+    public func removeAllExposureViews() {
+        lock.lock()
+        exposureByIdentity.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
 }
 
 public final class EngineContext {
@@ -58,6 +96,8 @@ public final class EngineContext {
     public var scriptRuntime: ScriptRuntime
     public let audioEngineService: AudioEngineService
     public var rendererSettings: RendererSettings = RendererSettings()
+    /// Inherited exposure policy supplied by Project Render Settings. Environment code must not mutate it.
+    public var projectExposureDefaults: ExposureSettings = ExposurePolicyResolver.engineFallback
     public let rendererDiagnostics = RendererDiagnosticsService()
     public var forwardPlusStats: ForwardPlusStats = ForwardPlusStats()
     public var forwardPlusCullingDepthSource: UInt32 = ForwardPlusCullingDepthSource.none.rawValue

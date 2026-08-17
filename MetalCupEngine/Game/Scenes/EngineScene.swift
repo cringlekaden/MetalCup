@@ -100,6 +100,7 @@ public class EngineScene {
     private var _lightManager = LightManager()
     private var _sceneConstants = SceneConstants()
     private var _viewExposureSettings = SceneViewExposureSettings()
+    private var _viewCameraId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
     private let _editorCameraController = EditorCameraController()
     private var lastFrameContext: FrameContext?
     public lazy var transformAuthority = TransformAuthorityService(scene: self)
@@ -267,6 +268,9 @@ public class EngineScene {
             }
         )
         updateScheduler.runUpdate(request: request, pipeline: pipeline)
+        // Exposure follows unscaled render time during gameplay, but a paused scene
+        // freezes adaptation and resumes without accumulating a pause-time spike.
+        _viewExposureSettings.adaptationPaused = isPaused
     }
 
     private func logAnimationEvaluationPolicyIfNeeded() {
@@ -1078,6 +1082,7 @@ public class EngineScene {
             return height == 0 ? 1.0 : width / height
         }()
         applyCameraConstants(transform: worldTransform, camera: active.camera, aspectRatio: aspectRatio)
+        _viewCameraId = active.entity.id
     }
 
     private func resolveActiveCamera(isPlaying: Bool) -> (entity: Entity, transform: TransformComponent, camera: CameraComponent, shouldUpdateEditorCamera: Bool)? {
@@ -1117,6 +1122,50 @@ public class EngineScene {
         _sceneConstants.inverseViewProjectionMatrix = simd_inverse(_sceneConstants.projectionMatrix * _sceneConstants.viewMatrix)
         _sceneConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, 1.0)
         _viewExposureSettings = SceneRenderer.exposureSettings(from: camera)
+        _viewExposureSettings.volumeOverrides = resolvedExposureVolumes(at: transform.position)
+    }
+
+    private func resolvedExposureVolumes(at cameraPosition: SIMD3<Float>) -> [ExposureOverrideLayer] {
+        var layers: [ExposureOverrideLayer] = []
+        for entity in ecs.allEntities() {
+            guard let volume = ecs.get(PostProcessVolumeComponent.self, for: entity),
+                  volume.enabled,
+                  !volume.exposure.isEmpty else { continue }
+            let spatialWeight: Float
+            if volume.isGlobal {
+                spatialWeight = 1
+            } else {
+                let transform = ecs.worldTransform(for: entity)
+                let halfExtents = SIMD3<Float>(
+                    max(abs(transform.scale.x) * 0.5, 0.001),
+                    max(abs(transform.scale.y) * 0.5, 0.001),
+                    max(abs(transform.scale.z) * 0.5, 0.001)
+                )
+                let delta = SIMD3<Float>(
+                    abs(cameraPosition.x - transform.position.x),
+                    abs(cameraPosition.y - transform.position.y),
+                    abs(cameraPosition.z - transform.position.z)
+                ) - halfExtents
+                let outside = length(simd_max(delta, .zero))
+                if outside <= 0 {
+                    spatialWeight = 1
+                } else if volume.blendDistance > 0 {
+                    spatialWeight = min(max(1 - outside / volume.blendDistance, 0), 1)
+                } else {
+                    spatialWeight = 0
+                }
+            }
+            let weight = min(max(volume.weight * spatialWeight, 0), 1)
+            guard weight > 0 else { continue }
+            layers.append(ExposureOverrideLayer(
+                policy: volume.exposure,
+                weight: weight,
+                priority: volume.priority,
+                source: "Post Process Volume \(entity.id.uuidString)",
+                locksExposure: false
+            ))
+        }
+        return layers
     }
 
     private func updateSceneConstantsForFrame(_ frame: FrameContext) {
@@ -1305,6 +1354,18 @@ public class EngineScene {
 
     func getViewExposureSettings() -> SceneViewExposureSettings {
         _viewExposureSettings
+    }
+
+    func getExposureSettings(cameraEntity: Entity) -> SceneViewExposureSettings? {
+        guard let camera = ecs.get(CameraComponent.self, for: cameraEntity) else { return nil }
+        let position = ecs.worldTransform(for: cameraEntity).position
+        var settings = SceneRenderer.exposureSettings(from: camera)
+        settings.volumeOverrides = resolvedExposureVolumes(at: position)
+        return settings
+    }
+
+    func getViewCameraID() -> UUID {
+        _viewCameraId
     }
 
     func getLightManager() -> LightManager {
