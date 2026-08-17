@@ -11,6 +11,11 @@ public enum EnvironmentIBLRebuildLifecycle {
         public var timeLagHours: Float?
         public var angularLagDegrees: Float?
         public var lastBuildDuration: Double?
+        public var exactSignatureMatch: Bool
+        public var finalQuality: Bool
+        public var isCurrentFinal: Bool
+        public var sourceGeneration: UInt64
+        public var representedGeneration: UInt64?
     }
 
     public static func freshness(state: EnvironmentIBLStateComponent,
@@ -25,6 +30,13 @@ public enum EnvironmentIBLRebuildLifecycle {
             let b = simd_normalize(current.sunDirection)
             return acos(min(max(simd_dot(a, b), -1), 1)) * 180 / .pi
         }
+        let exactSignatureMatch = state.lastBuiltSignature == current.iblSignature
+        let finalQuality = state.lastBuiltQuality == .final
+        let isCurrentFinal = exactSignatureMatch
+            && finalQuality
+            && !state.isRebuilding
+            && !state.dirty
+            && state.lastFailureMessage?.isEmpty != false
         let status: String
         if state.lastFailureMessage?.isEmpty == false {
             status = "error — retaining last valid IBL"
@@ -32,16 +44,21 @@ public enum EnvironmentIBLRebuildLifecycle {
             status = state.currentRebuildQuality == .final ? "rebuilding final" : "rebuilding interactive"
         } else if state.lastBuiltSignature == nil {
             status = "no valid IBL"
-        } else if state.dirty {
+        } else if !exactSignatureMatch || state.dirty {
             status = "lagging — interactive source changed"
         } else {
-            status = state.lastBuiltQuality == .final ? "final and current" : "interactive and current"
+            status = finalQuality ? "final, exact, current" : "interactive, exact, current"
         }
         return Freshness(status: status,
                          representedTimeOfDay: representedTime,
                          timeLagHours: timeLag,
                          angularLagDegrees: angularLag,
-                         lastBuildDuration: state.lastBuildDuration)
+                         lastBuildDuration: state.lastBuildDuration,
+                         exactSignatureMatch: exactSignatureMatch,
+                         finalQuality: finalQuality,
+                         isCurrentFinal: isCurrentFinal,
+                         sourceGeneration: state.sourceGeneration,
+                         representedGeneration: state.lastBuiltGeneration)
     }
 
     public static func completionIsCurrent(
