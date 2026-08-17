@@ -78,7 +78,9 @@ public enum NightCelestialModel {
             * phaseResponse
 
         let sunElevation = asin(min(max(sunDirection.y, -1), 1))
-        let nightVisibility = 1 - smoothstep(-10 * .pi / 180, -4 * .pi / 180, sunElevation)
+        // First stars appear during civil twilight; full celestial contrast is
+        // not reached until astronomical twilight has ended.
+        let nightVisibility = 1 - smoothstep(-18 * .pi / 180, -4 * .pi / 180, sunElevation)
         let clarity = (1 - min(max(haze, 0), 1) * 0.72)
             * (1 - min(max(cloudCoverage, 0), 1) * 0.65)
         let moonWashout = 1 - min(max(illuminatedFraction * horizonVisibility * 0.45, 0), 0.45)

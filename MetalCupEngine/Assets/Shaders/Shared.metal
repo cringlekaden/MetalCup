@@ -266,9 +266,12 @@ struct LocalReflectionProbeUniform {
 };
 
 struct CloudImpostorParams {
-    float4 sunDirectionAndNightFactor;
+    float4 sunDirection;
+    float4 moonDirection;
     float4 windOffsetCoverageAndCount;
-    float4 colorTintAndBrightness;
+    float4 skyRadianceAndMultipleScattering;
+    float4 sunIrradiance;
+    float4 moonIrradiance;
     float4 layout;
 };
 
@@ -515,6 +518,8 @@ struct RendererSettings {
     float4 aerialFogSunColorAndStrength;
     // x = inscattering strength, y = height extinction scale, z = HG anisotropy, w = max aerial distance.
     float4 aerialFogParams;
+    // rgb = current live hemispherical sky radiance, w = validity marker.
+    float4 aerialFogAmbientRadiance;
 };
 
 struct ViewExposureSettings {
@@ -650,6 +655,12 @@ struct SkyParams {
     float4 atmosphereOpticalParams;
     // Reserved for legacy/night ABI compatibility. Daytime aureole derives from Mie scattering.
     float4 sunAureoleParams;
+    // Live scene-linear radiometric cloud inputs.
+    float4 cloudSunIrradiance;
+    float4 cloudMoonIrradiance;
+    float4 cloudSkyRadiance;
+    // x = extinction scale, y = phase anisotropy, z = bounded multiple scattering.
+    float4 cloudOpticalParams;
 };
 
 struct OutlineParams {

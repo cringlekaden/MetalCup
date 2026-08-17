@@ -13,14 +13,10 @@ using namespace metal;
 // Keep this near unit scale so the visible sky and captured IBL start from the
 // same plausible HDR baseline instead of baking in a large global over-brightness bias.
 static constant float kProceduralSkyRadianceScale = 1.0;
-// Night is calibrated for a separate adapted camera range (roughly EV +8...+12),
-// rather than being lifted to daytime exposure. These scales keep extended
-// celestial sources scene-linear while sparse stars may retain bright peaks.
-static constant float kNightBackgroundRadianceScale = 0.001;
+// Sparse stellar peaks remain bounded separately from extended-source energy.
 static constant float kStellarVisibleRadianceScale = 0.002;
 // Local proof switch for validating the bound moon texture. Keep false for normal rendering and IBL generation.
 static constant bool kMoonTextureProofDiagnostic = false;
-static constant bool kUseLegacyProceduralClouds = false;
 static constant bool kUseTextureBackedCloudAtlas = false;
 
 static inline float saturate1(float value) {
@@ -100,8 +96,30 @@ static inline float3 daytimeTotalOpticalDepth(constant SkyParams &params) {
     return kDaytimeRayleighOpticalDepth * density + mieDepth + kDaytimeOzoneOpticalDepth * ozone;
 }
 
-static inline float daytimeIlluminationGate(float sunElevation) {
-    return skySmoothstep(-6.0 * M_PI_F / 180.0, 1.0 * M_PI_F / 180.0, sunElevation);
+static inline float twilightSolarScale(float elevationDegrees) {
+    float e = clamp(elevationDegrees, -24.0, 1.0);
+    if (e <= -24.0) return 0.0;
+    if (e <= -18.0) return 0.00008 * skySmoothstep(-24.0, -18.0, e);
+    if (e <= -12.0) return exp2(mix(log2(0.00008), log2(0.0012), skySmoothstep(-18.0, -12.0, e)));
+    if (e <= -6.0) return exp2(mix(log2(0.0012), log2(0.025), skySmoothstep(-12.0, -6.0, e)));
+    if (e <= 0.0) return exp2(mix(log2(0.025), log2(0.65), skySmoothstep(-6.0, 0.0, e)));
+    return exp2(mix(log2(0.65), 0.0, skySmoothstep(0.0, 1.0, e)));
+}
+
+static inline float deepNightFactor(float elevationDegrees) {
+    return 1.0 - skySmoothstep(-18.0, -6.0, elevationDegrees);
+}
+
+static inline float3 evaluateAirglow(float3 dir,
+                                     float solarElevationDegrees,
+                                     constant SkyParams &params) {
+    float zenithBlend = skySmoothstep(0.0, 0.72, max(dir.y, 0.0));
+    float3 horizon = float3(0.000020, 0.000024, 0.000036);
+    float3 zenith = float3(0.000010, 0.000018, 0.000040);
+    float authored = clamp(params.atmosphereOpticalParams.w, 0.0, 3.0);
+    return mix(horizon, zenith, zenithBlend)
+        * deepNightFactor(solarElevationDegrees)
+        * authored;
 }
 
 static inline float3 evaluateAnalyticSkyBody(float3 dir,
@@ -111,6 +129,7 @@ static inline float3 evaluateAnalyticSkyBody(float3 dir,
     float density = max(params.atmosphereScatteringParams.x, 0.05);
     float ozone = max(params.atmosphereScatteringParams.w, 0.0);
     float sunElevation = asin(clamp(sunDir.y, -1.0, 1.0));
+    float sunElevationDegrees = sunElevation * 180.0 / M_PI_F;
     float sunAirMass = daytimeOpticalAirMass(max(sunElevation, 0.0));
     float viewAirMass = daytimeOpticalAirMass(asin(max(dir.y, 0.001)));
     float3 rayleighDepth = kDaytimeRayleighOpticalDepth * density;
@@ -120,7 +139,7 @@ static inline float3 evaluateAnalyticSkyBody(float3 dir,
     float3 viewTransmittance = exp(-totalDepth * viewAirMass);
     float3 rayleighScatter = 1.0 - exp(-rayleighDepth * viewAirMass);
     float cosAngle = clamp(dot(dir, sunDir), -1.0, 1.0);
-    float3 topIrradiance = daytimeTopSolarIrradiance(params) * daytimeIlluminationGate(sunElevation);
+    float3 topIrradiance = daytimeTopSolarIrradiance(params) * twilightSolarScale(sunElevationDegrees);
     float3 rayleigh = topIrradiance * sqrt(max(sunTransmittance, float3(0.0)))
         * rayleighScatter * (rayleighPhase(cosAngle) * 3.2);
     float meanLoss = 1.0 - dot(viewTransmittance, float3(1.0 / 3.0));
@@ -139,7 +158,8 @@ static inline float3 evaluateAnalyticSkyBody(float3 dir,
     float3 lowerGround = max(topIrradiance * sunTransmittance * max(sunDir.y, 0.0)
         * (groundAlbedo / M_PI_F) + multiple * groundAlbedo * 0.5, float3(0.0));
     float upperBlend = skySmoothstep(-0.02, 0.02, dir.y);
-    float3 sky = mix(lowerGround, upperSky, upperBlend);
+    float3 sky = mix(lowerGround, upperSky, upperBlend)
+        + evaluateAirglow(dir, sunElevationDegrees, params);
     resolvedHazeColor = max(multiple + groundBounce, float3(0.0));
     return sky;
 }
@@ -166,7 +186,7 @@ static inline float3 evaluateSolarAureole(float3 dir, float sunCos, float sunAng
     float3 incidentTint = sqrt(max(exp(-daytimeTotalOpticalDepth(params) * sunAirMass), float3(0.0)));
     float phase = miePhaseHG(sunCos, clamp(params.atmosphereScatteringParams.z, 0.0, 0.95));
     return daytimeTopSolarIrradiance(params) * incidentTint * mieScatter
-        * (phase * 0.45) * daytimeIlluminationGate(sunElevation);
+        * (phase * 0.45) * twilightSolarScale(sunElevation * 180.0 / M_PI_F);
 }
 
 static inline float3 evaluateSolarForwardScatter(float sunCos, constant SkyParams &params) {
@@ -452,6 +472,36 @@ struct CloudCompositeSample {
     float3 sky;
     float3 sun;
 };
+
+static inline float3 evaluateRadiometricCloudLighting(float3 viewDirection,
+                                                       float density,
+                                                       float topLight,
+                                                       float selfShadow,
+                                                       float edgeSignal,
+                                                       constant SkyParams &params) {
+    // Cloud inputs are authoritative true radiance/irradiance. The shared sky
+    // evaluator applies params.intensity after compositing, so normalize here to
+    // keep source EV from being applied to cloud lighting a second time.
+    float inverseSharedSourceScale = 1.0 / max(params.intensity, 1e-6);
+    float3 skyAmbient = positive3(params.cloudSkyRadiance.rgb) * inverseSharedSourceScale;
+    float3 sunIrradiance = positive3(params.cloudSunIrradiance.rgb) * inverseSharedSourceScale;
+    float3 moonIrradiance = positive3(params.cloudMoonIrradiance.rgb) * inverseSharedSourceScale;
+    float extinction = max(params.cloudOpticalParams.x, 0.05);
+    float anisotropy = clamp(params.cloudOpticalParams.y, -0.85, 0.85);
+    float multiple = clamp(params.cloudOpticalParams.z, 0.0, 1.5);
+    float opticalShadow = exp(-density * extinction);
+    float ambientWrap = mix(0.48, 0.92, topLight) * mix(0.72, 1.18, multiple);
+    float3 ambient = skyAmbient * ambientWrap * mix(0.72, 1.0, opticalShadow);
+
+    float sunPhase = min(miePhaseHG(clamp(dot(viewDirection, normalize(params.sunDirection)), -1.0, 1.0), anisotropy), 0.45);
+    float moonPhase = min(miePhaseHG(clamp(dot(viewDirection, normalize(params.moonDirection)), -1.0, 1.0), anisotropy), 0.32);
+    float edgeLift = 0.04 + edgeSignal * 0.10;
+    float3 sun = sunIrradiance * (edgeLift + sunPhase * 0.42) * selfShadow;
+    float3 moon = moonIrradiance * (0.035 + moonPhase * 0.34) * selfShadow;
+    float3 radiance = ambient + sun + moon;
+    float3 bound = skyAmbient * 1.8 + (sunIrradiance + moonIrradiance) * 0.55 + float3(1e-7);
+    return min(max(radiance, float3(0.0)), bound);
+}
 
 struct PseudoVolumeCloudSample {
     float density;
@@ -789,24 +839,6 @@ static inline float3 evaluateMoonGlowLayer(float3 moonDir,
     return moonGlowColor * moonGlowStrength * (moonInnerGlow * 0.34 + moonOuterGlow * 0.105);
 }
 
-static inline float3 evaluateNightBackgroundLayer(float cosTheta,
-                                                  float moonCos,
-                                                  float moonIntensity,
-                                                  float horizonClarity,
-                                                  constant SkyParams &params) {
-    float nightGradient = smoothstep(-0.02, 0.72, cosTheta);
-    float twilightHorizon = params.twilightFactor * (1.0 - smoothstep(0.05, 0.55, cosTheta));
-    float nightBrightness = clamp(params.celestialArtParams.w, 0.0, 3.0);
-    float3 deepZenith = mix(float3(0.006, 0.012, 0.038), float3(0.018, 0.032, 0.082), params.skyCoolness);
-    float3 quietHorizon = mix(float3(0.012, 0.017, 0.036), positive3(params.duskTint) * 0.040, twilightHorizon);
-    float moonForward = pow(saturate1(moonCos), 2.0);
-    float3 moonlitTint = positive3(params.moonColor) * moonIntensity * (0.022 + 0.050 * moonForward + 0.018 * nightGradient) * horizonClarity;
-    return (mix(quietHorizon, deepZenith, nightGradient) * nightBrightness
-            * kNightBackgroundRadianceScale
-            + moonlitTint)
-        * params.nightFactor;
-}
-
 static inline float3 evaluateStarLayer(float3 dir,
                                        float moonAngle,
                                        float moonRadius,
@@ -1035,19 +1067,6 @@ static inline CloudCompositeSample evaluateProceduralClouds(float3 dir,
                                                            float3 hazeColor,
                                                            constant SkyParams &params,
                                                            texture2d<float> cloudAtlasTexture) {
-    if (kUseLegacyProceduralClouds) {
-        return evaluateLegacyProceduralClouds(dir,
-                                             sunDir,
-                                             cosTheta,
-                                             horizonBand,
-                                             sunForward,
-                                             baseSky,
-                                             baseSun,
-                                             hazeColor,
-                                             params,
-                                             cloudAtlasTexture);
-    }
-
     CloudCompositeSample composite;
     composite.sky = baseSky;
     composite.sun = baseSun;
@@ -1063,13 +1082,9 @@ static inline CloudCompositeSample evaluateProceduralClouds(float3 dir,
     float thickness = clamp(params.cloudsThickness, 0.08, 1.0);
     float brightness = max(params.cloudsBrightness, 0.0);
     float sunInfluence = max(params.cloudsSunInfluence, 0.0);
-    float nightFactor = saturate1(params.nightFactor);
-    float twilight = saturate1(params.twilightFactor);
     float horizonCoord = saturate1(1.0 - cosTheta);
     float overcastSignal = smoothstep(0.68, 0.90, coverage) * smoothstep(0.32, 0.72, thickness);
     float stormSignal = overcastSignal * saturate1((0.70 - brightness) * 1.35 + (0.58 - sunInfluence) * 0.85);
-    float lowSunWarmth = saturate1((1.0 - params.dayNightFactor) * (1.0 - nightFactor) + twilight * 0.72);
-
     float2 wind = normalize(params.cloudsWindDirection + float2(0.0001, 0.0));
     float speed = params.cloudsSpeed;
     float layerHeight = mix(0.62, 1.16, clamp(params.cloudsHeight + thickness * 0.34, 0.0, 1.0));
@@ -1102,7 +1117,8 @@ static inline CloudCompositeSample evaluateProceduralClouds(float3 dir,
     slab.baseShadow = mix(slab.baseShadow, saturate1(slab.baseShadow * 0.55 + atlasMacro * (0.28 + stormSignal * 0.28)), atlasEnabled);
     float opticalDepth = density * mix(1.45, 3.85, thickness) * mix(1.0, 1.35, overcastSignal + stormSignal * 0.5);
     float opacity = saturate1(1.0 - exp(-opticalDepth));
-    opacity *= mix(1.0, mix(0.46, 0.90, coverage), nightFactor);
+    // Darkness changes incident radiance, not cloud optical coverage. Keeping
+    // extinction stable lets moonless decks silhouette against live airglow.
 
     float densityAhead = pseudo_volume_cloud_density(float3(layerCoord + flow + sunDir.xz * (1.2 + thickness * 2.6),
                                                            saturate1(slab.height + 0.16)),
@@ -1122,27 +1138,13 @@ static inline CloudCompositeSample evaluateProceduralClouds(float3 dir,
     float topLight = saturate1(slab.height * 0.70 + slab.topLight * 0.62 + gradientLight * 0.42);
     float sideBreakup = saturate1(abs(density - densitySide) * 2.2 + slab.edge * 0.65);
 
-    float phaseForward = pow(sunForward, mix(16.0, 5.2, softness));
-    float silverLining = sideBreakup * phaseForward * sunInfluence * (0.34 + 0.58 * params.solarVisibility);
-    silverLining *= (0.82 + lowSunWarmth * 0.36) * mix(1.0, 0.52, overcastSignal) * mix(1.0, 0.28, nightFactor);
-    silverLining = min(silverLining, 0.78);
-
-    float3 warmTint = mix(positive3(params.solarExtinctionTint), positive3(params.duskTint), saturate1(twilight * 0.40 + lowSunWarmth * 0.34));
-    float3 shadowColor = mix(composite.sky, hazeColor, 0.20 + horizonBand * 0.30 + params.horizonDensity * 0.10);
-    shadowColor *= mix(0.68, 0.42, stormSignal) * mix(1.0, 0.82, overcastSignal);
-    float3 litColor = mix(shadowColor,
-                          mix(float3(1.0), warmTint, 0.32 + twilight * 0.26 + lowSunWarmth * 0.16),
-                          topLight * selfShadow * (0.42 + 0.36 * sunInfluence) * mix(1.0, 0.70, overcastSignal));
-
-    float brightnessScale = mix(0.68, 1.20, saturate1(brightness * 0.55));
-    float3 cloudColor = litColor * brightnessScale;
-    cloudColor += warmTint * silverLining;
-    cloudColor += hazeColor * coverage * (0.035 + horizonBand * 0.12 + overcastSignal * 0.08);
-
-    float moonForward = pow(saturate1(dot(dir, normalize(params.moonDirection))), 5.5);
-    float moonCloudLight = nightFactor * saturate1(params.moonIntensity * (0.16 + 0.42 * moonForward));
-    float3 moonCloudColor = mix(float3(0.08, 0.12, 0.22), positive3(params.moonColor), 0.40) * (0.34 + 0.58 * density);
-    cloudColor = mix(cloudColor, moonCloudColor, moonCloudLight * mix(0.38, 0.76, coverage));
+    float3 cloudColor = evaluateRadiometricCloudLighting(dir,
+                                                         density,
+                                                         topLight,
+                                                         selfShadow,
+                                                         sideBreakup,
+                                                         params);
+    cloudColor += positive3(hazeColor) * coverage * (0.018 + horizonBand * 0.055 + overcastSignal * 0.035);
 
     float stormDarken = stormSignal * (0.20 + 0.32 * density) + overcastSignal * 0.08;
     cloudColor *= mix(1.0, 0.62, saturate1(stormDarken));
@@ -1150,6 +1152,12 @@ static inline CloudCompositeSample evaluateProceduralClouds(float3 dir,
     float hazeBlend = smoothstep(0.54, 1.0, horizonCoord) * (0.10 + params.horizonDensity * 0.14 + overcastSignal * 0.10);
     hazeBlend += (1.0 - exp(-opticalDepth)) * (0.035 + 0.09 * horizonBand);
     cloudColor = mix(cloudColor, hazeColor, saturate1(hazeBlend));
+    float inverseSharedSourceScale = 1.0 / max(params.intensity, 1e-6);
+    float3 incidentBound = (positive3(params.cloudSkyRadiance.rgb) * 2.0
+        + (positive3(params.cloudSunIrradiance.rgb) + positive3(params.cloudMoonIrradiance.rgb)) * 0.60)
+        * inverseSharedSourceScale
+        + float3(1e-7);
+    cloudColor = min(max(cloudColor, float3(0.0)), incidentBound);
 
     float sunFilter = saturate1(1.0 - density * (0.36 + 0.34 * sunInfluence + 0.18 * overcastSignal));
     composite.sun *= mix(1.0, sunFilter, opacity * (0.36 + 0.28 * coverage));
@@ -1216,13 +1224,6 @@ static inline float3 evaluate_procedural_sky_radiance(float3 direction,
             float3 proofAlbedo = raw_moon_albedo(moonDisk.uv, moonAlbedoTexture);
             return mix(float3(0.0), proofAlbedo * 3.0, moonDisk.opacity);
         }
-
-        float3 nightBackground = evaluateNightBackgroundLayer(cosTheta,
-                                                              moonCos,
-                                                              moonScatteredIntensity,
-                                                              horizonClarity,
-                                                              params);
-        sky = max(sky, nightBackground);
 
         float celestialDetailScale = includeDirectCelestialDisks
             ? 1.0
@@ -1328,6 +1329,25 @@ kernel void phase4_procedural_sky_component_samples(constant SkyParams &params [
         direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
     captureResults[sampleIndex] = float4(evaluate_capture_procedural_sky_radiance(
         direction, params, moonAlbedoTexture, galaxyTexture, cloudAtlasTexture), 1.0);
+}
+
+// Phase 2 radiometric cloud reference. Shape sampling is deliberately bypassed
+// so CPU/GPU tests can isolate the lighting equation and its incident-energy cap.
+kernel void phase2_cloud_radiance_reference(constant SkyParams &params [[ buffer(0) ]],
+                                             device const float4 *viewAndDensity [[ buffer(1) ]],
+                                             device const float4 *shapeTerms [[ buffer(2) ]],
+                                             device float4 *results [[ buffer(3) ]],
+                                             uint sampleIndex [[ thread_position_in_grid ]]) {
+    float4 viewSample = viewAndDensity[sampleIndex];
+    float4 shape = shapeTerms[sampleIndex];
+    results[sampleIndex] = float4(evaluateRadiometricCloudLighting(
+        normalize(viewSample.xyz),
+        saturate1(viewSample.w),
+        saturate1(shape.x),
+        saturate1(shape.y),
+        saturate1(shape.z),
+        params
+    ) * max(params.intensity, 0.0), 1.0);
 }
 
 // Test-only diagnostic entry point. It exercises the production visible and capture

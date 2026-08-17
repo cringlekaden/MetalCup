@@ -13,13 +13,18 @@ public struct EnvironmentFogRenderPatch: Equatable {
     /// Scene-linear ground-level analytic celestial irradiance. The stored property
     /// keeps its Phase 5 name to avoid changing the renderer-settings ABI.
     public var solarIrradiance: SIMD3<Float>
+    /// Current live procedural-sky radiance, never sampled from a potentially
+    /// stale IBL resource.
+    public var ambientRadiance: SIMD3<Float>
 
     public init(parameters: LocalFogTransport.Parameters,
                 directionToSun: SIMD3<Float>,
-                solarIrradiance: SIMD3<Float>) {
+                solarIrradiance: SIMD3<Float>,
+                ambientRadiance: SIMD3<Float> = .zero) {
         self.parameters = parameters
         self.directionToSun = directionToSun
         self.solarIrradiance = solarIrradiance
+        self.ambientRadiance = ambientRadiance
     }
 
     public func applying(to settings: inout RendererSettings) {
@@ -29,7 +34,7 @@ public struct EnvironmentFogRenderPatch: Equatable {
         settings.padding1 = .zero
         settings.aerialFogSunDirectionAndNight = SIMD4<Float>(directionToSun, 0)
         settings.aerialFogSunColorAndStrength = SIMD4<Float>(max(solarIrradiance, SIMD3<Float>(repeating: 0)), 0)
-        settings.aerialFogParams = .zero
+        settings.aerialFogAmbientRadiance = SIMD4<Float>(max(ambientRadiance, SIMD3<Float>(repeating: 0)), 1)
     }
 }
 
@@ -49,6 +54,12 @@ public struct EnvironmentCloudRenderParams: Equatable {
     public var cloudPhase: Float
     public var windPhase: Float
     public var skyTime: Float
+    public var sunIrradianceRGB: SIMD3<Float>
+    public var moonIrradianceRGB: SIMD3<Float>
+    public var skyAmbientRadianceRGB: SIMD3<Float>
+    public var extinctionScale: Float
+    public var phaseAnisotropy: Float
+    public var multipleScattering: Float
 
     public init(enabled: Bool,
                 coverage: Float,
@@ -64,7 +75,13 @@ public struct EnvironmentCloudRenderParams: Equatable {
                 sunInfluence: Float,
                 cloudPhase: Float,
                 windPhase: Float,
-                skyTime: Float) {
+                skyTime: Float,
+                sunIrradianceRGB: SIMD3<Float> = .zero,
+                moonIrradianceRGB: SIMD3<Float> = .zero,
+                skyAmbientRadianceRGB: SIMD3<Float> = .zero,
+                extinctionScale: Float = 1,
+                phaseAnisotropy: Float = 0.65,
+                multipleScattering: Float = 0.75) {
         self.enabled = enabled
         self.coverage = coverage
         self.style = style
@@ -80,6 +97,12 @@ public struct EnvironmentCloudRenderParams: Equatable {
         self.cloudPhase = cloudPhase
         self.windPhase = windPhase
         self.skyTime = skyTime
+        self.sunIrradianceRGB = max(sunIrradianceRGB, SIMD3<Float>(repeating: 0))
+        self.moonIrradianceRGB = max(moonIrradianceRGB, SIMD3<Float>(repeating: 0))
+        self.skyAmbientRadianceRGB = max(skyAmbientRadianceRGB, SIMD3<Float>(repeating: 0))
+        self.extinctionScale = max(extinctionScale, 0.05)
+        self.phaseAnisotropy = min(max(phaseAnisotropy, -0.85), 0.85)
+        self.multipleScattering = min(max(multipleScattering, 0), 1.5)
     }
 }
 
@@ -126,6 +149,8 @@ public struct EnvironmentRenderState {
     public var solarAngularRadiusRadians: Float
     public var skySourceScale: Float
     public var solarIrradianceRGB: SIMD3<Float>
+    public var skyDiffuseIrradianceRGB: SIMD3<Float>
+    public var skyAmbientRadianceRGB: SIMD3<Float>
     public var sunColor: SIMD3<Float>
     public var sunIntensity: Float
     public var moonDirection: SIMD3<Float>
@@ -157,6 +182,11 @@ public enum EnvironmentRenderStateBuilder {
         let atmosphere = DaytimeAtmosphereModel.Parameters(environment: environment)
         let solar = DaytimeAtmosphereModel.solarIrradiance(sunDirection: derived.sunDirectionWorld,
                                                             parameters: atmosphere)
+        let skyDiffuseIrradiance = DaytimeAtmosphereModel.hemisphericalSkyIrradiance(
+            sunDirection: derived.sunDirectionWorld,
+            parameters: atmosphere
+        )
+        let skyAmbientRadiance = skyDiffuseIrradiance / Float.pi
         let celestial = NightCelestialModel.build(
             timeOfDay: resolved.finalTimeOfDay,
             sunDirection: derived.sunDirectionWorld,
@@ -188,7 +218,7 @@ public enum EnvironmentRenderStateBuilder {
             DaytimeAtmosphereModel.referenceTopSolarIlluminance,
             atmosphere.multipleScatteringStrength,
             atmosphere.groundAlbedo,
-            0
+            atmosphere.nightBrightness
         )
         legacySkyParams.sunAureoleParams = .zero
         legacySkyParams.moonDirection = celestial.moonDirection
@@ -197,16 +227,29 @@ public enum EnvironmentRenderStateBuilder {
         legacySkyParams.moonColor = moonDiskLuminance > 1e-10
             ? celestial.diskRadianceRGB / moonDiskLuminance
             : SIMD3<Float>(repeating: 0)
-        legacySkyParams.moonIntensity = moonDiskLuminance
+        // The shared procedural evaluator applies skySourceScale after every
+        // layer. Store lunar terms in its unscaled source domain so source EV is
+        // applied exactly once to visible disk and atmospheric glow.
+        let inverseSkySourceScale = 1 / max(
+            DaytimeAtmosphereModel.sourceScale(sourceEV: atmosphere.sourceEV),
+            1e-6
+        )
+        legacySkyParams.moonIntensity = moonDiskLuminance * inverseSkySourceScale
         legacySkyParams.moonPhase = celestial.phase
         legacySkyParams.moonIlluminatedFraction = celestial.illuminatedFraction
         legacySkyParams.moonIrradiance = DaytimeAtmosphereModel.rec709Luminance(celestial.irradianceRGB)
+            * inverseSkySourceScale
         legacySkyParams.nightFactor = celestial.nightVisibility
         legacySkyParams.starVisibility = celestial.starVisibility
         legacySkyParams.celestialCaptureScale = NightCelestialModel.celestialCaptureScale
-        let cloudRenderParams = EnvironmentCloudRenderParamBuilder.make(authored: legacySky,
-                                                                         runtime: legacyRuntime,
-                                                                         derivedAtmosphere: derived)
+        let cloudRenderParams = EnvironmentCloudRenderParamBuilder.make(
+            authored: legacySky,
+            runtime: legacyRuntime,
+            derivedAtmosphere: derived,
+            sunIrradianceRGB: solar.rgb,
+            moonIrradianceRGB: celestial.irradianceRGB,
+            skyAmbientRadianceRGB: skyAmbientRadiance
+        )
         EnvironmentCloudRenderParamBuilder.apply(cloudRenderParams, to: &legacySkyParams)
         if environment.clouds.renderMode == .cards {
             legacySkyParams.cloudsEnabled = 0
@@ -215,7 +258,8 @@ public enum EnvironmentRenderStateBuilder {
         }
         let legacyFogPatch = makeFogPatch(config: environment.fog,
                                           sunDirection: celestial.directionalDirection,
-                                          solarIrradiance: celestial.directionalIrradianceRGB)
+                                          solarIrradiance: celestial.directionalIrradianceRGB,
+                                          ambientRadiance: skyAmbientRadiance)
 
         var state = EnvironmentRenderState(
             enabled: environment.enabled,
@@ -259,6 +303,8 @@ public enum EnvironmentRenderStateBuilder {
             solarAngularRadiusRadians: atmosphere.solarAngularRadiusRadians,
             skySourceScale: DaytimeAtmosphereModel.sourceScale(sourceEV: atmosphere.sourceEV),
             solarIrradianceRGB: solar.rgb,
+            skyDiffuseIrradianceRGB: skyDiffuseIrradiance,
+            skyAmbientRadianceRGB: skyAmbientRadiance,
             sunColor: solar.color,
             sunIntensity: solar.illuminance,
             moonDirection: celestial.moonDirection,
@@ -294,7 +340,8 @@ public enum EnvironmentRenderStateBuilder {
 
     private static func makeFogPatch(config: EnvironmentFogConfig,
                                      sunDirection: SIMD3<Float>,
-                                     solarIrradiance: SIMD3<Float>) -> EnvironmentFogRenderPatch {
+                                     solarIrradiance: SIMD3<Float>,
+                                     ambientRadiance: SIMD3<Float>) -> EnvironmentFogRenderPatch {
         let parameters = LocalFogTransport.Parameters(
             enabled: config.enabled,
             extinction: config.extinction,
@@ -305,7 +352,8 @@ public enum EnvironmentRenderStateBuilder {
         )
         return EnvironmentFogRenderPatch(parameters: parameters,
                                          directionToSun: sunDirection,
-                                         solarIrradiance: solarIrradiance)
+                                         solarIrradiance: solarIrradiance,
+                                         ambientRadiance: ambientRadiance)
     }
 }
 
@@ -361,7 +409,10 @@ public extension EnvironmentIBLSignature {
 private enum EnvironmentCloudRenderParamBuilder {
     static func make(authored sky: SkyLightComponent,
                      runtime environment: EnvironmentStateComponent?,
-                     derivedAtmosphere: AtmosphereDerivedSettings) -> EnvironmentCloudRenderParams {
+                     derivedAtmosphere: AtmosphereDerivedSettings,
+                     sunIrradianceRGB: SIMD3<Float>,
+                     moonIrradianceRGB: SIMD3<Float>,
+                     skyAmbientRadianceRGB: SIMD3<Float>) -> EnvironmentCloudRenderParams {
         let cloudPhase = environment?.cloudPhase ?? 0.0
         let windPhase = environment?.windPhase ?? 0.0
         let windDirection = simd_length_squared(sky.cloudsWindDirection) > 0.0001
@@ -390,7 +441,13 @@ private enum EnvironmentCloudRenderParamBuilder {
             sunInfluence: max(0.0, sky.cloudsSunInfluence) * (0.9 + derivedAtmosphere.sunWarmth * 0.2),
             cloudPhase: cloudPhase,
             windPhase: windPhase,
-            skyTime: skyTime
+            skyTime: skyTime,
+            sunIrradianceRGB: sunIrradianceRGB,
+            moonIrradianceRGB: moonIrradianceRGB,
+            skyAmbientRadianceRGB: skyAmbientRadianceRGB,
+            extinctionScale: 0.75 + max(sky.cloudsThickness, 0) * 1.5,
+            phaseAnisotropy: 0.58 + min(max(sky.cloudsSunInfluence, 0), 1) * 0.16,
+            multipleScattering: min(max(0.58 + sky.cloudsBrightness * 0.24, 0.45), 1.0)
         )
     }
 
@@ -407,6 +464,13 @@ private enum EnvironmentCloudRenderParamBuilder {
         params.cloudsBrightness = clouds.brightness
         params.cloudsSunInfluence = clouds.sunInfluence
         params.cloudAtlasStyle = Float(clouds.style.rawValue)
+        params.cloudSunIrradiance = SIMD4<Float>(clouds.sunIrradianceRGB, 0)
+        params.cloudMoonIrradiance = SIMD4<Float>(clouds.moonIrradianceRGB, 0)
+        params.cloudSkyRadiance = SIMD4<Float>(clouds.skyAmbientRadianceRGB, 0)
+        params.cloudOpticalParams = SIMD4<Float>(clouds.extinctionScale,
+                                                 clouds.phaseAnisotropy,
+                                                 clouds.multipleScattering,
+                                                 0)
     }
 
     private static func clamp(_ value: Float, min minimum: Float, max maximum: Float) -> Float {
@@ -589,11 +653,9 @@ private enum LegacyEnvironmentSkyAdapter {
         sky.temperature = temperature
         sky.mood = mood
 
-        let normalizedTime = timeOfDay / 24.0
-        sky.azimuthDegrees = fmodf(normalizedTime * 360.0 + 90.0, 360.0)
-        let solarAngle = ((timeOfDay - 6.0) / 12.0) * Float.pi
-        let solarHeight = sin(solarAngle)
-        sky.elevationDegrees = clamp(solarHeight * 88.0, min: -12.0, max: 88.0)
+        let solarAngles = SkySystem.solarAngles(timeOfDay: timeOfDay)
+        sky.azimuthDegrees = solarAngles.azimuthDegrees
+        sky.elevationDegrees = solarAngles.elevationDegrees
         sky.sunSizeDegrees = clamp(0.52 + weatherAmount * 0.08, min: 0.35, max: 0.9)
 
         let targetTurbidity = simd_mix(2.0 + atmosphereAmount * 4.0,

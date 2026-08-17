@@ -154,6 +154,12 @@ public enum SkySystem {
     }
 
     @inline(__always)
+    private static func smoothstep(_ edge0: Float, _ edge1: Float, _ value: Float) -> Float {
+        let t = saturate((value - edge0) / max(edge1 - edge0, 0.000_001))
+        return t * t * (3 - 2 * t)
+    }
+
+    @inline(__always)
     private static func mix(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ t: Float) -> SIMD3<Float> {
         simd_mix(a, b, SIMD3<Float>(repeating: saturate(t)))
     }
@@ -294,20 +300,28 @@ public enum SkySystem {
         -sunDirection(azimuthDegrees: azimuthDegrees, elevationDegrees: elevationDegrees)
     }
 
-    private static func authoredSolarAngles(fromTimeOfDay timeOfDay: Float) -> (azimuthDegrees: Float, elevationDegrees: Float) {
+    /// Fixed equinox presentation track at 35 degrees latitude. Unlike the
+    /// legacy clamped sine, this is a unit-vector solar path with a continuous
+    /// derivative and reaches well beyond astronomical twilight.
+    public static func solarAngles(timeOfDay: Float) -> (azimuthDegrees: Float, elevationDegrees: Float) {
         let wrappedTime = timeOfDay.truncatingRemainder(dividingBy: 24.0)
-        let normalizedTime = (wrappedTime >= 0.0 ? wrappedTime : (wrappedTime + 24.0)) / 24.0
-        let azimuthDegrees = fmodf(normalizedTime * 360.0 + 90.0, 360.0)
-        let solarAngle = ((normalizedTime * 24.0 - 6.0) / 12.0) * Float.pi
-        let solarHeight = sin(solarAngle)
-        let elevationDegrees = min(max(solarHeight * 88.0, -12.0), 88.0)
+        let time = wrappedTime >= 0 ? wrappedTime : wrappedTime + 24
+        let hourAngle = (time - 12) * Float.pi / 12
+        let latitude = 35 * Float.pi / 180
+        let direction = simd_normalize(SIMD3<Float>(
+            sin(hourAngle),
+            cos(latitude) * cos(hourAngle),
+            -sin(latitude) * cos(hourAngle)
+        ))
+        let azimuthDegrees = atan2(direction.z, direction.x) * 180 / .pi
+        let elevationDegrees = asin(min(max(direction.y, -1), 1)) * 180 / .pi
         return (azimuthDegrees, elevationDegrees)
     }
 
     /// Deterministic world-space celestial track used by the authoritative
     /// environment frame for both solar time and the phase-offset lunar orbit.
     public static func sunDirection(timeOfDay: Float) -> SIMD3<Float> {
-        let angles = authoredSolarAngles(fromTimeOfDay: timeOfDay)
+        let angles = solarAngles(timeOfDay: timeOfDay)
         return sunDirection(azimuthDegrees: angles.azimuthDegrees,
                             elevationDegrees: angles.elevationDegrees)
     }
@@ -324,7 +338,7 @@ public enum SkySystem {
         case .fixed, .cycle:
             sourceTimeOfDay = environment.currentTimeOfDay
         }
-        return authoredSolarAngles(fromTimeOfDay: sourceTimeOfDay)
+        return solarAngles(timeOfDay: sourceTimeOfDay)
     }
 
     private static func resolvedWeatherInputs(authored sky: SkyLightComponent,
@@ -361,9 +375,10 @@ public enum SkySystem {
                                                     blend: weatherInputs.blend)
 
         let normalizedSunHeight = saturate((sunDirectionWorld.y + 1.0) * 0.5)
-        let dayNightFactor = saturate((sunDirectionWorld.y + 0.14) / 0.42)
-        let twilightFactor = saturate(1.0 - abs(sunDirectionWorld.y - 0.01) / 0.26)
-        let nightFactor = saturate((-sunDirectionWorld.y - 0.08) / 0.30)
+        let solarElevationDegrees = asin(min(max(sunDirectionWorld.y, -1), 1)) * 180 / .pi
+        let dayNightFactor = smoothstep(-6, 6, solarElevationDegrees)
+        let nightFactor = 1 - smoothstep(-18, -6, solarElevationDegrees)
+        let twilightFactor = saturate(1 - dayNightFactor - nightFactor)
         let sunsetFactor = saturate(max(1.0 - dayNightFactor, twilightFactor * 0.92))
         let sunWarmth = saturate(0.12 + sunsetFactor * 0.88)
         let hazeAmount = saturate(sky.hazeDensity / 1.25)
@@ -662,9 +677,25 @@ public enum SkySystem {
             DaytimeAtmosphereModel.referenceTopSolarIlluminance,
             daytime.multipleScatteringStrength,
             daytime.groundAlbedo,
-            0
+            min(max(sky.nightBrightness, 0), 3)
         )
         params.sunAureoleParams = .zero
+        let skyIrradiance = DaytimeAtmosphereModel.hemisphericalSkyIrradiance(
+            sunDirection: derivedAtmosphere.sunDirectionWorld,
+            parameters: daytime
+        )
+        params.cloudSunIrradiance = SIMD4<Float>(solar.rgb, 0)
+        params.cloudMoonIrradiance = SIMD4<Float>(
+            max(params.moonColor, SIMD3<Float>(repeating: 0)) * max(params.moonIrradiance, 0),
+            0
+        )
+        params.cloudSkyRadiance = SIMD4<Float>(skyIrradiance / Float.pi, 0)
+        params.cloudOpticalParams = SIMD4<Float>(
+            0.75 + max(sky.cloudsThickness, 0) * 1.5,
+            0.58 + min(max(sky.cloudsSunInfluence, 0), 1) * 0.16,
+            min(max(0.58 + sky.cloudsBrightness * 0.24, 0.45), 1),
+            0
+        )
         return params
     }
 

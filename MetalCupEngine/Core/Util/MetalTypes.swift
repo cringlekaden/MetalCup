@@ -208,14 +208,16 @@ public struct LocalReflectionProbeUniform: sizeable {
 }
 
 public struct CloudImpostorParams: sizeable {
-    public static let expectedMetalStride: Int = 64
+    public static let expectedMetalStride: Int = 112
 
-    /// xyz = world-space sun direction, w = night factor.
-    public var sunDirectionAndNightFactor = SIMD4<Float>(0, 1, 0, 0)
+    public var sunDirection = SIMD4<Float>(0, 1, 0, 0)
+    public var moonDirection = SIMD4<Float>(0, 1, 0, 0)
     /// xy = wind offset, z = coverage, w = card count.
     public var windOffsetCoverageAndCount = SIMD4<Float>(0, 0, 0, 0)
-    /// rgb = cloud tint, w = brightness.
-    public var colorTintAndBrightness = SIMD4<Float>(1, 1, 1, 1)
+    /// RGB = live hemispherical sky radiance, w = bounded multiple scattering.
+    public var skyRadianceAndMultipleScattering = SIMD4<Float>(0, 0, 0, 0.75)
+    public var sunIrradiance = SIMD4<Float>(repeating: 0)
+    public var moonIrradiance = SIMD4<Float>(repeating: 0)
     /// x = distance, y = altitude, z = base scale, w = opacity.
     public var layout = SIMD4<Float>(380, 105, 115, 0.35)
 }
@@ -528,6 +530,13 @@ public struct SkyParams: sizeable {
     public var atmosphereOpticalParams: SIMD4<Float> = SIMD4<Float>(1.5, 0.35, 1.0, 5.0)
     /// Reserved for legacy/night ABI compatibility. Daytime aureole derives from Mie scattering.
     public var sunAureoleParams: SIMD4<Float> = SIMD4<Float>(0.35, 0.08, 0.0, 0.0)
+    /// Live radiometric cloud inputs. RGB values are scene-linear and are shared
+    /// by visible rendering and procedural IBL capture.
+    public var cloudSunIrradiance: SIMD4<Float> = .zero
+    public var cloudMoonIrradiance: SIMD4<Float> = .zero
+    public var cloudSkyRadiance: SIMD4<Float> = .zero
+    /// x = extinction scale, y = phase anisotropy, z = bounded multiple scattering.
+    public var cloudOpticalParams: SIMD4<Float> = SIMD4<Float>(1, 0.65, 0.75, 0)
 }
 
 public typealias SkyUniforms = SkyParams

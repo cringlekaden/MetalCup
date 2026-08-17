@@ -1790,7 +1790,7 @@ public struct EnvironmentCloudConfig: Equatable {
 
     public init(coverage: Float = 0.3,
                 style: EnvironmentCloudStyle = .puffy,
-                renderMode: EnvironmentCloudRenderMode = .both) {
+                renderMode: EnvironmentCloudRenderMode = .procedural) {
         self.coverage = coverage
         self.style = style
         self.renderMode = renderMode
@@ -2206,7 +2206,10 @@ public struct EnvironmentRuntimeStateComponent: Equatable {
 }
 
 public struct EnvironmentIBLSignature: Equatable, Hashable {
-    public static let currentVersion: UInt32 = 12
+    /// Incremented whenever shader-side source radiance changes even if authored
+    /// fields do not. Version 13 invalidates captures made by the legacy -6°
+    /// twilight cutoff and fixed-color cloud model.
+    public static let currentVersion: UInt32 = 13
 
     public let version: UInt32
     public let enabled: Bool

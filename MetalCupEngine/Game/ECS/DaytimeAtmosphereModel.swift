@@ -11,7 +11,9 @@ import simd
 /// illuminance 2.0 at EV 0. This keeps the disk below RGBA16Float's finite limit
 /// through EV +1 while producing an order-one white-Lambertian direct response.
 ///
-/// The visible result contains atmosphere + aureole + direct disk. Procedural IBL
+/// Twilight is evaluated continuously through -24 degrees solar elevation and a
+/// bounded airglow floor remains after scattered sunlight has vanished. The
+/// visible result contains atmosphere + aureole + direct disk. Procedural IBL
 /// capture contains atmosphere + aureole only. The disk's projected integral is
 /// represented once, by the generated directional light.
 public enum DaytimeAtmosphereModel {
@@ -31,6 +33,10 @@ public enum DaytimeAtmosphereModel {
     /// Ratios are intentionally explicit because they own the daylight chroma.
     public static let rayleighOpticalDepth = SIMD3<Float>(0.025, 0.075, 0.220)
     public static let ozoneOpticalDepth = SIMD3<Float>(0.003, 0.008, 0.002)
+    /// Deep-night source radiance before view/horizon shaping. These values are
+    /// in the same scene-linear domain as daytime scattering and IBL capture.
+    public static let airglowZenithRGB = SIMD3<Float>(0.000_010, 0.000_018, 0.000_040)
+    public static let airglowHorizonRGB = SIMD3<Float>(0.000_020, 0.000_024, 0.000_036)
 
     public struct Parameters: Equatable {
         public var sourceEV: Float
@@ -40,6 +46,7 @@ public enum DaytimeAtmosphereModel {
         public var multipleScatteringStrength: Float
         public var groundAlbedo: Float
         public var solarAngularRadiusRadians: Float
+        public var nightBrightness: Float
 
         public init(sourceEV: Float = 0,
                     densityScale: Float = 1,
@@ -47,7 +54,8 @@ public enum DaytimeAtmosphereModel {
                     ozoneScale: Float = 1,
                     multipleScatteringStrength: Float = 1,
                     groundAlbedo: Float = DaytimeAtmosphereModel.groundAlbedo,
-                    solarAngularRadiusRadians: Float = DaytimeAtmosphereModel.solarAngularRadiusDegrees * .pi / 180) {
+                    solarAngularRadiusRadians: Float = DaytimeAtmosphereModel.solarAngularRadiusDegrees * .pi / 180,
+                    nightBrightness: Float = 1) {
             self.sourceEV = sourceEV
             self.densityScale = max(densityScale, 0.05)
             self.aerosolScale = max(aerosolScale, 0)
@@ -55,6 +63,7 @@ public enum DaytimeAtmosphereModel {
             self.multipleScatteringStrength = max(multipleScatteringStrength, 0)
             self.groundAlbedo = min(max(groundAlbedo, 0), 1)
             self.solarAngularRadiusRadians = max(solarAngularRadiusRadians, 0.0001)
+            self.nightBrightness = min(max(nightBrightness, 0), 3)
         }
 
         public init(environment: EnvironmentComponent) {
@@ -66,7 +75,8 @@ public enum DaytimeAtmosphereModel {
                 densityScale: max(environment.atmosphere.density, 0.05),
                 aerosolScale: aerosol,
                 ozoneScale: 0.85 + min(max(environment.atmosphere.amount, 0), 1) * 0.30,
-                multipleScatteringStrength: 0.85 + min(max(environment.atmosphere.amount, 0), 1) * 0.55
+                multipleScatteringStrength: 0.85 + min(max(environment.atmosphere.amount, 0), 1) * 0.55,
+                nightBrightness: environment.celestial.nightBrightness
             )
         }
     }
@@ -95,6 +105,48 @@ public enum DaytimeAtmosphereModel {
 
     public static func sourceScale(sourceEV: Float) -> Float {
         exp2(min(max(sourceEV, -2), 1))
+    }
+
+    /// Smooth, monotonic scattered-sun scale. Segment endpoints have zero first
+    /// derivative so civil, nautical, and astronomical boundaries do not flash.
+    public static func twilightSolarScale(elevationDegrees: Float) -> Float {
+        let elevation = min(max(elevationDegrees, -24), 1)
+        let knots: [(Float, Float)] = [
+            (-24, 0),
+            (-18, 0.000_08),
+            (-12, 0.001_2),
+            (-6, 0.025),
+            (0, 0.65),
+            (1, 1)
+        ]
+        guard elevation > knots[0].0 else { return 0 }
+        for index in 0..<(knots.count - 1) {
+            let lower = knots[index]
+            let upper = knots[index + 1]
+            guard elevation <= upper.0 else { continue }
+            let t = smoothstep(lower.0, upper.0, elevation)
+            if lower.1 <= 0 {
+                return upper.1 * t
+            }
+            return exp2(log2(lower.1) + (log2(upper.1) - log2(lower.1)) * t)
+        }
+        return 1
+    }
+
+    public static func deepNightFactor(elevationDegrees: Float) -> Float {
+        1 - smoothstep(-18, -6, elevationDegrees)
+    }
+
+    public static func airglowRadiance(direction: SIMD3<Float>,
+                                       solarElevationDegrees: Float,
+                                       parameters: Parameters) -> SIMD3<Float> {
+        let view = safeNormalize(direction, fallback: SIMD3<Float>(0, 1, 0))
+        let zenithBlend = smoothstep(0, 0.72, max(view.y, 0))
+        let base = airglowHorizonRGB + (airglowZenithRGB - airglowHorizonRGB) * zenithBlend
+        return base
+            * deepNightFactor(elevationDegrees: solarElevationDegrees)
+            * parameters.nightBrightness
+            * sourceScale(sourceEV: parameters.sourceEV)
     }
 
     public static func projectedSolidAngle(radiusRadians: Float) -> Float {
@@ -150,7 +202,8 @@ public enum DaytimeAtmosphereModel {
         let sun = safeNormalize(sunDirection, fallback: SIMD3<Float>(0, 1, 0))
         let sourceScale = sourceScale(sourceEV: parameters.sourceEV)
         let sunElevation = asin(min(max(sun.y, -1), 1))
-        let twilight = smoothstep(-6 * .pi / 180, 1 * .pi / 180, sunElevation)
+        let sunElevationDegrees = sunElevation * 180 / .pi
+        let twilight = twilightSolarScale(elevationDegrees: sunElevationDegrees)
         let sunAirMass = opticalAirMass(elevationRadians: max(sunElevation, 0))
         let viewAirMass = opticalAirMass(elevationRadians: asin(max(view.y, 0.001)))
         let rayleighDepth = rayleighOpticalDepth * parameters.densityScale
@@ -189,6 +242,9 @@ public enum DaytimeAtmosphereModel {
         )
         let upperBlend = smoothstep(-0.02, 0.02, view.y)
         let atmosphere = lowerGround + (upperAtmosphere - lowerGround) * upperBlend
+            + airglowRadiance(direction: view,
+                              solarElevationDegrees: sunElevationDegrees,
+                              parameters: parameters)
 
         let aureole = max(topIrradiance * incidentTint * mieScatter
             * (miePhase(cosAngle, anisotropy: mieAnisotropy) * 0.45),
@@ -209,6 +265,27 @@ public enum DaytimeAtmosphereModel {
         return Sample(atmosphere: atmosphere,
                       aureole: aureole,
                       disk: max(disk, SIMD3<Float>(repeating: 0)))
+    }
+
+    /// Low-cost deterministic hemispherical integral used for live cloud/fog
+    /// lighting. It excludes the unscattered disk, matching the IBL partition.
+    public static func hemisphericalSkyIrradiance(sunDirection: SIMD3<Float>,
+                                                   parameters: Parameters,
+                                                   sampleCount: Int = 32) -> SIMD3<Float> {
+        let count = max(sampleCount, 8)
+        let goldenAngle = Float.pi * (3 - sqrt(5 as Float))
+        var irradiance = SIMD3<Float>(repeating: 0)
+        for index in 0..<count {
+            let y = (Float(index) + 0.5) / Float(count)
+            let radius = sqrt(max(1 - y * y, 0))
+            let phi = Float(index) * goldenAngle
+            let direction = SIMD3<Float>(cos(phi) * radius, y, sin(phi) * radius)
+            let value = sample(direction: direction,
+                               sunDirection: sunDirection,
+                               parameters: parameters)
+            irradiance += (value.atmosphere + value.aureole) * y
+        }
+        return max(irradiance * (2 * .pi / Float(count)), SIMD3<Float>(repeating: 0))
     }
 
     private static func totalOpticalDepth(parameters: Parameters) -> SIMD3<Float> {

@@ -2116,7 +2116,7 @@ public struct EnvironmentCloudDTO: Codable {
     public init(schemaVersion: Int = 1,
                 coverage: Float,
                 style: UInt32,
-                renderMode: UInt32 = EnvironmentCloudRenderMode.both.rawValue) {
+                renderMode: UInt32 = EnvironmentCloudRenderMode.procedural.rawValue) {
         self.schemaVersion = schemaVersion
         self.coverage = coverage
         self.style = style
@@ -2129,7 +2129,7 @@ public struct EnvironmentCloudDTO: Codable {
         coverage = try container.decode(Float.self, forKey: .coverage)
         style = try container.decode(UInt32.self, forKey: .style)
         renderMode = try container.decodeIfPresent(UInt32.self, forKey: .renderMode)
-            ?? EnvironmentCloudRenderMode.both.rawValue
+            ?? EnvironmentCloudRenderMode.procedural.rawValue
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2150,7 +2150,7 @@ public struct EnvironmentCloudDTO: Codable {
         EnvironmentCloudConfig(
             coverage: coverage,
             style: EnvironmentCloudStyle(rawValue: style) ?? .puffy,
-            renderMode: EnvironmentCloudRenderMode(rawValue: renderMode) ?? .both
+            renderMode: EnvironmentCloudRenderMode(rawValue: renderMode) ?? .procedural
         )
     }
 }
